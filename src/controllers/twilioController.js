@@ -1,10 +1,10 @@
 const {
-  generateAccessToken,
-  buildDirectDialTwiml,
   initiateCall,
   endCall,
   trackCallStatus,
-  setCallMuted
+  setCallMuted,
+  generateAccessToken,
+  buildOutboundDialTwiml
 } = require("../services/twilioService");
 
 function normalizeIdentity(value) {
@@ -27,37 +27,53 @@ function getServerUrl(req) {
   return `${protocol}://${req.get("host")}`;
 }
 
-async function createVoiceToken(req, res, next) {
-  try {
-    const providedIdentity = normalizeIdentity(req.body?.identity || req.query?.identity);
-    const identity = providedIdentity || createRandomIdentity();
-
-    const token = generateAccessToken(identity);
-    return res.status(200).json({
-      token,
-      identity,
-      expiresIn: 3600
-    });
-  } catch (err) {
-    return next(err);
-  }
-}
-
-async function voiceConferenceTwiml(req, res, next) {
-  try {
-    const toPhoneNumber =
-      req.body?.toPhoneNumber || req.body?.doctorPhoneNumber || req.body?.To || req.query?.toPhoneNumber;
-    const twiml = buildDirectDialTwiml({ toPhoneNumber });
-    res.type("text/xml");
-    return res.status(200).send(twiml);
-  } catch (err) {
-    return next(err);
-  }
+function mapLifecycleEvent(statusValue) {
+  const status = String(statusValue || "").toLowerCase();
+  if (["in-progress", "answered"].includes(status)) return "accepted";
+  if (["queued", "initiated", "ringing"].includes(status)) return "ringing";
+  if (["completed", "busy", "failed", "no-answer", "canceled"].includes(status)) return "finished";
+  return "status_update";
 }
 
 module.exports = {
-  createVoiceToken,
-  voiceConferenceTwiml,
+  // GET /api/twilio/voice/token?identity=xxx
+  // Returns a Twilio Access Token so the browser can use the Voice SDK.
+  async getVoiceToken(req, res, next) {
+    try {
+      const rawIdentity =
+        req.query?.identity || req.body?.identity || null;
+      const identity = rawIdentity
+        ? normalizeIdentity(rawIdentity) || createRandomIdentity("patient")
+        : createRandomIdentity("patient");
+      const jwt = generateAccessToken(identity);
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][token] issued for identity=${identity}`);
+      return res.status(200).json({ ok: true, token: jwt, identity });
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  // POST /api/twilio/voice/twiml
+  // Twilio calls this (TwiML App Voice URL) when the patient's browser connects.
+  // Returns TwiML that dials the doctor's phone number.
+  async voiceTwiml(req, res, next) {
+    try {
+      const doctorPhoneNumber =
+        req.body?.To ||
+        req.query?.To ||
+        process.env.EXAMPLE_DOCTOR_PHONE_NUMBER ||
+        null;
+      const twiml = buildOutboundDialTwiml({ doctorPhoneNumber });
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][twiml] patient browser → doctor ${doctorPhoneNumber}`);
+      res.type("text/xml");
+      return res.send(twiml);
+    } catch (err) {
+      return next(err);
+    }
+  },
+
   async startCallSession(req, res, next) {
     try {
       const providedIdentity = normalizeIdentity(req.body?.identity || req.query?.identity);
@@ -81,13 +97,12 @@ module.exports = {
         });
       }
 
-      const callbackUrl =
-        process.env.TWILIO_CALL_CALLBACK_URL || `${getServerUrl(req)}/api/twilio/call-status`;
+      const callbackUrl = process.env.TWILIO_CALL_CALLBACK_URL || `${getServerUrl(req)}/api/twilio/call-status`;
 
       const call = await initiateCall({
         toPhoneNumber: doctorPhoneNumber,
         patientPhoneNumber,
-        callbackUrl
+        callbackUrl: callbackUrl
       });
 
       return res.status(200).json({
@@ -109,6 +124,13 @@ module.exports = {
       const callStatus = req.body?.CallStatus || null;
       const identity = req.body?.Caller || req.body?.From || "unknown";
       trackCallStatus({ callSid, statusCallbackEvent, callStatus, identity });
+      const lifecycle = mapLifecycleEvent(callStatus || statusCallbackEvent);
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[Twilio][event:${lifecycle}] callSid=${callSid || "-"} status=${String(callStatus || statusCallbackEvent || "-")} from=${req.body?.From || "-"} to=${req.body?.To || "-"}`
+      );
+
       return res.sendStatus(200);
     } catch (err) {
       return next(err);
@@ -119,6 +141,8 @@ module.exports = {
       const callSid = String(req.body?.callSid || "").trim();
       if (!callSid) return res.status(400).json({ error: "callSid required." });
       const ended = await endCall(callSid);
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][stop] callSid=${ended.callSid} status=${ended.status}`);
       return res.status(200).json({ ok: true, callSid: ended.callSid, status: ended.status });
     } catch (err) {
       return next(err);
@@ -132,23 +156,14 @@ module.exports = {
         return res.status(400).json({ error: "callSid and boolean isMuted required." });
       }
       const session = setCallMuted({ callSid, isMuted });
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][mute] callSid=${session.callSid} isMuted=${session.isMuted}`);
       return res.status(200).json({
         ok: true,
         callSid: session.callSid,
         isMuted: session.isMuted,
         status: session.status || "unknown"
       });
-    } catch (err) {
-      return next(err);
-    }
-  },
-  async voiceTwiml(req, res, next) {
-    try {
-      const toPhoneNumber =
-        req.body?.toPhoneNumber || req.body?.doctorPhoneNumber || req.body?.To || req.query?.toPhoneNumber;
-      const twiml = buildDirectDialTwiml({ toPhoneNumber });
-      res.type("text/xml");
-      return res.status(200).send(twiml);
     } catch (err) {
       return next(err);
     }

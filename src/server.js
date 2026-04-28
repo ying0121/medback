@@ -4,9 +4,7 @@ require("dotenv").config();
 const app = require("./app");
 const {
   processIncomingMessage,
-  resolveConversationOnConnect,
-  getTwilioCallStatus,
-  endTwilioCall
+  resolveConversationOnConnect
 } = require("./services/chatService");
 const { connectDatabase, syncDatabase } = require("./db");
 const configuredWsPath = process.env.WEBSOCKET_CHAT_URL || "/ws";
@@ -75,21 +73,6 @@ function createWsPayload({
   };
 }
 
-function mapTwilioCallLifecycleStatus(twilioStatus) {
-  const status = String(twilioStatus || "").toLowerCase();
-  if (!status) return "ringing";
-  if (["queued", "initiated", "ringing"].includes(status)) {
-    return "ringing";
-  }
-  if (["in-progress"].includes(status)) {
-    return "accepted";
-  }
-  if (["completed", "busy", "failed", "no-answer", "canceled"].includes(status)) {
-    return "finished";
-  }
-  return "ringing";
-}
-
 wss.on("connection", (socket) => {
   logSuccess("WebSocket client connected successfully.");
 
@@ -112,10 +95,9 @@ wss.on("connection", (socket) => {
 
     try {
       const methodType = parsed.type;
-      const supportedTypes = ["connect", "chat", "voice", "twilio"];
+      const supportedTypes = ["connect", "chat", "voice"];
       const isVoice = methodType === "voice";
       const isConnect = methodType === "connect";
-      const isTwilio = methodType === "twilio";
       const isTopic = parsed.isTopic ? parsed.isTopic : 0;
       const hasChatMessage = typeof parsed.message === "string" && parsed.message.trim().length > 0;
       const hasVoiceAudio = typeof parsed.audio === "string" && parsed.audio.trim().length > 0;
@@ -125,7 +107,7 @@ wss.on("connection", (socket) => {
           ...createWsPayload({
             type: "connect",
             status: "error",
-            message: "Expected type to be connect, chat, voice, or twilio."
+            message: "Expected type to be connect, chat, or voice."
           })
         });
         return;
@@ -146,59 +128,6 @@ wss.on("connection", (socket) => {
             type: "connect",
             status: "success",
             conversationId
-          })
-        });
-        return;
-      }
-
-      if (isTwilio) {
-        const twilioAction = String(parsed.action || parsed.twilioAction || "status")
-          .trim()
-          .toLowerCase();
-        const callSid = String(parsed.callSid || "").trim();
-        if (!callSid) {
-          sendJson(socket, {
-            ...createWsPayload({
-              type: "twilio",
-              status: "error",
-              message: "callSid is required for call status."
-            })
-          });
-          return;
-        }
-        if (!["status", "end"].includes(twilioAction)) {
-          sendJson(socket, {
-            ...createWsPayload({
-              type: "twilio",
-              status: "error",
-              message: "twilio action must be status or end."
-            })
-          });
-          return;
-        }
-        if (twilioAction === "end") {
-          const ended = await endTwilioCall(callSid);
-          sendJson(socket, {
-            ...createWsPayload({
-              type: "twilio",
-              status: "success",
-              message: ended.status,
-              callStatus: "finished",
-              callSid: ended.callSid
-            })
-          });
-          return;
-        }
-        const call = await getTwilioCallStatus(callSid);
-        const lifecycleStatus = mapTwilioCallLifecycleStatus(call.status);
-        sendJson(socket, {
-          ...createWsPayload({
-            type: "twilio",
-            status: "success",
-            message: call.status,
-            callStatus: lifecycleStatus,
-            callSid: call.callSid,
-            duration: call.duration ? Number(call.duration) : null
           })
         });
         return;
@@ -276,7 +205,7 @@ wss.on("connection", (socket) => {
       sendJson(socket, {
         ...createWsPayload({
           type:
-            parsed?.type && ["connect", "chat", "voice", "twilio"].includes(parsed.type)
+            parsed?.type && ["connect", "chat", "voice"].includes(parsed.type)
               ? parsed.type
               : "connect",
           status: "error",

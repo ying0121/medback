@@ -7,6 +7,14 @@ const alertPhoneNumber = process.env.ALERT_PHONE_NUMBER || "";
 const twilioCallSessions = new Map(); // callSid -> { callSid, identity, isMuted, status }
 let client = null;
 
+function mapLifecycleEvent(statusValue) {
+  const status = String(statusValue || "").toLowerCase();
+  if (["in-progress", "answered"].includes(status)) return "accepted";
+  if (["queued", "initiated", "ringing"].includes(status)) return "ringing";
+  if (["completed", "busy", "failed", "no-answer", "canceled"].includes(status)) return "finished";
+  return "status_update";
+}
+
 function getClient() {
   if (!client) {
     if (!twilioAccountSid || !twilioAuthToken) {
@@ -76,12 +84,37 @@ async function getCallStatus(callSid) {
     throw new Error("callSid is required.");
   }
   const call = await getClient().calls(callSid).fetch();
+  const currentStatus = String(call.status || "").toLowerCase();
+  const lifecycle = mapLifecycleEvent(currentStatus);
+  const previous = twilioCallSessions.get(callSid) || null;
+  const previousStatus = String(previous?.status || "").toLowerCase();
+
+  if (currentStatus && currentStatus !== previousStatus) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Twilio][event:${lifecycle}][poll] callSid=${call.sid} status=${currentStatus} from=${call.from || "-"} to=${call.to || "-"}`
+    );
+  }
+  twilioCallSessions.set(callSid, {
+    ...(previous || {}),
+    callSid: call.sid,
+    status: currentStatus || "unknown",
+    identity: previous?.identity || "unknown",
+    isMuted: previous?.isMuted === true
+  });
+
   return {
     callSid: call.sid,
     status: call.status,
     duration: call.duration,
     to: call.to,
     from: call.from,
+    answeredBy: call.answeredBy || null,
+    queueTime: call.queueTime || null,
+    price: call.price || null,
+    priceUnit: call.priceUnit || null,
+    errorCode: call.errorCode || null,
+    errorMessage: call.errorMessage || null,
     startTime: call.startTime,
     endTime: call.endTime
   };
@@ -106,16 +139,13 @@ function generateAccessToken(identity) {
 
   if (!twilioAccountSid || !apiKeySid || !apiKeySecret || !twimlAppSid) {
     throw new Error(
-      "TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET and TWILIO_TWIML_APP_SID are required."
+      "TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET and TWILIO_TWIML_APP_SID are required for browser calling."
     );
   }
-  if (!identity) {
-    throw new Error("identity is required.");
-  }
+  if (!identity) throw new Error("identity is required.");
 
   const AccessToken = twilio.jwt.AccessToken;
   const VoiceGrant = AccessToken.VoiceGrant;
-
   const token = new AccessToken(twilioAccountSid, apiKeySid, apiKeySecret, {
     identity,
     ttl: 3600
@@ -123,25 +153,21 @@ function generateAccessToken(identity) {
   token.addGrant(
     new VoiceGrant({
       outgoingApplicationSid: twimlAppSid,
-      incomingAllow: true
+      incomingAllow: false
     })
   );
-
   return token.toJwt();
 }
 
-function buildDirectDialTwiml({ toPhoneNumber }) {
-  const doctorPhoneNumber =
-    String(toPhoneNumber || "").trim() || String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
-  if (!doctorPhoneNumber) {
-    throw new Error("Doctor phone number is required.");
-  }
+// Returns TwiML that dials the doctor's phone when patient's browser calls.
+function buildOutboundDialTwiml({ doctorPhoneNumber }) {
+  const target =
+    String(doctorPhoneNumber || "").trim() ||
+    String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
+  if (!target) throw new Error("Doctor phone number is required.");
   const twiml = new twilio.twiml.VoiceResponse();
-  const dial = twiml.dial({
-    answerOnBridge: true,
-    callerId: twilioPhoneNumber || undefined
-  });
-  dial.number(doctorPhoneNumber);
+  const dial = twiml.dial({ callerId: twilioPhoneNumber || undefined, answerOnBridge: true });
+  dial.number(target);
   return twiml.toString();
 }
 
@@ -182,8 +208,8 @@ module.exports = {
   initiateCall,
   getCallStatus,
   endCall,
-  generateAccessToken,
-  buildDirectDialTwiml,
   trackCallStatus,
-  setCallMuted
+  setCallMuted,
+  generateAccessToken,
+  buildOutboundDialTwiml
 };
