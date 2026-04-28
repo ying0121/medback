@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* MedBot Admin Design System — deep indigo + electric teal */
+
+@layer base {
+  :root {
+    --background: 220 33% 98%;
+    --foreground: 230 35% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 230 35% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 230 35% 12%;
+
+    --primary: 235 65% 22%;
+    --primary-foreground: 180 100% 96%;
+    --primary-glow: 235 70% 38%;
+
+    --accent: 180 85% 45%;
+    --accent-foreground: 235 65% 12%;
+
+    --secondary: 220 25% 94%;
+    --secondary-foreground: 235 65% 22%;
+
+    --muted: 220 20% 95%;
+    --muted-foreground: 230 15% 45%;
+
+    --destructive: 0 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 150 65% 42%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 52%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 220 20% 89%;
+    --input: 220 20% 89%;
+    --ring: 235 65% 22%;
+
+    --radius: 0.75rem;
+
+    --gradient-primary: linear-gradient(135deg, hsl(235 65% 22%), hsl(235 70% 38%));
+    --gradient-accent: linear-gradient(135deg, hsl(180 85% 45%), hsl(195 90% 50%));
+    --gradient-hero: radial-gradient(ellipse at top, hsl(235 70% 38% / 0.15), transparent 60%),
+                     linear-gradient(180deg, hsl(220 33% 98%), hsl(220 33% 96%));
+
+    --shadow-sm: 0 1px 2px hsl(235 65% 22% / 0.04);
+    --shadow-md: 0 4px 12px -2px hsl(235 65% 22% / 0.08);
+    --shadow-lg: 0 12px 32px -8px hsl(235 65% 22% / 0.18);
+    --shadow-glow: 0 0 40px hsl(180 85% 45% / 0.35);
+
+    --sidebar-background: 235 65% 12%;
+    --sidebar-foreground: 220 25% 88%;
+    --sidebar-primary: 180 85% 45%;
+    --sidebar-primary-foreground: 235 65% 12%;
+    --sidebar-accent: 235 50% 18%;
+    --sidebar-accent-foreground: 180 85% 65%;
+    --sidebar-border: 235 40% 20%;
+    --sidebar-ring: 180 85% 45%;
+  }
+
+  .dark {
+    --background: 230 30% 8%;
+    --foreground: 220 25% 95%;
+    --card: 230 30% 11%;
+    --card-foreground: 220 25% 95%;
+    --popover: 230 30% 11%;
+    --popover-foreground: 220 25% 95%;
+    --primary: 180 85% 45%;
+    --primary-foreground: 235 65% 12%;
+    --secondary: 230 25% 16%;
+    --secondary-foreground: 220 25% 95%;
+    --muted: 230 25% 16%;
+    --muted-foreground: 220 15% 65%;
+    --accent: 180 85% 45%;
+    --accent-foreground: 235 65% 12%;
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 230 25% 18%;
+    --input: 230 25% 18%;
+    --ring: 180 85% 45%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  h1, h2, h3, h4 { @apply tracking-tight; }
+}
+
+@layer utilities {
+  .bg-gradient-primary { background: var(--gradient-primary); }
+  .bg-gradient-accent { background: var(--gradient-accent); }
+  .bg-gradient-hero { background: var(--gradient-hero); }
+  .shadow-glow { box-shadow: var(--shadow-glow); }
+  .shadow-elegant { box-shadow: var(--shadow-lg); }
+}
