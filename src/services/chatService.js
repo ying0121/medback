@@ -162,11 +162,22 @@ async function processIncomingMessage({
       });
 
       if (twilioIntent) {
+        const callNotice =
+          process.env.TWILIO_CALL_NOTICE ||
+          "Connecting you to the doctor now. Please stay on the line.";
+        await createMessage({
+          conversationId: ensuredConversationId,
+          userType: "bot",
+          message: callNotice,
+          messageType: "voice",
+          isTopic,
+          status: "success"
+        });
         return {
           conversationId: ensuredConversationId,
           status: "success",
           twilioIntent: true,
-          assistantReply: null,
+          assistantReply: callNotice,
           transcriptText,
           audioBase64: null,
           audioMimeType: null
@@ -249,11 +260,22 @@ async function processIncomingMessage({
     });
 
     if (twilioIntent) {
+      const callNotice =
+        process.env.TWILIO_CALL_NOTICE ||
+        "Connecting you to the doctor now. Please stay on the line.";
+      await createMessage({
+        conversationId: ensuredConversationId,
+        userType: "bot",
+        message: callNotice,
+        messageType: "chat",
+        isTopic,
+        status: "success"
+      });
       return {
         conversationId: ensuredConversationId,
         status: "success",
         twilioIntent: true,
-        assistantReply: null
+        assistantReply: callNotice
       };
     }
 
