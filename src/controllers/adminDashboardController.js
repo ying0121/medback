@@ -80,6 +80,19 @@ function makeClinicSummary(clinicId) {
   };
 }
 
+function parseConversationUserInfo(rawUserInfo) {
+  if (!rawUserInfo) return { name: "", email: "" };
+  try {
+    const parsed = JSON.parse(String(rawUserInfo));
+    return {
+      name: String(parsed?.name || "").trim(),
+      email: String(parsed?.email || "").trim()
+    };
+  } catch {
+    return { name: "", email: "" };
+  }
+}
+
 async function listClinics(req, res, next) {
   try {
     const clinicRows = await Clinic.findAll({
@@ -129,6 +142,7 @@ async function listConversationsByClinic(req, res, next) {
 
     const mapped = await Promise.all(
       conversations.map(async (conversation) => {
+        const userInfo = parseConversationUserInfo(conversation.userInfo);
         const messageCount = await Message.count({
           where: { conversationId: conversation.id }
         });
@@ -141,6 +155,8 @@ async function listConversationsByClinic(req, res, next) {
           id: String(conversation.id),
           clinicId: String(conversation.clinicId),
           title: `Conversation #${conversation.id}`,
+          userName: userInfo.name,
+          userEmail: userInfo.email,
           messageCount,
           lastMessageAt:
             lastMessage?.createdAt?.toISOString?.() ||

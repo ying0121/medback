@@ -57,6 +57,8 @@ export interface Conversation {
   id: string;
   clinicId: string;
   title: string;
+  userName?: string;
+  userEmail?: string;
   messageCount: number;
   lastMessageAt: string;
 }

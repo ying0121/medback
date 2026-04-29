@@ -147,13 +147,18 @@ export default function Dashboard() {
                       : "hover:bg-muted"
                   )}
                 >
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="font-medium truncate">{c.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {c.acronym} · {c.city} · {clinicConversationCounts[c.id] ?? 0} conversations
+                      {c.acronym} · {c.city}
                     </div>
                   </div>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-muted-foreground">
+                      {clinicConversationCounts[c.id] ?? 0}
+                    </span>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  </div>
                 </button>
               ))}
               {filteredClinics.length === 0 && (
@@ -187,6 +192,10 @@ export default function Dashboard() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm font-medium truncate">{cv.title}</div>
                     <span className="text-xs text-muted-foreground shrink-0">{cv.messageCount} msgs</span>
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1 truncate">
+                    {cv.userName || "Unknown user"}
+                    {cv.userEmail ? ` · ${cv.userEmail}` : ""}
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
                     {new Date(cv.lastMessageAt).toLocaleString()}
