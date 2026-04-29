@@ -35,6 +35,15 @@ function mapLifecycleEvent(statusValue) {
   return "status_update";
 }
 
+function escapeForXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 module.exports = {
   // GET /api/twilio/voice/token?identity=xxx
   // Returns a Twilio Access Token so the browser can use the Voice SDK.
@@ -69,6 +78,80 @@ module.exports = {
       console.log(`[Twilio][twiml] patient browser → doctor ${doctorPhoneNumber}`);
       res.type("text/xml");
       return res.send(twiml);
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  // POST /api/twilio/message/twiml
+  // Twilio calls this for inbound message webhooks and expects TwiML XML.
+  async messageTwiml(req, res, next) {
+    try {
+      const incomingBody = String(req.body?.Body || "").trim();
+      const fallbackReply = process.env.TWILIO_DEFAULT_SMS_REPLY || "Thanks! We received your message.";
+      const safeIncomingText = escapeForXml(incomingBody);
+      const replyText = safeIncomingText
+        ? `We received: ${safeIncomingText}`
+        : escapeForXml(fallbackReply);
+
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][message:twiml] from=${req.body?.From || "-"} bodyLength=${incomingBody.length}`);
+      res.type("text/xml");
+      return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${replyText}</Message></Response>`);
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  // POST /api/twilio/voice/fallback
+  // Fallback webhook when Twilio cannot execute the primary Voice URL.
+  async voiceFallbackTwiml(req, res, next) {
+    try {
+      const message = escapeForXml(
+        process.env.TWILIO_VOICE_FALLBACK_MESSAGE || "We are unable to connect your call right now. Please try again later."
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][voice:fallback] callSid=${req.body?.CallSid || "-"} from=${req.body?.From || "-"}`);
+      res.type("text/xml");
+      return res.send(
+        `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">${message}</Say><Hangup/></Response>`
+      );
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  // POST /api/twilio/message/fallback
+  // Fallback webhook when Twilio cannot execute the primary Messaging URL.
+  async messageFallbackTwiml(req, res, next) {
+    try {
+      const message = escapeForXml(
+        process.env.TWILIO_MESSAGE_FALLBACK_REPLY || "Sorry, we could not process your message. Please try again shortly."
+      );
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][message:fallback] messageSid=${req.body?.MessageSid || "-"} from=${req.body?.From || "-"}`);
+      res.type("text/xml");
+      return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${message}</Message></Response>`);
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  // POST /api/twilio/message/status-callback
+  // Delivery status callback for outbound SMS/MMS.
+  async messageStatusCallback(req, res, next) {
+    try {
+      const messageSid = String(req.body?.MessageSid || req.body?.SmsSid || "").trim();
+      const messageStatus = String(req.body?.MessageStatus || req.body?.SmsStatus || "unknown").trim();
+      const errorCode = String(req.body?.ErrorCode || "").trim() || "-";
+      const to = req.body?.To || "-";
+      const from = req.body?.From || "-";
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[Twilio][message:status] messageSid=${messageSid || "-"} status=${messageStatus} errorCode=${errorCode} from=${from} to=${to}`
+      );
+      return res.sendStatus(200);
     } catch (err) {
       return next(err);
     }

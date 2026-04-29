@@ -2,6 +2,10 @@ const express = require("express");
 const {
   getVoiceToken,
   voiceTwiml,
+  messageTwiml,
+  voiceFallbackTwiml,
+  messageFallbackTwiml,
+  messageStatusCallback,
   startCallSession,
   callStatusWebhook,
   stopCall,
@@ -14,6 +18,10 @@ const router = express.Router();
 router.get("/voice/token", getVoiceToken);
 router.post("/voice/token", getVoiceToken);
 router.post("/voice/twiml", voiceTwiml);
+router.post("/voice/fallback", voiceFallbackTwiml);
+router.post("/message/twiml", messageTwiml);
+router.post("/message/fallback", messageFallbackTwiml);
+router.post("/message-status", messageStatusCallback);
 
 // Call lifecycle
 router.post("/call-status", callStatusWebhook);
