@@ -4,7 +4,8 @@ const {
   trackCallStatus,
   setCallMuted,
   generateAccessToken,
-  buildOutboundDialTwiml
+  buildOutboundDialTwiml,
+  isE164
 } = require("../services/twilioService");
 
 function normalizeIdentity(value) {
@@ -44,6 +45,11 @@ function escapeForXml(value) {
     .replace(/'/g, "&apos;");
 }
 
+function buildSafeVoiceResponse(message) {
+  const escaped = escapeForXml(message);
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">${escaped}</Say><Hangup/></Response>`;
+}
+
 module.exports = {
   // GET /api/twilio/voice/token?identity=xxx
   // Returns a Twilio Access Token so the browser can use the Voice SDK.
@@ -65,22 +71,69 @@ module.exports = {
 
   // POST /api/twilio/voice/twiml
   // Twilio calls this (TwiML App Voice URL) when the patient's browser connects.
-  // Returns TwiML that dials the doctor's phone number.
-  async voiceTwiml(req, res, next) {
-    try {
-      const doctorPhoneNumber =
-        req.body?.To ||
-        req.query?.To ||
-        process.env.EXAMPLE_DOCTOR_PHONE_NUMBER ||
-        null;
-      const twiml = buildOutboundDialTwiml({ doctorPhoneNumber });
+  // CRITICAL: Must ALWAYS return valid XML. HTTP 5xx causes Twilio to play
+  // "An application error has occurred!" and hang up immediately.
+  async voiceTwiml(req, res) {
+    // When using the Twilio Voice SDK, Twilio POSTs to this URL with:
+    //   To   = whatever the frontend passed in device.connect({ params: { To: "..." } })
+    //   From = the browser identity string
+    // If the frontend did NOT pass a phone number as To (e.g. it passed a
+    // TwiML App SID or nothing), we fall back to EXAMPLE_DOCTOR_PHONE_NUMBER.
+    const rawTo = String(req.body?.To || req.query?.To || "").trim();
+    const doctorPhoneNumber = isE164(rawTo)
+      ? rawTo
+      : String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
+
+    // eslint-disable-next-line no-console
+    console.log(`[Twilio][twiml] rawTo=${rawTo || "-"} resolved doctorPhone=${doctorPhoneNumber || "-"}`);
+
+    if (!doctorPhoneNumber) {
       // eslint-disable-next-line no-console
-      console.log(`[Twilio][twiml] patient browser → doctor ${doctorPhoneNumber}`);
+      console.error("[Twilio][twiml] no valid doctor phone number — check EXAMPLE_DOCTOR_PHONE_NUMBER in .env");
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse("We are sorry, the call could not be connected. Please try again later."));
+    }
+
+    try {
+      const dialActionUrl = `${getServerUrl(req)}/api/twilio/voice/dial-result`;
+      const twiml = buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl });
       res.type("text/xml");
       return res.send(twiml);
     } catch (err) {
-      return next(err);
+      // eslint-disable-next-line no-console
+      console.error(`[Twilio][twiml] error: ${err.message}`);
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse("We are sorry, the call could not be connected. Please try again later."));
     }
+  },
+
+  // POST /api/twilio/voice/dial-result
+  // Twilio posts here after <Dial> ends with DialCallStatus.
+  async voiceDialResultTwiml(req, res) {
+    const dialStatus = String(req.body?.DialCallStatus || "").toLowerCase();
+    const dialCallSid = String(req.body?.DialCallSid || "").trim();
+    const answeredBy = String(req.body?.AnsweredBy || "").trim() || "-";
+    const dialDuration = String(req.body?.DialCallDuration || "").trim() || "0";
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Twilio][dial:result] dialCallSid=${dialCallSid || "-"} status=${dialStatus || "-"} answeredBy=${answeredBy} duration=${dialDuration}s`
+    );
+
+    let message = null;
+    if (dialStatus === "busy") {
+      message = "The doctor is currently unavailable. Please try again shortly.";
+    } else if (dialStatus === "no-answer") {
+      message = "The doctor did not answer. Please try again later.";
+    } else if (dialStatus === "failed" || dialStatus === "canceled") {
+      message = "We could not complete the call. Please try again later.";
+    }
+
+    res.type("text/xml");
+    if (message) {
+      return res.send(buildSafeVoiceResponse(message));
+    }
+    return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
   },
 
   // POST /api/twilio/message/twiml
@@ -211,7 +264,7 @@ module.exports = {
 
       // eslint-disable-next-line no-console
       console.log(
-        `[Twilio][event:${lifecycle}] callSid=${callSid || "-"} status=${String(callStatus || statusCallbackEvent || "-")} from=${req.body?.From || "-"} to=${req.body?.To || "-"}`
+        `[Twilio][event:${lifecycle}] callSid=${callSid || "-"} status=${String(callStatus || statusCallbackEvent || "-")} from=${req.body?.From || "-"} to=${req.body?.To || "-"} direction=${req.body?.Direction || "-"} parentCallSid=${req.body?.ParentCallSid || "-"} errorCode=${req.body?.ErrorCode || "-"}`
       );
 
       return res.sendStatus(200);

@@ -2,6 +2,7 @@ const express = require("express");
 const {
   getVoiceToken,
   voiceTwiml,
+  voiceDialResultTwiml,
   messageTwiml,
   voiceFallbackTwiml,
   messageFallbackTwiml,
@@ -18,6 +19,7 @@ const router = express.Router();
 router.get("/voice/token", getVoiceToken);
 router.post("/voice/token", getVoiceToken);
 router.post("/voice/twiml", voiceTwiml);
+router.post("/voice/dial-result", voiceDialResultTwiml);
 router.post("/voice/fallback", voiceFallbackTwiml);
 router.post("/message/twiml", messageTwiml);
 router.post("/message/fallback", messageFallbackTwiml);

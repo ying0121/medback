@@ -7,6 +7,10 @@ const alertPhoneNumber = process.env.ALERT_PHONE_NUMBER || "";
 const twilioCallSessions = new Map(); // callSid -> { callSid, identity, isMuted, status }
 let client = null;
 
+function isE164(phone) {
+  return /^\+[1-9]\d{6,14}$/.test(String(phone || "").trim());
+}
+
 function mapLifecycleEvent(statusValue) {
   const status = String(statusValue || "").toLowerCase();
   if (["in-progress", "answered"].includes(status)) return "accepted";
@@ -160,13 +164,22 @@ function generateAccessToken(identity) {
 }
 
 // Returns TwiML that dials the doctor's phone when patient's browser calls.
-function buildOutboundDialTwiml({ doctorPhoneNumber }) {
+function buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl = null }) {
   const target =
     String(doctorPhoneNumber || "").trim() ||
     String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
   if (!target) throw new Error("Doctor phone number is required.");
   const twiml = new twilio.twiml.VoiceResponse();
-  const dial = twiml.dial({ callerId: twilioPhoneNumber || undefined, answerOnBridge: true });
+  const dialOptions = {
+    callerId: twilioPhoneNumber || undefined,
+    answerOnBridge: true,
+    timeout: 30
+  };
+  if (dialActionUrl) {
+    dialOptions.action = dialActionUrl;
+    dialOptions.method = "POST";
+  }
+  const dial = twiml.dial(dialOptions);
   dial.number(target);
   return twiml.toString();
 }
@@ -211,5 +224,6 @@ module.exports = {
   trackCallStatus,
   setCallMuted,
   generateAccessToken,
-  buildOutboundDialTwiml
+  buildOutboundDialTwiml,
+  isE164
 };
