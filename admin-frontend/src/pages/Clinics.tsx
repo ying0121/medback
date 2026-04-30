@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Pencil, Plus, Trash2, Building2 } from "lucide-react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,14 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { listClinics, createClinic, updateClinic, deleteClinic, type Clinic } from "@/lib/api";
+import {
+  listClinics,
+  createClinic,
+  updateClinic,
+  deleteClinic,
+  syncClinicsFromExternalApi,
+  type Clinic
+} from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
 
@@ -30,6 +37,7 @@ export default function Clinics() {
   const [editing, setEditing] = useState<Clinic | null>(null);
   const [form, setForm] = useState<ClinicForm>(EMPTY);
   const [confirmDelete, setConfirmDelete] = useState<Clinic | null>(null);
+  const [syncingExternal, setSyncingExternal] = useState(false);
 
   const refresh = () => listClinics().then(setData);
   useEffect(() => { refresh(); }, []);
@@ -61,6 +69,21 @@ export default function Clinics() {
     toast.success("Clinic deleted");
     setConfirmDelete(null);
     refresh();
+  };
+
+  const onSyncExternal = async () => {
+    try {
+      setSyncingExternal(true);
+      const result = await syncClinicsFromExternalApi();
+      toast.success(
+        `Clinics synced. Created ${result.created}, skipped ${result.skipped}.`
+      );
+      refresh();
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to sync clinics from external API.");
+    } finally {
+      setSyncingExternal(false);
+    }
   };
 
   const columns: Column<Clinic>[] = [
@@ -101,7 +124,17 @@ export default function Clinics() {
       <PageHeader
         title="Clinic Management"
         description="Add, update and remove clinics in the network."
-        actions={<Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground"><Plus className="h-4 w-4 mr-1" /> Add clinic</Button>}
+        actions={(
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={onSyncExternal} disabled={syncingExternal}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${syncingExternal ? "animate-spin" : ""}`} />
+              {syncingExternal ? "Syncing..." : "Import from API"}
+            </Button>
+            <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
+              <Plus className="h-4 w-4 mr-1" /> Add clinic
+            </Button>
+          </div>
+        )}
       />
 
       <DataTable

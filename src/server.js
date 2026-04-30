@@ -2,15 +2,10 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 require("dotenv").config();
 const app = require("./app");
-const {
-  processIncomingMessage,
-  resolveConversationOnConnect
-} = require("./services/chatService");
+const { processIncomingMessage, resolveConversationOnConnect } = require("./services/chatService");
 const { connectDatabase, syncDatabase } = require("./db");
-const configuredWsPath = process.env.WEBSOCKET_CHAT_URL || "/ws";
-const websocketPath = configuredWsPath.startsWith("/")
-  ? configuredWsPath
-  : `/${configuredWsPath}`;
+const configuredWsPath = process.env.WEBSOCKET_CHAT_URL || "/ws/chat";
+const websocketPath = configuredWsPath.startsWith("/") ? configuredWsPath : `/${configuredWsPath}`;
 
 const C = {
   reset: "\x1b[0m",
@@ -35,7 +30,64 @@ function logError(message) {
 }
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: websocketPath });
+
+const allowedWsOrigins = process.env.ALLOWED_WS_ORIGINS ? process.env.ALLOWED_WS_ORIGINS.split(",").map((o) => o.trim().toLowerCase()) : [];
+
+// Interval in ms between server-side pings to keep the connection alive
+// through load balancers and reverse proxies that kill idle connections.
+const WS_PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS) || 25000;
+const WS_MAX_MISSED_PONGS = Number(process.env.WS_MAX_MISSED_PONGS) || 3;
+
+const wss = new WebSocketServer({
+  server,
+  path: websocketPath,   // native path filter — most reliable, no manual rejection needed
+  verifyClient({ origin, req }, done) {
+    if (!origin) {
+      logInfo(`WebSocket handshake — no origin (server-to-server), allowing. path=${req?.url || "-"}`);
+      return done(true);
+    }
+    if (allowedWsOrigins.length === 0) {
+      logInfo(`WebSocket handshake — no origin restriction, allowing: ${origin} path=${req?.url || "-"}`);
+      return done(true);
+    }
+    const normalize = (url) => url.replace(/\/$/, "").toLowerCase();
+
+    const ok = allowedWsOrigins.some(
+      (allowed) => normalize(origin) === normalize(allowed)
+    );
+    if (ok) {
+      logInfo(`WebSocket handshake — origin allowed: ${origin}`);
+    } else {
+      logError(`WebSocket handshake — origin REJECTED: ${origin} (allowed: ${allowedWsOrigins.join(", ")})`);
+    }
+    return done(ok, ok ? undefined : 403, ok ? undefined : "Origin not allowed");
+  }
+});
+
+// Application-level heartbeat: sends {"type":"ping"} as a regular JSON data
+// frame so the proxy/load balancer sees traffic and does not kill idle connections.
+// We do NOT terminate clients that miss pongs — the connection stays alive until
+// the OS/proxy closes it naturally. Frontend should respond with {"type":"pong"}.
+const heartbeat = setInterval(() => {
+  wss.clients.forEach((socket) => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+
+    if (socket.isAlive === false) {
+      socket.missedPongs += 1;
+
+      if (socket.missedPongs >= WS_MAX_MISSED_PONGS) {
+        console.log("Terminating dead socket");
+        return socket.terminate();
+      }
+    }
+
+    socket.isAlive = false;
+
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "ping" }));
+    }
+  });
+}, WS_PING_INTERVAL_MS);
 
 function sendJson(socket, payload) {
   if (socket.readyState === WebSocket.OPEN) {
@@ -73,8 +125,11 @@ function createWsPayload({
   };
 }
 
-wss.on("connection", (socket) => {
-  logSuccess("WebSocket client connected successfully.");
+wss.on("connection", (socket, req) => {
+  logSuccess(`WebSocket client connected successfully. path=${req?.url || "-"}`);
+
+  socket.isAlive = true;
+  socket.missedPongs = 0;
 
   socket.on("message", async (raw) => {
     let parsed;
@@ -95,9 +150,11 @@ wss.on("connection", (socket) => {
 
     try {
       const methodType = parsed.type;
-      const supportedTypes = ["connect", "chat", "voice"];
+
+      const supportedTypes = ["connect", "chat", "voice", "pong"];
       const isVoice = methodType === "voice";
       const isConnect = methodType === "connect";
+      const isPong = methodType === "pong";
       const isTopic = parsed.isTopic ? parsed.isTopic : 0;
       const hasChatMessage = typeof parsed.message === "string" && parsed.message.trim().length > 0;
       const hasVoiceAudio = typeof parsed.audio === "string" && parsed.audio.trim().length > 0;
@@ -111,6 +168,10 @@ wss.on("connection", (socket) => {
           })
         });
         return;
+      }
+
+      if (isPong) {
+        return
       }
 
       if (isConnect) {
@@ -221,12 +282,18 @@ wss.on("connection", (socket) => {
 
   socket.on("close", (code, reasonBuffer) => {
     const reason = reasonBuffer?.toString() || "No reason provided";
-    logInfo(`WebSocket client disconnected (code: ${code}, reason: ${reason})`);
+    const msg = `WebSocket client disconnected (code: ${code}, reason: ${reason})`;
+    if (code === 1000 || code === 1001) logInfo(msg);
+    else logError(msg);
   });
 });
 
 wss.on("error", (err) => {
   logError(`WebSocket server error: ${err.message}`);
+});
+
+wss.on("close", () => {
+  clearInterval(heartbeat);
 });
 
 connectDatabase()

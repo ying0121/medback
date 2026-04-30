@@ -113,6 +113,19 @@ export async function listClinics() {
     return delay(clinics);
   }
 }
+export async function syncClinicsFromExternalApi() {
+  const data = await request<{
+    success: boolean;
+    sourceCount: number;
+    created: number;
+    updated: number;
+    skipped: number;
+  }>("/api/admin/dashboard/clinics/sync-external", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+  return data;
+}
 export const createClinic = (c: Omit<Clinic, "id">) => {
   const id = `clinic-${Date.now()}`;
   const created: Clinic = { ...c, id, clinicId: c.clinicId || `CL-${1000 + clinics.length}` };

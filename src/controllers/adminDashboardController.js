@@ -1,3 +1,4 @@
+const axios = require("axios");
 const { Op } = require("sequelize");
 const { Conversation, Message, User, Clinic } = require("../db");
 
@@ -259,9 +260,76 @@ async function getStats(req, res, next) {
   }
 }
 
+function sanitizeText(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed.length ? trimmed : null;
+}
+
+async function syncClinicsFromExternalApi(req, res, next) {
+  try {
+    const endpoint = "https://pro.conectorhealth.com/api/setting/getconectorcliniclist";
+
+    const response = await axios.post(endpoint, {});
+    const rows = Array.isArray(response.data)
+      ? response.data
+      : Array.isArray(response.data?.data)
+        ? response.data.data
+        : Array.isArray(response.data?.items)
+          ? response.data.items
+          : null;
+
+    if (!rows) {
+      return res.status(502).json({ error: "External clinic API did not return an array." });
+    }
+
+    let created = 0;
+    let skipped = 0;
+
+    for (const item of rows) {
+      const externalClinicId = Number(item?.id);
+      if (!Number.isFinite(externalClinicId) || externalClinicId <= 0) {
+        skipped += 1;
+        continue;
+      }
+
+      const payload = {
+        clinicId: externalClinicId,
+        name: sanitizeText(item?.name),
+        address1: sanitizeText(item?.address1),
+        address2: sanitizeText(item?.address2),
+        city: sanitizeText(item?.city),
+        state: sanitizeText(item?.state),
+        zip: sanitizeText(item?.zip),
+        phone: sanitizeText(item?.phone),
+        email: sanitizeText(item?.email),
+        web: sanitizeText(item?.web),
+        portal: sanitizeText(item?.portal)
+      };
+
+      const existing = await Clinic.findOne({ where: { clinicId: externalClinicId } });
+      if (existing) {
+      } else {
+        await Clinic.create(payload);
+        created += 1;
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      sourceCount: rows.length,
+      created,
+      skipped
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 module.exports = {
   listClinics,
   listConversationsByClinic,
   listConversationMessages,
-  getStats
+  getStats,
+  syncClinicsFromExternalApi
 };

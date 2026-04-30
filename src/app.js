@@ -16,6 +16,29 @@ const errorHandler = require("./middlewares/errorHandler");
 
 const app = express();
 
+// Build allowed origins from env. Twilio webhook calls come with no Origin header
+// so they always pass regardless of this list.
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim().replace(/\/$/, "")) : [];
+
+function isOriginAllowed(origin) {
+  if (!origin) return true; // server-to-server (Twilio webhooks, curl, etc.)
+  if (ALLOWED_ORIGINS.length === 0) return true; // no restriction → open (dev mode)
+  return ALLOWED_ORIGINS.some((allowed) => origin === allowed);
+}
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (isOriginAllowed(origin)) return callback(null, true);
+    return callback(new Error(`CORS: origin not allowed — ${origin}`));
+  },
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+};
+
+// Handle OPTIONS preflight for all routes (must come before route definitions).
+app.options("/{*path}", cors(corsOptions));
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -34,16 +57,7 @@ app.use(
     },
   })
 );
-app.use(
-  cors({
-    origin(origin, callback) {
-      // Allow non-browser clients (no Origin header) and dynamically allow browser origins.
-      if (!origin) return callback(null, true);
-      return callback(null, origin);
-    },
-    credentials: true
-  })
-);
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(morgan("dev"));
