@@ -16,14 +16,19 @@ async function createConversation({ clinicId, userInfo }) {
   return created.id;
 }
 
-async function ensureConversationExists(conversationId) {
+async function ensureConversationExists(conversationId, { clinicId = null, userInfo = "" } = {}) {
   if (!conversationId) {
     throw new Error("conversationId is required.");
   }
 
   const existing = await Conversation.findByPk(conversationId);
   if (!existing) {
-    throw new Error("Conversation not found.");
+    if (!clinicId || !userInfo) {
+      throw new Error("Conversation not found. clinicId and userInfo are required to create a new conversation.");
+    }
+
+    const createdConversationId = await createConversation({ clinicId, userInfo });
+    return Conversation.findByPk(createdConversationId);
   }
 
   return existing;
@@ -31,7 +36,7 @@ async function ensureConversationExists(conversationId) {
 
 async function resolveConversationOnConnect({ conversationId, clinicId, userInfo }) {
   if (conversationId) {
-    const existing = await ensureConversationExists(conversationId);
+    const existing = await ensureConversationExists(conversationId, { clinicId, userInfo });
     return existing.id;
   }
 

@@ -1,4 +1,4 @@
-# Chatbot Backend (Express + MySQL + WebSocket)
+# Chatbot Backend (Express + MySQL + Socket.IO)
 
 This backend includes:
 - Express.js REST API
@@ -6,7 +6,7 @@ This backend includes:
 - OpenAI integration for chatbot responses
 - Twilio integration for SMS alerts
 - Nodemailer integration for email alerts
-- WebSocket server for realtime chat updates
+- Socket.IO server for realtime chat updates
 
 ## 1) Setup
 
@@ -27,13 +27,13 @@ This backend includes:
 - `POST /api/notifications/alert`
   - body: `{ "subject": "Alert", "message": "Something happened" }`
 
-## 3) WebSocket
+## 3) Socket.IO
 
-- URL: `ws://localhost:4000/ws`
-- Send:
-  - `{ "type": "chat", "text": "Hello", "conversationId": 1 }`
-- Receive:
-  - `{ "type": "chat_response", "conversationId": 1, "reply": "..." }`
+- Endpoint path: `/ws/chat` (configurable with `SOCKET_IO_PATH`)
+- Client emits `message` event with payload:
+  - `{ "type": "chat", "message": "Hello", "conversationId": 1 }`
+- Server responds on `message` event with payload:
+  - `{ "type": "chat", "status": "success", "response": "..." }`
 
 ## Notes
 
