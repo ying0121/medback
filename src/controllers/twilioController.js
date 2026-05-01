@@ -1,3 +1,4 @@
+const twilio = require("twilio");
 const {
   initiateCall,
   endCall,
@@ -7,6 +8,75 @@ const {
   buildOutboundDialTwiml,
   isE164
 } = require("../services/twilioService");
+const { generateAssistantReply, detectInboundSpeechLanguage } = require("../services/openaiService");
+
+/** Per-call OpenAI chat history for inbound PSTN → voice bot (in-memory). */
+const inboundVoiceSessions = new Map();
+const INBOUND_SESSION_TTL_MS = 35 * 60 * 1000;
+const INBOUND_MAX_MESSAGES = 24;
+
+function getInboundVoiceSession(callSid) {
+  const now = Date.now();
+  let s = inboundVoiceSessions.get(callSid);
+  if (!s || s.expiresAt < now) {
+    s = {
+      messages: [],
+      expiresAt: now + INBOUND_SESSION_TTL_MS,
+      speechBcp47:
+        String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
+      sayVoiceName:
+        String(process.env.TWILIO_INBOUND_DEFAULT_SAY_VOICE || "").trim() || "Polly.Joanna-Neural"
+    };
+    inboundVoiceSessions.set(callSid, s);
+  }
+  s.expiresAt = now + INBOUND_SESSION_TTL_MS;
+  return s;
+}
+
+function pushInboundVoiceMessage(callSid, role, content) {
+  const s = getInboundVoiceSession(callSid);
+  s.messages.push({ role, content });
+  if (s.messages.length > INBOUND_MAX_MESSAGES) {
+    s.messages.splice(0, s.messages.length - INBOUND_MAX_MESSAGES);
+  }
+}
+
+function sayVoice() {
+  return process.env.TWILIO_SAY_VOICE || "alice";
+}
+
+/** Twilio <Say> options: Polly/Google voices need language for multilingual TTS. */
+function sayParamsForInbound(session) {
+  const voice = session?.sayVoiceName || "Polly.Joanna-Neural";
+  const v = String(voice).toLowerCase();
+  const opts = { voice };
+  if (v.startsWith("polly.") || v.startsWith("google.")) {
+    opts.language = session?.speechBcp47 || "en-US";
+  }
+  return opts;
+}
+
+function gatherOptsInbound(session, gatherUrl) {
+  const opts = {
+    input: "speech",
+    action: gatherUrl,
+    method: "POST",
+    speechTimeout: process.env.TWILIO_INBOUND_SPEECH_TIMEOUT || "auto",
+    language: session?.speechBcp47 || "en-US",
+    speechModel: process.env.TWILIO_INBOUND_SPEECH_MODEL || "phone_call",
+    profanityFilter: "false"
+  };
+  const hints = String(process.env.TWILIO_INBOUND_SPEECH_HINTS || "").trim();
+  if (hints) opts.hints = hints;
+  return opts;
+}
+
+function truncateForPhoneSay(text, maxChars) {
+  const s = String(text || "").trim();
+  if (!s) return "I could not generate a reply.";
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, Math.max(0, maxChars - 3))}...`;
+}
 
 function normalizeIdentity(value) {
   const identity = String(value || "")
@@ -147,6 +217,101 @@ module.exports = {
       return res.send(buildSafeVoiceResponse(message));
     }
     return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  },
+
+  // POST /api/twilio/voice/inbound
+  // Configure your Twilio phone number "A call comes in" → Webhook → this URL (POST).
+  // Greets the caller and collects speech; each utterance is sent to OpenAI.
+  async inboundVoiceWebhook(req, res) {
+    const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
+    const greeting =
+      process.env.TWILIO_INBOUND_VOICE_GREETING ||
+      "Hello. This is our automated assistant. You may speak in any language. After the tone, ask your question.";
+    const callSid = String(req.body?.CallSid || "").trim();
+    const session = callSid ? getInboundVoiceSession(callSid) : null;
+    try {
+      const vr = new twilio.twiml.VoiceResponse();
+      if (session) {
+        vr.say(sayParamsForInbound(session), greeting);
+        vr.gather(gatherOptsInbound(session, gatherUrl));
+      } else {
+        vr.say({ voice: sayVoice() }, greeting);
+        vr.gather({
+          input: "speech",
+          action: gatherUrl,
+          method: "POST",
+          speechTimeout: process.env.TWILIO_INBOUND_SPEECH_TIMEOUT || "auto",
+          language: "en-US",
+          speechModel: process.env.TWILIO_INBOUND_SPEECH_MODEL || "phone_call",
+          profanityFilter: "false"
+        });
+      }
+      vr.say(session ? sayParamsForInbound(session) : { voice: sayVoice() }, "I did not hear anything. Goodbye.");
+      vr.hangup();
+      res.type("text/xml");
+      return res.send(vr.toString());
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[Twilio][inbound] greeting error: ${err.message}`);
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse("Sorry, we could not start the call. Goodbye."));
+    }
+  },
+
+  // POST /api/twilio/voice/inbound-gather
+  // Twilio posts here after speech recognition (Gather input=speech).
+  async inboundVoiceGather(req, res) {
+    const callSid = String(req.body?.CallSid || "").trim();
+    const speechResult = String(req.body?.SpeechResult || "").trim();
+    const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
+    const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
+
+    if (!callSid) {
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse("Goodbye."));
+    }
+
+    const session = getInboundVoiceSession(callSid);
+
+    try {
+      const vr = new twilio.twiml.VoiceResponse();
+
+      if (!speechResult) {
+        vr.say(sayParamsForInbound(session), "Sorry, I did not catch that. Please try again.");
+      } else {
+        const detected = await detectInboundSpeechLanguage(speechResult);
+        session.speechBcp47 = detected.twilio_bcp47;
+        session.sayVoiceName = detected.twilio_voice;
+
+        pushInboundVoiceMessage(callSid, "user", speechResult);
+        const languageConstraint = [
+          `The caller is speaking ${detected.english_name} (BCP-47 ${detected.twilio_bcp47}, ISO ${detected.iso_639_1}).`,
+          "You MUST answer ONLY in that same language.",
+          "Use natural wording and the appropriate writing system for speech (no unnecessary English)."
+        ].join(" ");
+
+        const reply = await generateAssistantReply(session.messages, { languageConstraint });
+        const spoken = truncateForPhoneSay(reply, maxReplyChars);
+        pushInboundVoiceMessage(callSid, "assistant", spoken);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[Twilio][inbound] callSid=${callSid} lang=${detected.twilio_bcp47} voice=${detected.twilio_voice} userLen=${speechResult.length} replyLen=${spoken.length}`
+        );
+        vr.say(sayParamsForInbound(session), spoken);
+      }
+
+      vr.gather(gatherOptsInbound(session, gatherUrl));
+      vr.say(sayParamsForInbound(session), "Thank you for calling. Goodbye.");
+      vr.hangup();
+
+      res.type("text/xml");
+      return res.send(vr.toString());
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[Twilio][inbound-gather] error: ${err.message}`);
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse("Sorry, something went wrong. Goodbye."));
+    }
   },
 
   // POST /api/twilio/message/twiml

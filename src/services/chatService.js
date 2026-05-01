@@ -60,7 +60,7 @@ async function buildContextPrompts(clinicId) {
 
   const clinicPrompt = clinic
     ? [
-        "Clinic Information (But do not share any contact information including phone, fax or tel number, email, address, web and portal URL):",
+        "Clinic Information (But do not share any contact information including clinic id, phone, fax or tel number, email, address, web and portal URL):",
         `- Clinic ID: ${clinic.clinicId || clinicId}`,
         `- Name: ${clinic.name || ""}`,
         `- Acronym: ${clinic.acronym || ""}`,

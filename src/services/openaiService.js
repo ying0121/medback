@@ -10,6 +10,22 @@ const openaiTtsModel = process.env.OPENAI_TTS_MODEL || "gpt-5.4-mini-tts";
 const openaiTtsVoice = process.env.OPENAI_TTS_VOICE || "alloy";
 const openaiTtsFormat = process.env.OPENAI_TTS_FORMAT || "mp3";
 const openaiMaxCompletionTokens = Number(process.env.OPENAI_MAX_COMPLETION_TOKENS || 700);
+const inboundLanguageDetectionSystemPrompt = 
+  [
+    process.env.OPENAI_SYSTEM_PROMPT,
+    "You are a language-detection helper for a phone voice assistant.",
+    "Your only job: infer the human language of the caller transcript (any script).",
+    "Output JSON only, no markdown, exactly this shape:",
+    '{"iso_639_1":"en","english_name":"English","twilio_bcp47":"en-US","twilio_voice":"Polly.Joanna-Neural"}',
+    "Fields:",
+    "- iso_639_1: two-letter ISO 639-1 code.",
+    "- english_name: language name in English (e.g. Korean, Japanese).",
+    "- twilio_bcp47: one BCP-47 locale for Twilio <Gather language> (single value).",
+    "- twilio_voice: one Twilio Amazon Polly voice id matching that locale, e.g.",
+    "  en-US Polly.Joanna-Neural, ko-KR Polly.Seoyeon-Neural, ja-JP Polly.Mizuki, zh-CN Polly.Zhiyu,",
+    "  es-ES Polly.Lucia-Neural, fr-FR Polly.Lea-Neural, de-DE Polly.Vicki-Neural, pt-BR Polly.Camila-Neural,",
+    "  hi-IN Polly.Aditi, ar-AE Polly.Zeina. If unsure, pick the closest supported Polly Neural voice."
+  ].join(" ");
 
 const client = new OpenAI({ apiKey: openaiApiKey });
 
@@ -40,6 +56,12 @@ async function generateAssistantReply(messages, options = {}) {
       content: knowledgePrompt
     });
   }
+  if (options.languageConstraint) {
+    systemMessages.push({
+      role: "system",
+      content: String(options.languageConstraint)
+    });
+  }
 
   const completion = await client.chat.completions.create({
     model,
@@ -52,6 +74,53 @@ async function generateAssistantReply(messages, options = {}) {
   });
 
   return completion.choices?.[0]?.message?.content || "No response generated.";
+}
+
+/**
+ * Detect caller language from transcribed speech (Twilio SpeechResult or any text).
+ * Returns Twilio-friendly BCP-47 + Amazon Polly voice for <Say> / <Gather language>.
+ */
+async function detectInboundSpeechLanguage(userText) {
+  const fallback = {
+    iso_639_1: "en",
+    english_name: "English",
+    twilio_bcp47: "en-US",
+    twilio_voice: "Polly.Joanna-Neural"
+  };
+  if (!openaiApiKey || !String(userText || "").trim()) {
+    return fallback;
+  }
+
+  const completion = await client.chat.completions.create({
+    model: openaiModel,
+    temperature: 0,
+    max_completion_tokens: 200,
+    messages: [
+      {
+        role: "system",
+        content: defaultSystemPrompt
+      },
+      {
+        role: "system",
+        content: inboundLanguageDetectionSystemPrompt
+      },
+      { role: "user", content: String(userText).trim().slice(0, 2000) }
+    ]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+    const twilio_bcp47 = String(parsed.twilio_bcp47 || parsed.twilioBcp47 || "").trim();
+    const twilio_voice = String(parsed.twilio_voice || parsed.twilioVoice || "").trim();
+    const english_name = String(parsed.english_name || parsed.englishName || "that language").trim();
+    const iso_639_1 = String(parsed.iso_639_1 || parsed.iso6391 || "en").trim();
+    if (!twilio_bcp47 || !twilio_voice) return fallback;
+    return { iso_639_1, english_name, twilio_bcp47, twilio_voice };
+  } catch {
+    return fallback;
+  }
 }
 
 async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
@@ -202,6 +271,7 @@ module.exports = {
   generateAssistantReply,
   generateVoiceReply,
   detectTwilioIntent,
+  detectInboundSpeechLanguage,
   transcribeAudioBase64,
   generateSpeechFromText
 };

@@ -3,6 +3,8 @@ const {
   getVoiceToken,
   voiceTwiml,
   voiceDialResultTwiml,
+  inboundVoiceWebhook,
+  inboundVoiceGather,
   messageTwiml,
   voiceFallbackTwiml,
   messageFallbackTwiml,
@@ -20,6 +22,8 @@ router.get("/voice/token", getVoiceToken);
 router.post("/voice/token", getVoiceToken);
 router.post("/voice/twiml", voiceTwiml);
 router.post("/voice/dial-result", voiceDialResultTwiml);
+router.post("/voice/inbound", inboundVoiceWebhook);
+router.post("/voice/inbound-gather", inboundVoiceGather);
 router.post("/voice/fallback", voiceFallbackTwiml);
 router.post("/message/twiml", messageTwiml);
 router.post("/message/fallback", messageFallbackTwiml);
