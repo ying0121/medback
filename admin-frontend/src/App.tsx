@@ -12,6 +12,7 @@ import Dashboard from "./pages/Dashboard.tsx";
 import Clinics from "./pages/Clinics.tsx";
 import Users from "./pages/Users.tsx";
 import Training from "./pages/Training.tsx";
+import Calls from "./pages/Calls.tsx";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +30,7 @@ const App = () => (
             <Route path="/clinics" element={<RequireAuth page="clinics"><Clinics /></RequireAuth>} />
             <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
             <Route path="/training" element={<RequireAuth page="training"><Training /></RequireAuth>} />
+            <Route path="/calls" element={<RequireAuth page="calls"><Calls /></RequireAuth>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

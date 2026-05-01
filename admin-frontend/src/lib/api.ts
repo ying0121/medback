@@ -63,6 +63,25 @@ export interface Conversation {
   lastMessageAt: string;
 }
 
+export interface IncomingCall {
+  id: string;
+  callSid: string;
+  phone: string;
+  seconds: number;
+  status?: string | null;
+  createdAt?: string | null;
+}
+
+export interface IncomingCallMessage {
+  id: string;
+  callId: string;
+  audio?: string | null;
+  transcription: string;
+  userType: "bot" | "user";
+  status?: string | null;
+  createdAt?: string | null;
+}
+
 let clinics: Clinic[] = [];
 let users: User[] = [];
 const conversations: Conversation[] = [];
@@ -241,6 +260,21 @@ export async function listMessages(conversationId: string) {
   } catch {
     return delay(messages.filter((m) => m.conversationId === conversationId));
   }
+}
+
+export async function listIncomingCalls(limit = 50) {
+  const data = await request<{ calls: IncomingCall[] }>(
+    `/api/admin/dashboard/calls?limit=${encodeURIComponent(String(limit))}`
+  );
+  return data.calls;
+}
+
+export async function listIncomingCallMessages(callId: string) {
+  const data = await request<{
+    call: IncomingCall;
+    messages: IncomingCallMessage[];
+  }>(`/api/admin/dashboard/calls/${callId}/messages`);
+  return data;
 }
 
 // ---------- Stats ----------

@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Users, Sparkles, LogOut } from "lucide-react";
+import { LayoutDashboard, Building2, Users, Sparkles, PhoneCall, LogOut } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
 import botLogo from "@/assets/bot-logo.png";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ const NAV = [
   { to: "/clinics", label: "Clinics", icon: Building2, key: "clinics" },
   { to: "/users", label: "Users", icon: Users, key: "users" },
   { to: "/training", label: "Training", icon: Sparkles, key: "training" },
+  { to: "/calls", label: "Calls", icon: PhoneCall, key: "calls" },
 ];
 
 export default function AppLayout({ children }: { children: ReactNode }) {

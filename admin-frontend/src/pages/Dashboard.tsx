@@ -74,6 +74,14 @@ export default function Dashboard() {
     () => clinics.filter((c) => c.name.toLowerCase().includes(search.toLowerCase())),
     [clinics, search]
   );
+  const displayMessages = useMemo(
+    () =>
+      [...messages].sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      ),
+    [messages]
+  );
 
   return (
     <div className="p-8 max-w-[1600px] mx-auto">
@@ -219,7 +227,7 @@ export default function Dashboard() {
           </div>
           <ScrollArea className="flex-1 p-4">
             <div className="space-y-3">
-              {messages.map((m) => {
+              {displayMessages.map((m) => {
                 const isUser = m.role === "user";
                 const isVoice = m.type === "voice";
                 const isError = m.status === "error";

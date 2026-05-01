@@ -1,6 +1,6 @@
 const axios = require("axios");
 const { Op } = require("sequelize");
-const { Conversation, Message, User, Clinic } = require("../db");
+const { Conversation, Message, User, Clinic, Call, IncomingMessage } = require("../db");
 
 function detectAudioMimeFromBase64(rawBase64) {
   try {
@@ -326,10 +326,71 @@ async function syncClinicsFromExternalApi(req, res, next) {
   }
 }
 
+async function listIncomingCalls(req, res, next) {
+  try {
+    const limit = Math.min(200, Math.max(1, Number(req.query?.limit) || 50));
+    const rows = await Call.findAll({
+      order: [["createdAt", "DESC"]],
+      limit
+    });
+    const calls = rows.map((row) => ({
+      id: String(row.id),
+      callSid: row.callSid || "",
+      phone: row.phone || "",
+      seconds: Number(row.seconds || 0),
+      status: row.status || null,
+      createdAt: row.createdAt?.toISOString?.() || null
+    }));
+    return res.status(200).json({ calls });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function listIncomingCallMessages(req, res, next) {
+  try {
+    const callId = Number(req.params.callId);
+    if (!callId) return res.status(400).json({ error: "Invalid call id." });
+
+    const call = await Call.findByPk(callId);
+    if (!call) return res.status(404).json({ error: "Call not found." });
+
+    const rows = await IncomingMessage.findAll({
+      where: { callId },
+      order: [["createdAt", "ASC"]]
+    });
+    const messages = rows.map((row) => ({
+      id: String(row.id),
+      callId: String(row.callId),
+      audio: row.audio || null,
+      transcription: row.transcription || "",
+      userType: row.userType,
+      status: row.status || null,
+      createdAt: row.createdAt?.toISOString?.() || null
+    }));
+
+    return res.status(200).json({
+      call: {
+        id: String(call.id),
+        callSid: call.callSid || "",
+        phone: call.phone || "",
+        seconds: Number(call.seconds || 0),
+        status: call.status || null,
+        createdAt: call.createdAt?.toISOString?.() || null
+      },
+      messages
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 module.exports = {
   listClinics,
   listConversationsByClinic,
   listConversationMessages,
   getStats,
-  syncClinicsFromExternalApi
+  syncClinicsFromExternalApi,
+  listIncomingCalls,
+  listIncomingCallMessages
 };

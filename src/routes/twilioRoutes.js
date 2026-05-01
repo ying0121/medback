@@ -5,6 +5,7 @@ const {
   voiceDialResultTwiml,
   inboundVoiceWebhook,
   inboundVoiceGather,
+  inboundVoiceRecordingStatus,
   messageTwiml,
   voiceFallbackTwiml,
   messageFallbackTwiml,
@@ -24,6 +25,7 @@ router.post("/voice/twiml", voiceTwiml);
 router.post("/voice/dial-result", voiceDialResultTwiml);
 router.post("/voice/inbound", inboundVoiceWebhook);
 router.post("/voice/inbound-gather", inboundVoiceGather);
+router.post("/voice/recording-status", inboundVoiceRecordingStatus);
 router.post("/voice/fallback", voiceFallbackTwiml);
 router.post("/message/twiml", messageTwiml);
 router.post("/message/fallback", messageFallbackTwiml);

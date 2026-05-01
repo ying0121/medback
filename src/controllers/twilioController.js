@@ -1,14 +1,21 @@
 const twilio = require("twilio");
+const axios = require("axios");
 const {
   initiateCall,
   endCall,
+  startCallRecording,
   trackCallStatus,
   setCallMuted,
   generateAccessToken,
   buildOutboundDialTwiml,
   isE164
 } = require("../services/twilioService");
-const { generateAssistantReply, detectInboundSpeechLanguage } = require("../services/openaiService");
+const {
+  generateAssistantReply,
+  detectInboundSpeechLanguage,
+  generateSpeechFromText
+} = require("../services/openaiService");
+const { Call, IncomingMessage } = require("../db");
 
 /** Per-call OpenAI chat history for inbound PSTN → voice bot (in-memory). */
 const inboundVoiceSessions = new Map();
@@ -25,7 +32,8 @@ function getInboundVoiceSession(callSid) {
       speechBcp47:
         String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
       sayVoiceName:
-        String(process.env.TWILIO_INBOUND_DEFAULT_SAY_VOICE || "").trim() || "Polly.Joanna-Neural"
+        String(process.env.TWILIO_INBOUND_DEFAULT_SAY_VOICE || "").trim() || "Polly.Joanna-Neural",
+      recordingStarted: false
     };
     inboundVoiceSessions.set(callSid, s);
   }
@@ -76,6 +84,58 @@ function truncateForPhoneSay(text, maxChars) {
   if (!s) return "I could not generate a reply.";
   if (s.length <= maxChars) return s;
   return `${s.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function normalizePhoneForCallRow(fromValue) {
+  const raw = String(fromValue || "").trim();
+  if (!raw) return "unknown";
+  // Twilio client identity (browser) comes as "client:xxx". Keep only caller id.
+  if (raw.startsWith("client:")) return raw.slice(7) || "unknown";
+  return raw;
+}
+
+async function findOrCreateCallBySid({ callSid, from, status = null }) {
+  if (!callSid) return null;
+  let call = await Call.findOne({ where: { callSid } });
+  if (!call) {
+    call = await Call.create({
+      callSid,
+      phone: normalizePhoneForCallRow(from),
+      seconds: 0,
+      status: status || null
+    });
+  }
+  return call;
+}
+
+async function saveIncomingMessageRow({
+  callId,
+  audio = null,
+  transcription = null,
+  userType,
+  status = "success"
+}) {
+  if (!callId) return null;
+  return IncomingMessage.create({
+    callId,
+    audio,
+    transcription,
+    userType,
+    status
+  });
+}
+
+async function fetchRecordingBase64(recordingUrl) {
+  const accountSid = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
+  const authToken = String(process.env.TWILIO_AUTH_TOKEN || "").trim();
+  if (!recordingUrl || !accountSid || !authToken) return null;
+  const mediaUrl = String(recordingUrl).endsWith(".mp3") ? String(recordingUrl) : `${recordingUrl}.mp3`;
+  const response = await axios.get(mediaUrl, {
+    auth: { username: accountSid, password: authToken },
+    responseType: "arraybuffer",
+    timeout: 20000
+  });
+  return Buffer.from(response.data).toString("base64");
 }
 
 function normalizeIdentity(value) {
@@ -228,8 +288,30 @@ module.exports = {
       process.env.TWILIO_INBOUND_VOICE_GREETING ||
       "Hello. This is our automated assistant. You may speak in any language. After the tone, ask your question.";
     const callSid = String(req.body?.CallSid || "").trim();
+    const from = String(req.body?.From || "").trim();
     const session = callSid ? getInboundVoiceSession(callSid) : null;
     try {
+      if (callSid) {
+        await findOrCreateCallBySid({
+          callSid,
+          from,
+          status: String(req.body?.CallStatus || "in-progress")
+        });
+        if (session && session.recordingStarted !== true) {
+          try {
+            const recordingStatusCallback = `${getServerUrl(req)}/api/twilio/voice/recording-status`;
+            const recording = await startCallRecording({ callSid, recordingStatusCallback });
+            session.recordingStarted = true;
+            // eslint-disable-next-line no-console
+            console.log(
+              `[Twilio][recording:start] callSid=${callSid} recordingSid=${recording.recordingSid} status=${recording.status}`
+            );
+          } catch (recordErr) {
+            // eslint-disable-next-line no-console
+            console.error(`[Twilio][recording:start] callSid=${callSid} error=${recordErr.message}`);
+          }
+        }
+      }
       const vr = new twilio.twiml.VoiceResponse();
       if (session) {
         vr.say(sayParamsForInbound(session), greeting);
@@ -262,6 +344,7 @@ module.exports = {
   // Twilio posts here after speech recognition (Gather input=speech).
   async inboundVoiceGather(req, res) {
     const callSid = String(req.body?.CallSid || "").trim();
+    const from = String(req.body?.From || "").trim();
     const speechResult = String(req.body?.SpeechResult || "").trim();
     const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
     const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
@@ -274,11 +357,33 @@ module.exports = {
     const session = getInboundVoiceSession(callSid);
 
     try {
+      const call = await findOrCreateCallBySid({
+        callSid,
+        from,
+        status: String(req.body?.CallStatus || "in-progress")
+      });
       const vr = new twilio.twiml.VoiceResponse();
 
       if (!speechResult) {
         vr.say(sayParamsForInbound(session), "Sorry, I did not catch that. Please try again.");
+        if (call) {
+          await saveIncomingMessageRow({
+            callId: call.id,
+            transcription: null,
+            userType: "user",
+            status: "no-speech-no-audio"
+          });
+        }
       } else {
+        if (call) {
+          await saveIncomingMessageRow({
+            callId: call.id,
+            audio: null, // Twilio <Gather input=\"speech\"> does not provide raw caller audio.
+            transcription: speechResult,
+            userType: "user",
+            status: "success-no-audio"
+          });
+        }
         const detected = await detectInboundSpeechLanguage(speechResult);
         session.speechBcp47 = detected.twilio_bcp47;
         session.sayVoiceName = detected.twilio_voice;
@@ -293,11 +398,28 @@ module.exports = {
         const reply = await generateAssistantReply(session.messages, { languageConstraint });
         const spoken = truncateForPhoneSay(reply, maxReplyChars);
         pushInboundVoiceMessage(callSid, "assistant", spoken);
+        let botAudioBase64 = null;
+        try {
+          const botSpeech = await generateSpeechFromText({ text: spoken });
+          botAudioBase64 = botSpeech.audioBase64 || null;
+        } catch (audioErr) {
+          // eslint-disable-next-line no-console
+          console.error(`[Twilio][inbound] bot audio generation failed: ${audioErr.message}`);
+        }
         // eslint-disable-next-line no-console
         console.log(
           `[Twilio][inbound] callSid=${callSid} lang=${detected.twilio_bcp47} voice=${detected.twilio_voice} userLen=${speechResult.length} replyLen=${spoken.length}`
         );
         vr.say(sayParamsForInbound(session), spoken);
+        if (call) {
+          await saveIncomingMessageRow({
+            callId: call.id,
+            audio: botAudioBase64,
+            transcription: spoken,
+            userType: "bot",
+            status: botAudioBase64 ? "success" : "success-no-audio"
+          });
+        }
       }
 
       vr.gather(gatherOptsInbound(session, gatherUrl));
@@ -311,6 +433,70 @@ module.exports = {
       console.error(`[Twilio][inbound-gather] error: ${err.message}`);
       res.type("text/xml");
       return res.send(buildSafeVoiceResponse("Sorry, something went wrong. Goodbye."));
+    }
+  },
+
+  // POST /api/twilio/voice/recording-status
+  // Twilio recording callback for inbound calls; persists caller audio as base64.
+  async inboundVoiceRecordingStatus(req, res, next) {
+    try {
+      const callSid = String(req.body?.CallSid || "").trim();
+      const recordingSid = String(req.body?.RecordingSid || "").trim();
+      const recordingUrl = String(req.body?.RecordingUrl || "").trim();
+      const recordingStatus = String(req.body?.RecordingStatus || "").trim().toLowerCase();
+      const recordingDuration = Number(req.body?.RecordingDuration || 0);
+      const from = String(req.body?.From || "").trim();
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `[Twilio][recording:status] callSid=${callSid || "-"} recordingSid=${recordingSid || "-"} status=${recordingStatus || "-"} duration=${Number.isFinite(recordingDuration) ? recordingDuration : "-"}s`
+      );
+
+      if (!callSid || !recordingSid) return res.sendStatus(200);
+
+      const call = await findOrCreateCallBySid({
+        callSid,
+        from,
+        status: recordingStatus || null
+      });
+      if (!call) return res.sendStatus(200);
+
+      const existing = await IncomingMessage.findOne({
+        where: {
+          callId: call.id,
+          userType: "user",
+          status: `recording-${recordingSid}`
+        }
+      });
+      if (existing) return res.sendStatus(200);
+
+      let audioBase64 = null;
+      if (recordingStatus === "completed" && recordingUrl) {
+        try {
+          audioBase64 = await fetchRecordingBase64(recordingUrl);
+        } catch (downloadErr) {
+          // eslint-disable-next-line no-console
+          console.error(`[Twilio][recording:download] sid=${recordingSid} error=${downloadErr.message}`);
+        }
+      }
+
+      await saveIncomingMessageRow({
+        callId: call.id,
+        audio: audioBase64,
+        transcription: `Twilio recording ${recordingSid}${Number.isFinite(recordingDuration) ? ` (${recordingDuration}s)` : ""}`,
+        userType: "user",
+        status: `recording-${recordingSid}`
+      });
+
+      if (Number.isFinite(recordingDuration) && recordingDuration >= 0) {
+        await call.update({
+          seconds: recordingDuration > Number(call.seconds || 0) ? recordingDuration : Number(call.seconds || 0)
+        });
+      }
+
+      return res.sendStatus(200);
+    } catch (err) {
+      return next(err);
     }
   },
 
@@ -437,12 +623,31 @@ module.exports = {
       const statusCallbackEvent = req.body?.CallStatus || req.body?.CallEvent || null;
       const callStatus = req.body?.CallStatus || null;
       const identity = req.body?.Caller || req.body?.From || "unknown";
+      const callDuration = Number(req.body?.CallDuration || 0);
       trackCallStatus({ callSid, statusCallbackEvent, callStatus, identity });
       const lifecycle = mapLifecycleEvent(callStatus || statusCallbackEvent);
 
+      // Persist inbound call status and duration when available.
+      if (callSid) {
+        const persistedCall = await findOrCreateCallBySid({
+          callSid,
+          from: req.body?.From || req.body?.Caller || "unknown",
+          status: String(callStatus || statusCallbackEvent || "").toLowerCase() || null
+        });
+        if (persistedCall) {
+          const updates = {
+            status: String(callStatus || statusCallbackEvent || "").toLowerCase() || persistedCall.status
+          };
+          if (Number.isFinite(callDuration) && callDuration >= 0) {
+            updates.seconds = callDuration;
+          }
+          await persistedCall.update(updates);
+        }
+      }
+
       // eslint-disable-next-line no-console
       console.log(
-        `[Twilio][event:${lifecycle}] callSid=${callSid || "-"} status=${String(callStatus || statusCallbackEvent || "-")} from=${req.body?.From || "-"} to=${req.body?.To || "-"} direction=${req.body?.Direction || "-"} parentCallSid=${req.body?.ParentCallSid || "-"} errorCode=${req.body?.ErrorCode || "-"}`
+        `[Twilio][event:${lifecycle}] callSid=${callSid || "-"} status=${String(callStatus || statusCallbackEvent || "-")} duration=${Number.isFinite(callDuration) ? callDuration : "-"} from=${req.body?.From || "-"} to=${req.body?.To || "-"} direction=${req.body?.Direction || "-"} parentCallSid=${req.body?.ParentCallSid || "-"} errorCode=${req.body?.ErrorCode || "-"}`
       );
 
       return res.sendStatus(200);

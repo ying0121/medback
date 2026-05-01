@@ -136,6 +136,24 @@ async function endCall(callSid) {
   return { callSid: call.sid, status: call.status };
 }
 
+async function startCallRecording({ callSid, recordingStatusCallback }) {
+  if (!callSid) {
+    throw new Error("callSid is required.");
+  }
+  const payload = {};
+  if (recordingStatusCallback) {
+    payload.recordingStatusCallback = recordingStatusCallback;
+    payload.recordingStatusCallbackMethod = "POST";
+    payload.recordingStatusCallbackEvent = ["completed", "absent"];
+  }
+  const recording = await getClient().calls(callSid).recordings.create(payload);
+  return {
+    recordingSid: recording.sid,
+    callSid: recording.callSid || callSid,
+    status: recording.status || "in-progress"
+  };
+}
+
 function generateAccessToken(identity) {
   const apiKeySid = process.env.TWILIO_API_KEY_SID || process.env.TWILIO_API_KEY || "";
   const apiKeySecret = process.env.TWILIO_API_KEY_SECRET || process.env.TWILIO_API_SECRET || "";
@@ -221,6 +239,7 @@ module.exports = {
   initiateCall,
   getCallStatus,
   endCall,
+  startCallRecording,
   trackCallStatus,
   setCallMuted,
   generateAccessToken,
