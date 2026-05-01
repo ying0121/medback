@@ -96,7 +96,13 @@ module.exports = {
 
     try {
       const dialActionUrl = `${getServerUrl(req)}/api/twilio/voice/dial-result`;
+      const twilioNumber = String(process.env.TWILIO_PHONE_NUMBER || "").trim();
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][twiml] callerId=${twilioNumber || "MISSING"} dialAction=${dialActionUrl}`);
+
       const twiml = buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl });
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][twiml] generated XML: ${twiml}`);
       res.type("text/xml");
       return res.send(twiml);
     } catch (err) {
@@ -110,15 +116,22 @@ module.exports = {
   // POST /api/twilio/voice/dial-result
   // Twilio posts here after <Dial> ends with DialCallStatus.
   async voiceDialResultTwiml(req, res) {
-    const dialStatus = String(req.body?.DialCallStatus || "").toLowerCase();
-    const dialCallSid = String(req.body?.DialCallSid || "").trim();
-    const answeredBy = String(req.body?.AnsweredBy || "").trim() || "-";
-    const dialDuration = String(req.body?.DialCallDuration || "").trim() || "0";
+    const dialStatus    = String(req.body?.DialCallStatus   || "").toLowerCase();
+    const dialCallSid   = String(req.body?.DialCallSid      || "").trim();
+    const answeredBy    = String(req.body?.AnsweredBy        || "").trim() || "-";
+    const dialDuration  = String(req.body?.DialCallDuration || "").trim() || "0";
+    const errorCode     = String(req.body?.ErrorCode        || "").trim() || "-";
+    const callSid       = String(req.body?.CallSid          || "").trim() || "-";
+    const from          = String(req.body?.From             || "").trim() || "-";
+    const to            = String(req.body?.To               || "").trim() || "-";
 
     // eslint-disable-next-line no-console
     console.log(
-      `[Twilio][dial:result] dialCallSid=${dialCallSid || "-"} status=${dialStatus || "-"} answeredBy=${answeredBy} duration=${dialDuration}s`
+      `[Twilio][dial:result] callSid=${callSid} dialCallSid=${dialCallSid || "MISSING"} status=${dialStatus || "-"} answeredBy=${answeredBy} duration=${dialDuration}s from=${from} to=${to} errorCode=${errorCode}`
     );
+    // Full body for deep debugging — shows every field Twilio sent
+    // eslint-disable-next-line no-console
+    console.log(`[Twilio][dial:result][body] ${JSON.stringify(req.body || {})}`);
 
     let message = null;
     if (dialStatus === "busy") {
