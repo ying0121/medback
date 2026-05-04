@@ -10,6 +10,8 @@ const openaiTtsModel = process.env.OPENAI_TTS_MODEL || "gpt-5.4-mini-tts";
 const openaiTtsVoice = process.env.OPENAI_TTS_VOICE || "alloy";
 const openaiTtsFormat = process.env.OPENAI_TTS_FORMAT || "mp3";
 const openaiMaxCompletionTokens = Number(process.env.OPENAI_MAX_COMPLETION_TOKENS || 700);
+const openaiInboundModel = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || openaiModel;
+const openaiInboundMaxCompletionTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 450);
 const inboundLanguageDetectionSystemPrompt = 
   [
     process.env.OPENAI_SYSTEM_PROMPT,
@@ -34,7 +36,11 @@ async function generateAssistantReply(messages, options = {}) {
     throw new Error("Missing OPENAI_API_KEY");
   }
 
-  const model = openaiModel;
+  const model = options.model || openaiModel;
+  const maxTok =
+    typeof options.maxCompletionTokens === "number" && Number.isFinite(options.maxCompletionTokens)
+      ? options.maxCompletionTokens
+      : openaiMaxCompletionTokens;
   const systemPrompt = defaultSystemPrompt;
   const clinicPrompt = options.clinicPrompt || null;
   const knowledgePrompt = options.knowledgePrompt || null;
@@ -66,7 +72,7 @@ async function generateAssistantReply(messages, options = {}) {
   const completion = await client.chat.completions.create({
     model,
     temperature: 0.4,
-    max_completion_tokens: openaiMaxCompletionTokens,
+    max_completion_tokens: maxTok,
     messages: [
       ...systemMessages,
       ...messages
@@ -74,6 +80,70 @@ async function generateAssistantReply(messages, options = {}) {
   });
 
   return completion.choices?.[0]?.message?.content || "No response generated.";
+}
+
+const inboundMergedJsonPrompt = [
+  "You are answering a live phone caller (PSTN). Be fast and concise.",
+  "The conversation messages include the caller's latest utterance.",
+  "Output exactly one JSON object (no markdown, no code fences) with keys:",
+  "iso_639_1, english_name, twilio_bcp47, twilio_voice, reply",
+  "- iso_639_1: two-letter ISO 639-1 code of the language the caller used in their last message.",
+  "- english_name: that language's name in English (e.g. Korean, Spanish).",
+  "- twilio_bcp47: one BCP-47 locale for Twilio speech (e.g. en-US, ko-KR, es-ES).",
+  "- twilio_voice: one Twilio Amazon Polly Neural voice id matching that locale, e.g.",
+  "  en-US Polly.Joanna-Neural, ko-KR Polly.Seoyeon-Neural, ja-JP Polly.Mizuki, zh-CN Polly.Zhiyu,",
+  "  es-ES Polly.Lucia-Neural, fr-FR Polly.Lea-Neural, de-DE Polly.Vicki-Neural, pt-BR Polly.Camila-Neural,",
+  "  hi-IN Polly.Aditi, ar-AE Polly.Zeina. If unsure, pick closest Polly Neural.",
+  "- reply: your helpful answer in the SAME language as the caller. Plain text only.",
+  "  Keep reply very short for telephony (typically 1–3 short sentences) unless a medical safety detail requires more."
+].join("\n");
+
+/**
+ * One LLM round-trip: language/Twilio gather hints + assistant reply (faster than detect + reply).
+ * @returns {Promise<{ iso_639_1: string, english_name: string, twilio_bcp47: string, twilio_voice: string, reply: string }>}
+ */
+async function generateInboundMergedTurn(messages, options = {}) {
+  if (!openaiApiKey) {
+    throw new Error("Missing OPENAI_API_KEY");
+  }
+
+  const clinicPrompt = options.clinicPrompt || null;
+  const knowledgePrompt = options.knowledgePrompt || null;
+  const systemMessages = [
+    { role: "system", content: defaultSystemPrompt },
+    ...(clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
+    ...(knowledgePrompt ? [{ role: "system", content: knowledgePrompt }] : []),
+    { role: "system", content: inboundMergedJsonPrompt }
+  ];
+
+  const completion = await client.chat.completions.create({
+    model: openaiInboundModel,
+    temperature: 0.35,
+    max_completion_tokens: openaiInboundMaxCompletionTokens,
+    messages: [...systemMessages, ...messages]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  const fallback = {
+    iso_639_1: "en",
+    english_name: "English",
+    twilio_bcp47: "en-US",
+    twilio_voice: "Polly.Joanna-Neural",
+    reply: "Sorry, I could not process that. Could you repeat your question?"
+  };
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+    const reply = String(parsed.reply || parsed.answer || "").trim();
+    const twilio_bcp47 = String(parsed.twilio_bcp47 || parsed.twilioBcp47 || "").trim();
+    const twilio_voice = String(parsed.twilio_voice || parsed.twilioVoice || "").trim();
+    const english_name = String(parsed.english_name || parsed.englishName || "English").trim();
+    const iso_639_1 = String(parsed.iso_639_1 || parsed.iso6391 || "en").trim();
+    if (!reply || !twilio_bcp47 || !twilio_voice) return fallback;
+    return { iso_639_1, english_name, twilio_bcp47, twilio_voice, reply };
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -269,6 +339,7 @@ async function generateSpeechFromText({ text, voice = openaiTtsVoice }) {
 
 module.exports = {
   generateAssistantReply,
+  generateInboundMergedTurn,
   generateVoiceReply,
   detectTwilioIntent,
   detectInboundSpeechLanguage,
