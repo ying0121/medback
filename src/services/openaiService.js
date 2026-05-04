@@ -11,23 +11,22 @@ const openaiTtsVoice = process.env.OPENAI_TTS_VOICE || "alloy";
 const openaiTtsFormat = process.env.OPENAI_TTS_FORMAT || "mp3";
 const openaiMaxCompletionTokens = Number(process.env.OPENAI_MAX_COMPLETION_TOKENS || 700);
 const openaiInboundModel = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || openaiModel;
-const openaiInboundMaxCompletionTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 450);
-const inboundLanguageDetectionSystemPrompt = 
-  [
-    process.env.OPENAI_SYSTEM_PROMPT,
-    "You are a language-detection helper for a phone voice assistant.",
-    "Your only job: infer the human language of the caller transcript (any script).",
-    "Output JSON only, no markdown, exactly this shape:",
-    '{"iso_639_1":"en","english_name":"English","twilio_bcp47":"en-US","twilio_voice":"Polly.Joanna-Neural"}',
-    "Fields:",
-    "- iso_639_1: two-letter ISO 639-1 code.",
-    "- english_name: language name in English (e.g. Korean, Japanese).",
-    "- twilio_bcp47: one BCP-47 locale for Twilio <Gather language> (single value).",
-    "- twilio_voice: one Twilio Amazon Polly voice id matching that locale, e.g.",
-    "  en-US Polly.Joanna-Neural, ko-KR Polly.Seoyeon-Neural, ja-JP Polly.Mizuki, zh-CN Polly.Zhiyu,",
-    "  es-ES Polly.Lucia-Neural, fr-FR Polly.Lea-Neural, de-DE Polly.Vicki-Neural, pt-BR Polly.Camila-Neural,",
-    "  hi-IN Polly.Aditi, ar-AE Polly.Zeina. If unsure, pick the closest supported Polly Neural voice."
-  ].join(" ");
+const openaiInboundMaxCompletionTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 360);
+const inboundLanguageDetectionSystemPrompt = [
+  process.env.OPENAI_SYSTEM_PROMPT,
+  "You are a language-detection helper for a phone voice assistant.",
+  "Your only job: infer the human language of the caller transcript (any script).",
+  "Output JSON only, no markdown, exactly this shape:",
+  '{"iso_639_1":"en","english_name":"English","twilio_bcp47":"en-US","twilio_voice":"Polly.Joanna-Neural"}',
+  "Fields:",
+  "- iso_639_1: two-letter ISO 639-1 code.",
+  "- english_name: language name in English (e.g. Korean, Japanese).",
+  "- twilio_bcp47: one BCP-47 locale for Twilio <Gather language> (single value).",
+  "- twilio_voice: one Twilio Amazon Polly voice id matching that locale, e.g.",
+  "  en-US Polly.Joanna-Neural, ko-KR Polly.Seoyeon-Neural, ja-JP Polly.Mizuki, zh-CN Polly.Zhiyu,",
+  "  es-ES Polly.Lucia-Neural, fr-FR Polly.Lea-Neural, de-DE Polly.Vicki-Neural, pt-BR Polly.Camila-Neural,",
+  "  hi-IN Polly.Aditi, ar-AE Polly.Zeina. If unsure, pick the closest supported Polly Neural voice."
+].join(" ");
 
 const client = new OpenAI({ apiKey: openaiApiKey });
 
@@ -83,6 +82,7 @@ async function generateAssistantReply(messages, options = {}) {
 }
 
 const inboundMergedJsonPrompt = [
+  process.env.OPENAI_SYSTEM_PROMPT,
   "You are answering a live phone caller (PSTN). Be fast and concise.",
   "The conversation messages include the caller's latest utterance.",
   "Output exactly one JSON object (no markdown, no code fences) with keys:",
@@ -95,7 +95,7 @@ const inboundMergedJsonPrompt = [
   "  es-ES Polly.Lucia-Neural, fr-FR Polly.Lea-Neural, de-DE Polly.Vicki-Neural, pt-BR Polly.Camila-Neural,",
   "  hi-IN Polly.Aditi, ar-AE Polly.Zeina. If unsure, pick closest Polly Neural.",
   "- reply: your helpful answer in the SAME language as the caller. Plain text only.",
-  "  Keep reply very short for telephony (typically 1–3 short sentences) unless a medical safety detail requires more."
+  "  Keep reply very short for telephony (1–3 short sentences; max ~400 characters) unless a medical safety detail requires slightly more."
 ].join("\n");
 
 /**
@@ -118,7 +118,7 @@ async function generateInboundMergedTurn(messages, options = {}) {
 
   const completion = await client.chat.completions.create({
     model: openaiInboundModel,
-    temperature: 0.35,
+    temperature: 0.3,
     max_completion_tokens: openaiInboundMaxCompletionTokens,
     messages: [...systemMessages, ...messages]
   });
