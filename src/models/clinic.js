@@ -58,6 +58,16 @@ const Clinic = sequelize.define(
     acronym: {
       type: DataTypes.STRING(255),
       allowNull: true
+    },
+    elevenlabsApiKey: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "elevenlabs_api_key"
+    },
+    elevenlabsVoiceId: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "elevenlabs_voice_id"
     }
   },
   {

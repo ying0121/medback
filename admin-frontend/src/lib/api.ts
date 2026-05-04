@@ -17,6 +17,19 @@ export interface Clinic {
   fax?: string;
   web?: string;
   portal?: string;
+  /** Present when loaded from API; never exposes the secret key. */
+  elevenLabsConfigured?: boolean;
+  elevenLabsVoiceConfigured?: boolean;
+  /** Saved ElevenLabs voice_id for inbound TTS (not secret). */
+  elevenLabsVoiceId?: string | null;
+}
+
+export interface ElevenLabsVoice {
+  voice_id: string;
+  name: string;
+  category: string | null;
+  labels: Record<string, string>;
+  preview_url: string | null;
 }
 
 export interface User {
@@ -144,6 +157,58 @@ export async function syncClinicsFromExternalApi() {
     body: JSON.stringify({})
   });
   return data;
+}
+
+export async function updateClinicElevenLabsApiKey(clinicId: string, apiKey: string) {
+  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`, {
+    method: "PATCH",
+    body: JSON.stringify({ apiKey })
+  });
+}
+
+export async function updateClinicElevenLabsVoice(clinicId: string, voiceId: string) {
+  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`, {
+    method: "PATCH",
+    body: JSON.stringify({ voiceId })
+  });
+}
+
+export async function listClinicElevenLabsVoices(clinicId: string): Promise<ElevenLabsVoice[]> {
+  const data = await request<{ voices: ElevenLabsVoice[] }>(
+    `/api/admin/dashboard/clinics/${clinicId}/elevenlabs/voices`
+  );
+  return data.voices || [];
+}
+
+/** Server-generated preview MP3 (uses clinic API key). Caller should revoke object URLs after playback. */
+export async function fetchClinicElevenLabsPreviewBlob(clinicId: string, voiceId: string): Promise<Blob> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/admin/dashboard/clinics/${clinicId}/elevenlabs/preview?voiceId=${encodeURIComponent(voiceId)}`,
+    { credentials: "include" }
+  );
+  const ct = res.headers.get("content-type") || "";
+  if (!res.ok) {
+    const data = ct.includes("application/json") ? await res.json().catch(() => ({})) : {};
+    throw new Error((data as { error?: string }).error || "Preview failed");
+  }
+  return res.blob();
+}
+
+/** Proxies ElevenLabs `preview_url` (e.g. GCS) same-origin so the browser can play it. */
+export async function fetchClinicElevenLabsPreviewSourceBlob(
+  clinicId: string,
+  previewUrl: string
+): Promise<Blob> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/admin/dashboard/clinics/${clinicId}/elevenlabs/preview-source?previewUrl=${encodeURIComponent(previewUrl)}`,
+    { credentials: "include" }
+  );
+  const ct = res.headers.get("content-type") || "";
+  if (!res.ok) {
+    const data = ct.includes("application/json") ? await res.json().catch(() => ({})) : {};
+    throw new Error((data as { error?: string }).error || "Preview failed");
+  }
+  return res.blob();
 }
 export const createClinic = (c: Omit<Clinic, "id">) => {
   const id = `clinic-${Date.now()}`;

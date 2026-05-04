@@ -6,6 +6,7 @@ const {
   inboundVoiceWebhook,
   inboundVoiceGather,
   inboundVoiceRecordingStatus,
+  ttsPlaybackAudio,
   messageTwiml,
   voiceFallbackTwiml,
   messageFallbackTwiml,
@@ -21,6 +22,7 @@ const router = express.Router();
 // Browser Voice SDK — token + TwiML App webhook
 router.get("/voice/token", getVoiceToken);
 router.post("/voice/token", getVoiceToken);
+router.get("/voice/tts/:token", ttsPlaybackAudio);
 router.post("/voice/twiml", voiceTwiml);
 router.post("/voice/dial-result", voiceDialResultTwiml);
 router.post("/voice/inbound", inboundVoiceWebhook);

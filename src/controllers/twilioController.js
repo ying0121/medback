@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const twilio = require("twilio");
 const axios = require("axios");
 const {
@@ -15,12 +16,107 @@ const {
   detectInboundSpeechLanguage,
   generateSpeechFromText
 } = require("../services/openaiService");
-const { Call, IncomingMessage } = require("../db");
+const { Call, IncomingMessage, Clinic } = require("../db");
+const { textToSpeechMp3 } = require("../services/elevenlabsService");
 
 /** Per-call OpenAI chat history for inbound PSTN → voice bot (in-memory). */
 const inboundVoiceSessions = new Map();
 const INBOUND_SESSION_TTL_MS = 35 * 60 * 1000;
 const INBOUND_MAX_MESSAGES = 24;
+
+/** Short-lived MP3 blobs for Twilio <Play> (ElevenLabs TTS). */
+const ttsPlaybackCache = new Map();
+
+function pruneTtsPlaybackCache() {
+  const now = Date.now();
+  for (const [k, v] of ttsPlaybackCache.entries()) {
+    if (v.expiresAt < now) ttsPlaybackCache.delete(k);
+  }
+}
+
+function registerTtsPlayback(mp3Buffer) {
+  pruneTtsPlaybackCache();
+  const token = crypto.randomBytes(32).toString("hex");
+  ttsPlaybackCache.set(token, {
+    buffer: mp3Buffer,
+    expiresAt: Date.now() + 12 * 60 * 1000
+  });
+  return token;
+}
+
+function getTtsPlaybackBuffer(token) {
+  const key = String(token || "");
+  const v = ttsPlaybackCache.get(key);
+  if (!v) return null;
+  if (v.expiresAt < Date.now()) {
+    ttsPlaybackCache.delete(key);
+    return null;
+  }
+  return v.buffer;
+}
+
+function normalizePhoneDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+async function resolveClinicForInboundTo(toValue) {
+  const toDigits = normalizePhoneDigits(toValue);
+  if (!toDigits) return null;
+
+  const forcedId = Number(process.env.TWILIO_INBOUND_CLINIC_DB_ID || "");
+  if (Number.isFinite(forcedId) && forcedId > 0) {
+    const c = await Clinic.findByPk(forcedId);
+    if (c) return c;
+  }
+
+  const clinics = await Clinic.findAll({
+    attributes: ["id", "phone", "elevenlabsApiKey", "elevenlabsVoiceId"]
+  });
+  for (const c of clinics) {
+    const p = normalizePhoneDigits(c.phone);
+    if (!p) continue;
+    if (toDigits === p) return c;
+    if (p.length >= 10 && toDigits.length >= 10) {
+      if (toDigits.slice(-10) === p.slice(-10)) return c;
+    }
+  }
+  return null;
+}
+
+async function loadClinicElevenLabsTts(clinicDbId) {
+  if (!clinicDbId) return null;
+  const c = await Clinic.findByPk(clinicDbId, {
+    attributes: ["id", "elevenlabsApiKey", "elevenlabsVoiceId"]
+  });
+  if (!c?.elevenlabsApiKey || !c?.elevenlabsVoiceId) return null;
+  return { apiKey: c.elevenlabsApiKey, voiceId: c.elevenlabsVoiceId };
+}
+
+/**
+ * Speaks text on the call using ElevenLabs MP3 + <Play> when the clinic is configured;
+ * otherwise falls back to Twilio <Say>.
+ * @returns {Promise<Buffer|null>} MP3 buffer when ElevenLabs was used, else null.
+ */
+async function twimlPlayElevenLabsOrSay(vr, req, session, callSid, text) {
+  const cfg = await loadClinicElevenLabsTts(session?.inboundClinicDbId);
+  const spoken = truncateForPhoneSay(text, 2500);
+  if (!cfg) {
+    vr.say(sayParamsForInbound(session), spoken);
+    return null;
+  }
+  try {
+    const mp3 = await textToSpeechMp3(cfg.apiKey, cfg.voiceId, spoken);
+    const token = registerTtsPlayback(mp3);
+    const url = `${getServerUrl(req)}/api/twilio/voice/tts/${token}`;
+    vr.play(url);
+    return mp3;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[Twilio][elevenlabs] TTS failed callSid=${callSid}: ${err.message}`);
+    vr.say(sayParamsForInbound(session), spoken);
+    return null;
+  }
+}
 
 function getInboundVoiceSession(callSid) {
   const now = Date.now();
@@ -33,11 +129,13 @@ function getInboundVoiceSession(callSid) {
         String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
       sayVoiceName:
         String(process.env.TWILIO_INBOUND_DEFAULT_SAY_VOICE || "").trim() || "Polly.Joanna-Neural",
-      recordingStarted: false
+      recordingStarted: false,
+      inboundClinicDbId: null
     };
     inboundVoiceSessions.set(callSid, s);
   }
   s.expiresAt = now + INBOUND_SESSION_TTL_MS;
+  if (s.inboundClinicDbId === undefined) s.inboundClinicDbId = null;
   return s;
 }
 
@@ -314,7 +412,10 @@ module.exports = {
       }
       const vr = new twilio.twiml.VoiceResponse();
       if (session) {
-        vr.say(sayParamsForInbound(session), greeting);
+        const to = String(req.body?.To || "").trim();
+        const clinic = await resolveClinicForInboundTo(to);
+        session.inboundClinicDbId = clinic?.id || null;
+        await twimlPlayElevenLabsOrSay(vr, req, session, callSid, greeting);
         vr.gather(gatherOptsInbound(session, gatherUrl));
       } else {
         vr.say({ voice: sayVoice() }, greeting);
@@ -328,7 +429,11 @@ module.exports = {
           profanityFilter: "false"
         });
       }
-      vr.say(session ? sayParamsForInbound(session) : { voice: sayVoice() }, "I did not hear anything. Goodbye.");
+      if (session) {
+        await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "I did not hear anything. Goodbye.");
+      } else {
+        vr.say({ voice: sayVoice() }, "I did not hear anything. Goodbye.");
+      }
       vr.hangup();
       res.type("text/xml");
       return res.send(vr.toString());
@@ -355,6 +460,11 @@ module.exports = {
     }
 
     const session = getInboundVoiceSession(callSid);
+    const to = String(req.body?.To || "").trim();
+    if (!session.inboundClinicDbId && to) {
+      const clinic = await resolveClinicForInboundTo(to);
+      session.inboundClinicDbId = clinic?.id || null;
+    }
 
     try {
       const call = await findOrCreateCallBySid({
@@ -365,7 +475,13 @@ module.exports = {
       const vr = new twilio.twiml.VoiceResponse();
 
       if (!speechResult) {
-        vr.say(sayParamsForInbound(session), "Sorry, I did not catch that. Please try again.");
+        await twimlPlayElevenLabsOrSay(
+          vr,
+          req,
+          session,
+          callSid,
+          "Sorry, I did not catch that. Please try again."
+        );
         if (call) {
           await saveIncomingMessageRow({
             callId: call.id,
@@ -399,18 +515,22 @@ module.exports = {
         const spoken = truncateForPhoneSay(reply, maxReplyChars);
         pushInboundVoiceMessage(callSid, "assistant", spoken);
         let botAudioBase64 = null;
-        try {
-          const botSpeech = await generateSpeechFromText({ text: spoken });
-          botAudioBase64 = botSpeech.audioBase64 || null;
-        } catch (audioErr) {
-          // eslint-disable-next-line no-console
-          console.error(`[Twilio][inbound] bot audio generation failed: ${audioErr.message}`);
+        const mp3Buf = await twimlPlayElevenLabsOrSay(vr, req, session, callSid, spoken);
+        if (mp3Buf) {
+          botAudioBase64 = mp3Buf.toString("base64");
+        } else {
+          try {
+            const botSpeech = await generateSpeechFromText({ text: spoken });
+            botAudioBase64 = botSpeech.audioBase64 || null;
+          } catch (audioErr) {
+            // eslint-disable-next-line no-console
+            console.error(`[Twilio][inbound] bot audio generation failed: ${audioErr.message}`);
+          }
         }
         // eslint-disable-next-line no-console
         console.log(
           `[Twilio][inbound] callSid=${callSid} lang=${detected.twilio_bcp47} voice=${detected.twilio_voice} userLen=${speechResult.length} replyLen=${spoken.length}`
         );
-        vr.say(sayParamsForInbound(session), spoken);
         if (call) {
           await saveIncomingMessageRow({
             callId: call.id,
@@ -423,7 +543,7 @@ module.exports = {
       }
 
       vr.gather(gatherOptsInbound(session, gatherUrl));
-      vr.say(sayParamsForInbound(session), "Thank you for calling. Goodbye.");
+      await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
       vr.hangup();
 
       res.type("text/xml");
@@ -686,5 +806,15 @@ module.exports = {
     } catch (err) {
       return next(err);
     }
+  },
+
+  // GET /api/twilio/voice/tts/:token
+  // Twilio <Play> fetches this URL (short-lived ElevenLabs MP3).
+  async ttsPlaybackAudio(req, res) {
+    const buf = getTtsPlaybackBuffer(req.params.token);
+    if (!buf) return res.sendStatus(404);
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(buf);
   }
 };

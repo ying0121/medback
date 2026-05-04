@@ -33,8 +33,28 @@ async function connectDatabase() {
   await sequelize.authenticate();
 }
 
+async function ensureClinicElevenlabsColumn() {
+  try {
+    await sequelize.query("ALTER TABLE clinics ADD COLUMN elevenlabs_api_key TEXT NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
+}
+
+async function ensureClinicElevenlabsVoiceColumn() {
+  try {
+    await sequelize.query("ALTER TABLE clinics ADD COLUMN elevenlabs_voice_id VARCHAR(128) NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
+}
+
 async function syncDatabase() {
   await sequelize.sync();
+  await ensureClinicElevenlabsColumn();
+  await ensureClinicElevenlabsVoiceColumn();
 }
 
 async function initializeDatabase() {

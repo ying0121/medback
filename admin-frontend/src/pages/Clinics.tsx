@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Pencil, Plus, Trash2, Building2, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
@@ -12,13 +12,20 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   listClinics,
   createClinic,
   updateClinic,
   deleteClinic,
   syncClinicsFromExternalApi,
-  type Clinic
+  updateClinicElevenLabsApiKey,
+  listClinicElevenLabsVoices,
+  fetchClinicElevenLabsPreviewBlob,
+  fetchClinicElevenLabsPreviewSourceBlob,
+  updateClinicElevenLabsVoice,
+  type Clinic,
+  type ElevenLabsVoice,
 } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
@@ -38,6 +45,56 @@ export default function Clinics() {
   const [form, setForm] = useState<ClinicForm>(EMPTY);
   const [confirmDelete, setConfirmDelete] = useState<Clinic | null>(null);
   const [syncingExternal, setSyncingExternal] = useState(false);
+  const [elevenLabsClinic, setElevenLabsClinic] = useState<Clinic | null>(null);
+  const [elevenLabsKey, setElevenLabsKey] = useState("");
+  const [savingElevenLabs, setSavingElevenLabs] = useState(false);
+
+  const [voiceModalClinic, setVoiceModalClinic] = useState<Clinic | null>(null);
+  const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
+  const [voicesLoading, setVoicesLoading] = useState(false);
+  const [selectedVoiceId, setSelectedVoiceId] = useState("");
+  const [savingVoice, setSavingVoice] = useState(false);
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lastBlobUrlRef = useRef<string | null>(null);
+
+  const stopVoicePreview = () => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    if (lastBlobUrlRef.current) {
+      URL.revokeObjectURL(lastBlobUrlRef.current);
+      lastBlobUrlRef.current = null;
+    }
+    setPreviewingVoiceId(null);
+  };
+
+  useEffect(() => {
+    if (!voiceModalClinic) {
+      setVoices([]);
+      setSelectedVoiceId("");
+      return;
+    }
+    let cancelled = false;
+    setVoicesLoading(true);
+    setSelectedVoiceId(voiceModalClinic.elevenLabsVoiceId || "");
+    listClinicElevenLabsVoices(voiceModalClinic.id)
+      .then((v) => {
+        if (!cancelled) setVoices(v);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "Could not load voices";
+        toast.error(msg);
+        if (!cancelled) setVoices([]);
+      })
+      .finally(() => {
+        if (!cancelled) setVoicesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [voiceModalClinic]);
 
   const refresh = () => listClinics().then(setData);
   useEffect(() => { refresh(); }, []);
@@ -69,6 +126,90 @@ export default function Clinics() {
     toast.success("Clinic deleted");
     setConfirmDelete(null);
     refresh();
+  };
+
+  const openElevenLabs = (c: Clinic) => {
+    setElevenLabsClinic(c);
+    setElevenLabsKey("");
+  };
+
+  const playVoicePreview = async (v: ElevenLabsVoice) => {
+    if (!voiceModalClinic) return;
+    stopVoicePreview();
+    setPreviewingVoiceId(v.voice_id);
+    const playBlob = async (blob: Blob) => {
+      const url = URL.createObjectURL(blob);
+      lastBlobUrlRef.current = url;
+      const a = new Audio(url);
+      previewAudioRef.current = a;
+      a.onended = () => {
+        setPreviewingVoiceId(null);
+        URL.revokeObjectURL(url);
+        lastBlobUrlRef.current = null;
+      };
+      a.onerror = () => {
+        setPreviewingVoiceId(null);
+        URL.revokeObjectURL(url);
+        lastBlobUrlRef.current = null;
+        toast.error("Could not play preview audio.");
+      };
+      await a.play();
+    };
+    try {
+      const previewUrl = v.preview_url?.trim();
+      if (previewUrl) {
+        try {
+          const blob = await fetchClinicElevenLabsPreviewSourceBlob(voiceModalClinic.id, previewUrl);
+          await playBlob(blob);
+          return;
+        } catch {
+          /* fall through to TTS preview */
+        }
+      }
+      const blob = await fetchClinicElevenLabsPreviewBlob(voiceModalClinic.id, v.voice_id);
+      await playBlob(blob);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Preview failed";
+      toast.error(msg);
+      setPreviewingVoiceId(null);
+    }
+  };
+
+  const saveVoice = async () => {
+    if (!voiceModalClinic) return;
+    if (!selectedVoiceId) return toast.error("Select a voice");
+    try {
+      setSavingVoice(true);
+      await updateClinicElevenLabsVoice(voiceModalClinic.id, selectedVoiceId);
+      toast.success("ElevenLabs voice saved");
+      stopVoicePreview();
+      setVoiceModalClinic(null);
+      refresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to save voice";
+      toast.error(msg);
+    } finally {
+      setSavingVoice(false);
+    }
+  };
+
+  const saveElevenLabs = async () => {
+    if (!elevenLabsClinic) return;
+    const trimmed = elevenLabsKey.trim();
+    if (!trimmed) return toast.error("API key is required");
+    try {
+      setSavingElevenLabs(true);
+      await updateClinicElevenLabsApiKey(elevenLabsClinic.id, trimmed);
+      toast.success("ElevenLabs API key saved");
+      setElevenLabsClinic(null);
+      setElevenLabsKey("");
+      refresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to save API key";
+      toast.error(msg);
+    } finally {
+      setSavingElevenLabs(false);
+    }
   };
 
   const onSyncExternal = async () => {
@@ -111,8 +252,31 @@ export default function Clinics() {
     { key: "web", header: "Web", searchable: (r) => r.web ?? "", render: (r) => r.web ? (
       <a href={r.web} target="_blank" rel="noreferrer" className="text-primary hover:underline text-sm truncate inline-block max-w-[180px]">{r.web}</a>
     ) : <span className="text-muted-foreground text-sm">—</span> },
-    { key: "actions", header: "", className: "w-32 text-right", searchable: () => "", render: (r) => (
+    { key: "actions", header: "", className: "w-56 text-right", searchable: () => "", render: (r) => (
       <div className="flex items-center justify-end gap-1">
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => openElevenLabs(r)}
+          title={r.elevenLabsConfigured ? "ElevenLabs API key — configured" : "ElevenLabs API key"}
+        >
+          <Mic2 className={`h-4 w-4 ${r.elevenLabsConfigured ? "text-violet-600" : "text-muted-foreground"}`} />
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => setVoiceModalClinic(r)}
+          disabled={!r.elevenLabsConfigured}
+          title={
+            r.elevenLabsConfigured
+              ? r.elevenLabsVoiceConfigured
+                ? "ElevenLabs voice — configured"
+                : "Choose ElevenLabs voice"
+              : "Save an API key first"
+          }
+        >
+          <AudioLines className={`h-4 w-4 ${r.elevenLabsVoiceConfigured ? "text-violet-600" : "text-muted-foreground"}`} />
+        </Button>
         <Button size="icon" variant="ghost" onClick={() => openEdit(r)}><Pencil className="h-4 w-4" /></Button>
         <Button size="icon" variant="ghost" onClick={() => setConfirmDelete(r)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
       </div>
@@ -180,6 +344,147 @@ export default function Clinics() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={save} className="bg-gradient-primary text-primary-foreground">{editing ? "Save changes" : "Create clinic"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!voiceModalClinic}
+        onOpenChange={(o) => {
+          if (!o) {
+            stopVoicePreview();
+            setVoiceModalClinic(null);
+          }
+        }}
+      >
+        <DialogContent className="flex min-h-0 max-h-[90vh] w-[calc(100vw-2rem)] max-w-2xl flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="shrink-0 space-y-1.5 px-6 pb-2 pt-6 text-center sm:text-left">
+            <DialogTitle>ElevenLabs voice</DialogTitle>
+            <DialogDescription>
+              {voiceModalClinic ? (
+                <>
+                  Choose the voice for inbound phone responses for <strong>{voiceModalClinic.name}</strong>.
+                  Save an API key first if voices do not load.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            className="mx-6 mb-1 min-h-0 max-h-[min(52vh,28rem)] flex-1 overflow-y-auto overflow-x-hidden rounded-md border border-border/60 bg-muted/15 px-2 py-2 [scrollbar-gutter:stable]"
+            role="region"
+            aria-label="Voice list"
+          >
+            {voicesLoading ? (
+              <p className="text-sm text-muted-foreground px-2 py-6">Loading voices…</p>
+            ) : voices.length === 0 ? (
+              <p className="text-sm text-muted-foreground px-2 py-6">
+                No voices returned. Check the API key or your ElevenLabs account.
+              </p>
+            ) : (
+              <RadioGroup value={selectedVoiceId} onValueChange={setSelectedVoiceId} className="gap-0">
+                {voices.map((v) => {
+                  const labelBits = [
+                    v.category,
+                    ...Object.entries(v.labels || {}).slice(0, 4).map(([k, val]) => `${k}: ${val}`),
+                  ].filter(Boolean);
+                  return (
+                    <div
+                      key={v.voice_id}
+                      className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border/60 py-3 pl-1 pr-1 last:border-b-0"
+                    >
+                      <RadioGroupItem value={v.voice_id} id={`voice-${v.voice_id}`} className="mt-0.5 shrink-0 self-start" />
+                      <label htmlFor={`voice-${v.voice_id}`} className="min-w-0 cursor-pointer py-0.5 text-left">
+                        <div className="font-medium leading-snug break-words">{v.name}</div>
+                        <div className="text-xs leading-snug text-muted-foreground break-words">
+                          {labelBits.join(" · ") || "—"}
+                        </div>
+                      </label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 whitespace-nowrap justify-self-end"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          playVoicePreview(v);
+                        }}
+                        disabled={previewingVoiceId === v.voice_id}
+                      >
+                        <Play className="h-3.5 w-3.5 shrink-0 mr-1" />
+                        {previewingVoiceId === v.voice_id ? "Playing…" : "Listen"}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </RadioGroup>
+            )}
+          </div>
+          <DialogFooter className="shrink-0 border-t border-border/60 px-6 py-4 sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => {
+                stopVoicePreview();
+                setVoiceModalClinic(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={saveVoice}
+              disabled={savingVoice || !selectedVoiceId || voices.length === 0}
+              className="bg-gradient-primary text-primary-foreground"
+            >
+              {savingVoice ? "Saving…" : "Save voice"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!elevenLabsClinic}
+        onOpenChange={(o) => {
+          if (!o) {
+            setElevenLabsClinic(null);
+            setElevenLabsKey("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>ElevenLabs account</DialogTitle>
+            <DialogDescription>
+              {elevenLabsClinic ? (
+                <>
+                  Set the API key for <strong>{elevenLabsClinic.name}</strong>. The key is stored on the server and is
+                  not shown again after saving.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <Field label="API key">
+              <Input
+                type="password"
+                autoComplete="off"
+                placeholder="xi_…"
+                value={elevenLabsKey}
+                onChange={(e) => setElevenLabsKey(e.target.value)}
+              />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setElevenLabsClinic(null);
+                setElevenLabsKey("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={saveElevenLabs} disabled={savingElevenLabs} className="bg-gradient-primary text-primary-foreground">
+              {savingElevenLabs ? "Saving…" : "Save"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
