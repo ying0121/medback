@@ -19,7 +19,7 @@ const {
   detectInboundSpeechLanguage,
   generateSpeechFromText
 } = require("../services/openaiService");
-const { Call, IncomingMessage } = require("../db");
+const { Call, IncomingMessage, Clinic, Knowledge } = require("../db");
 const { textToSpeechMp3 } = require("../services/elevenlabsService");
 
 /** Per-call OpenAI chat history for inbound PSTN → voice bot (in-memory). */
@@ -181,6 +181,42 @@ function truncateForPhoneSay(text, maxChars) {
   return `${s.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
+async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
+  const id = Number(systemClinicId);
+  if (!Number.isFinite(id) || id <= 0) return { clinicPrompt: null, knowledgePrompt: null };
+
+  const clinic = await Clinic.findByPk(id);
+  if (!clinic) return { clinicPrompt: null, knowledgePrompt: null };
+
+  const clinicBusinessId = Number(clinic.clinicId);
+  const knowledgeRows = Number.isFinite(clinicBusinessId) && clinicBusinessId > 0
+    ? await Knowledge.findAll({
+        where: { clinicId: clinicBusinessId, status: "active" },
+        order: [["id", "DESC"]]
+      })
+    : [];
+
+  const clinicPrompt = [
+    "Clinic Information (But do not share any contact information including clinic id, phone, fax or tel number, email, address, web and portal URL):",
+    `- Clinic ID: ${clinic.clinicId || clinic.id}`,
+    `- Name: ${clinic.name || ""}`,
+    `- Acronym: ${clinic.acronym || ""}`,
+    `- Address: ${[clinic.address1, clinic.address2, clinic.city, clinic.state, clinic.zip].filter(Boolean).join(", ")}`,
+    `- Phone: ${clinic.phone || ""}`,
+    `- Email: ${clinic.email || ""}`,
+    `- Web: ${clinic.web || ""}`,
+    `- Portal: ${clinic.portal || ""}`
+  ].join("\n");
+
+  const knowledgeText = knowledgeRows
+    .map((row, idx) => `${idx + 1}. ${String(row.knowledge || "").trim()}`)
+    .filter(Boolean)
+    .join("\n");
+  const knowledgePrompt = knowledgeText ? `Product Knowledge:\n${knowledgeText}` : null;
+
+  return { clinicPrompt, knowledgePrompt };
+}
+
 function normalizePhoneForCallRow(fromValue) {
   const raw = String(fromValue || "").trim();
   if (!raw) return "unknown";
@@ -311,7 +347,11 @@ async function buildInboundAssistantAudioResult({
   try {
     if (useMerged) {
       try {
-        const merged = await generateInboundMergedTurn(session.messages, {});
+        const contextOpts = {
+          clinicPrompt: session.clinicPrompt || null,
+          knowledgePrompt: session.knowledgePrompt || null
+        };
+        const merged = await generateInboundMergedTurn(session.messages, contextOpts);
         session.speechBcp47 = merged.twilio_bcp47;
         session.sayVoiceName = merged.twilio_voice;
         spoken = truncateForPhoneSay(merged.reply, maxReplyChars);
@@ -327,6 +367,8 @@ async function buildInboundAssistantAudioResult({
           "Use natural wording and the appropriate writing system for speech (no unnecessary English)."
         ].join(" ");
         const reply = await generateAssistantReply(session.messages, {
+          clinicPrompt: session.clinicPrompt || null,
+          knowledgePrompt: session.knowledgePrompt || null,
           languageConstraint,
           ...(inboundModel ? { model: inboundModel } : {}),
           maxCompletionTokens: inboundMaxTokens
@@ -343,6 +385,8 @@ async function buildInboundAssistantAudioResult({
         "Use natural wording and the appropriate writing system for speech (no unnecessary English)."
       ].join(" ");
       const reply = await generateAssistantReply(session.messages, {
+        clinicPrompt: session.clinicPrompt || null,
+        knowledgePrompt: session.knowledgePrompt || null,
         languageConstraint,
         ...(inboundModel ? { model: inboundModel } : {}),
         maxCompletionTokens: inboundMaxTokens
@@ -655,8 +699,13 @@ module.exports = {
     const session = callSid ? getInboundVoiceSession(callSid) : null;
     try {
       const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
+      const inboundContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
       if (callSid) {
-        if (session) session.clinicId = clinicTwilio.clinicId;
+        if (session) {
+          session.clinicId = clinicTwilio.clinicId;
+          session.clinicPrompt = inboundContext.clinicPrompt;
+          session.knowledgePrompt = inboundContext.knowledgePrompt;
+        }
         await findOrCreateCallBySid({
           callSid,
           from,
@@ -723,6 +772,7 @@ module.exports = {
   async inboundVoiceGather(req, res) {
     const callSid = String(req.body?.CallSid || "").trim();
     const from = String(req.body?.From || "").trim();
+    const to = String(req.body?.To || "").trim();
     const speechResult = String(req.body?.SpeechResult || "").trim();
     const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
     const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
@@ -736,6 +786,17 @@ module.exports = {
     const session = getInboundVoiceSession(callSid);
 
     try {
+      if (!session.clinicPrompt || !session.knowledgePrompt) {
+        try {
+          const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
+          session.clinicId = clinicTwilio.clinicId;
+          const inboundContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
+          session.clinicPrompt = inboundContext.clinicPrompt;
+          session.knowledgePrompt = inboundContext.knowledgePrompt;
+        } catch {
+          /* continue without clinic context */
+        }
+      }
       const call = await findOrCreateCallBySid({
         callSid,
         from,
@@ -847,6 +908,7 @@ module.exports = {
   async inboundGatherReply(req, res) {
     const callSid = String(req.body?.CallSid || "").trim();
     const from = String(req.body?.From || "").trim();
+    const to = String(req.body?.To || "").trim();
     const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
     const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
 
@@ -859,6 +921,17 @@ module.exports = {
     const session = getInboundVoiceSession(callSid);
 
     try {
+      if (!session.clinicPrompt || !session.knowledgePrompt) {
+        try {
+          const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
+          session.clinicId = clinicTwilio.clinicId;
+          const inboundContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
+          session.clinicPrompt = inboundContext.clinicPrompt;
+          session.knowledgePrompt = inboundContext.knowledgePrompt;
+        } catch {
+          /* continue without clinic context */
+        }
+      }
       if (!session.inboundAwaitingReply) {
         const vr = new twilio.twiml.VoiceResponse();
         vr.gather(gatherOptsInbound(session, gatherUrl));
