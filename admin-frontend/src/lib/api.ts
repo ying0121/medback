@@ -17,6 +17,7 @@ export interface Clinic {
   fax?: string;
   web?: string;
   portal?: string;
+  twilioConfigured?: boolean;
   /** Present when loaded from API; never exposes the secret key. */
   elevenLabsConfigured?: boolean;
   elevenLabsVoiceConfigured?: boolean;
@@ -166,11 +167,35 @@ export async function updateClinicElevenLabsApiKey(clinicId: string, apiKey: str
   });
 }
 
+export async function getClinicElevenLabsConfig(clinicId: string): Promise<{ apiKey: string }> {
+  return request<{ apiKey: string }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`);
+}
+
 export async function updateClinicElevenLabsVoice(clinicId: string, voiceId: string) {
   await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`, {
     method: "PATCH",
     body: JSON.stringify({ voiceId })
   });
+}
+
+export interface ClinicTwilioConfigInput {
+  twilioPhoneNumber: string;
+  twilioAccountSid: string;
+  twilioAuthToken: string;
+  twilioApiKeySid: string;
+  twilioApiKeySecret: string;
+  twilioTwimlAppSid: string;
+}
+
+export async function updateClinicTwilioConfig(clinicId: string, payload: ClinicTwilioConfigInput) {
+  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/twilio`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getClinicTwilioConfig(clinicId: string): Promise<ClinicTwilioConfigInput> {
+  return request<ClinicTwilioConfigInput>(`/api/admin/dashboard/clinics/${clinicId}/twilio`);
 }
 
 export async function listClinicElevenLabsVoices(clinicId: string): Promise<ElevenLabsVoice[]> {

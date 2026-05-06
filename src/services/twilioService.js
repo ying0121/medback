@@ -1,11 +1,8 @@
 const twilio = require("twilio");
+const { Clinic } = require("../db");
 
-const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID || "";
-const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN || "";
-const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || "";
-const alertPhoneNumber = process.env.ALERT_PHONE_NUMBER || "";
 const twilioCallSessions = new Map(); // callSid -> { callSid, identity, isMuted, status }
-let client = null;
+const clientCache = new Map(); // accountSid:authToken -> twilio client
 
 function isE164(phone) {
   return /^\+[1-9]\d{6,14}$/.test(String(phone || "").trim());
@@ -19,36 +16,99 @@ function mapLifecycleEvent(statusValue) {
   return "status_update";
 }
 
-function getClient() {
-  if (!client) {
-    if (!twilioAccountSid || !twilioAuthToken) {
-      throw new Error(
-        "Twilio credentials are not configured. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN."
-      );
-    }
-    client = twilio(twilioAccountSid, twilioAuthToken);
-  }
-  return client;
+function normalizePhone(phone) {
+  const raw = String(phone || "").trim();
+  if (!raw) return "";
+  const noSpaces = raw.replace(/[\s()-]/g, "");
+  if (noSpaces.startsWith("+")) return noSpaces;
+  const digits = noSpaces.replace(/[^\d]/g, "");
+  return digits ? `+${digits}` : "";
 }
 
-async function sendAlertSms(body) {
-  if (!twilioAccountSid || !twilioAuthToken || !twilioPhoneNumber || !alertPhoneNumber) {
-    return { sent: false, reason: "Twilio is not configured." };
+async function getClinicTwilioConfigByClinicId(clinicId) {
+  const id = Number(clinicId);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error("clinicId is required.");
+  }
+  const clinic = await Clinic.findByPk(id, {
+    attributes: [
+      "id",
+      "twilioPhoneNumber",
+      "twilioAccountSid",
+      "twilioAuthToken",
+      "twilioApiKeySid",
+      "twilioApiKeySecret",
+      "twilioTwimlAppSid"
+    ]
+  });
+  if (!clinic) throw new Error("Clinic not found.");
+
+  const cfg = {
+    clinicId: Number(clinic.id),
+    twilioPhoneNumber: normalizePhone(clinic.twilioPhoneNumber),
+    twilioAccountSid: String(clinic.twilioAccountSid || "").trim(),
+    twilioAuthToken: String(clinic.twilioAuthToken || "").trim(),
+    twilioApiKeySid: String(clinic.twilioApiKeySid || "").trim(),
+    twilioApiKeySecret: String(clinic.twilioApiKeySecret || "").trim(),
+    twilioTwimlAppSid: String(clinic.twilioTwimlAppSid || "").trim()
+  };
+
+  if (!cfg.twilioAccountSid || !cfg.twilioAuthToken || !cfg.twilioPhoneNumber) {
+    throw new Error("Clinic Twilio account SID, auth token and phone number are required.");
+  }
+  return cfg;
+}
+
+async function getClinicTwilioConfigByPhoneNumber(phoneNumber) {
+  const normalized = normalizePhone(phoneNumber);
+  if (!normalized) throw new Error("phoneNumber is required.");
+  const clinics = await Clinic.findAll({
+    attributes: [
+      "id",
+      "twilioPhoneNumber",
+      "twilioAccountSid",
+      "twilioAuthToken",
+      "twilioApiKeySid",
+      "twilioApiKeySecret",
+      "twilioTwimlAppSid"
+    ]
+  });
+  const matched = clinics.find((c) => normalizePhone(c.twilioPhoneNumber) === normalized);
+  if (!matched) throw new Error("No clinic found for Twilio phone number.");
+  return getClinicTwilioConfigByClinicId(matched.id);
+}
+
+function getClient(config) {
+  const accountSid = String(config?.twilioAccountSid || "").trim();
+  const authToken = String(config?.twilioAuthToken || "").trim();
+  if (!accountSid || !authToken) {
+    throw new Error("Twilio account SID and auth token are required.");
+  }
+  const key = `${accountSid}:${authToken}`;
+  if (!clientCache.has(key)) {
+    clientCache.set(key, twilio(accountSid, authToken));
+  }
+  return clientCache.get(key);
+}
+
+async function sendAlertSms({ body, clinicId, toPhoneNumber }) {
+  const cfg = await getClinicTwilioConfigByClinicId(clinicId);
+  const to = normalizePhone(toPhoneNumber);
+  if (!to) {
+    return { sent: false, reason: "Destination phone number is required." };
   }
 
-  const response = await getClient().messages.create({
+  const response = await getClient(cfg).messages.create({
     body,
-    from: twilioPhoneNumber,
-    to: alertPhoneNumber
+    from: cfg.twilioPhoneNumber,
+    to
   });
 
   return { sent: true, sid: response.sid };
 }
 
-async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl }) {
-  if (!twilioPhoneNumber) {
-    throw new Error("TWILIO_PHONE_NUMBER is not configured.");
-  }
+async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl, clinicId }) {
+  const cfg = await getClinicTwilioConfigByClinicId(clinicId);
   if (!toPhoneNumber) {
     throw new Error("Doctor phone number is required.");
   }
@@ -58,12 +118,12 @@ async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl }) 
 
   const twiml = new twilio.twiml.VoiceResponse();
   // Strict bridge mode: no auto speech, only doctor <-> patient connection.
-  const dial = twiml.dial({ answerOnBridge: true, callerId: twilioPhoneNumber });
+  const dial = twiml.dial({ answerOnBridge: true, callerId: cfg.twilioPhoneNumber });
   dial.number(patientPhoneNumber);
 
   const options = {
     to: toPhoneNumber,
-    from: twilioPhoneNumber,
+    from: cfg.twilioPhoneNumber,
     twiml: twiml.toString()
   };
   if (callbackUrl) {
@@ -72,7 +132,15 @@ async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl }) 
     options.statusCallbackEvent = ["initiated", "ringing", "answered", "completed"];
   }
 
-  const call = await getClient().calls.create(options);
+  const call = await getClient(cfg).calls.create(options);
+  trackCallStatus({
+    callSid: call.sid,
+    statusCallbackEvent: call.status,
+    callStatus: call.status,
+    identity: "unknown",
+    clinicId: cfg.clinicId,
+    twilioPhoneNumber: cfg.twilioPhoneNumber
+  });
   return {
     callSid: call.sid,
     status: call.status,
@@ -83,14 +151,18 @@ async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl }) 
   };
 }
 
-async function getCallStatus(callSid) {
+async function getCallStatus(callSid, { clinicId = null } = {}) {
   if (!callSid) {
     throw new Error("callSid is required.");
   }
-  const call = await getClient().calls(callSid).fetch();
+  const existing = twilioCallSessions.get(callSid) || null;
+  const resolvedClinicId = clinicId || existing?.clinicId || null;
+  if (!resolvedClinicId) throw new Error("clinicId is required.");
+  const cfg = await getClinicTwilioConfigByClinicId(resolvedClinicId);
+  const call = await getClient(cfg).calls(callSid).fetch();
   const currentStatus = String(call.status || "").toLowerCase();
   const lifecycle = mapLifecycleEvent(currentStatus);
-  const previous = twilioCallSessions.get(callSid) || null;
+  const previous = existing;
   const previousStatus = String(previous?.status || "").toLowerCase();
 
   if (currentStatus && currentStatus !== previousStatus) {
@@ -104,7 +176,9 @@ async function getCallStatus(callSid) {
     callSid: call.sid,
     status: currentStatus || "unknown",
     identity: previous?.identity || "unknown",
-    isMuted: previous?.isMuted === true
+    isMuted: previous?.isMuted === true,
+    clinicId: resolvedClinicId,
+    twilioPhoneNumber: cfg.twilioPhoneNumber
   });
 
   return {
@@ -124,29 +198,34 @@ async function getCallStatus(callSid) {
   };
 }
 
-async function endCall(callSid) {
+async function endCall(callSid, { clinicId = null } = {}) {
   if (!callSid) {
     throw new Error("callSid is required.");
   }
-  const call = await getClient().calls(callSid).update({ status: "completed" });
-  const existing = twilioCallSessions.get(callSid);
-  if (existing) {
-    twilioCallSessions.set(callSid, { ...existing, status: "completed" });
+  const existing = twilioCallSessions.get(callSid) || null;
+  const resolvedClinicId = clinicId || existing?.clinicId || null;
+  if (!resolvedClinicId) throw new Error("clinicId is required.");
+  const cfg = await getClinicTwilioConfigByClinicId(resolvedClinicId);
+  const call = await getClient(cfg).calls(callSid).update({ status: "completed" });
+  const latest = twilioCallSessions.get(callSid);
+  if (latest) {
+    twilioCallSessions.set(callSid, { ...latest, status: "completed" });
   }
   return { callSid: call.sid, status: call.status };
 }
 
-async function startCallRecording({ callSid, recordingStatusCallback }) {
+async function startCallRecording({ callSid, recordingStatusCallback, clinicId }) {
   if (!callSid) {
     throw new Error("callSid is required.");
   }
+  const cfg = await getClinicTwilioConfigByClinicId(clinicId);
   const payload = {};
   if (recordingStatusCallback) {
     payload.recordingStatusCallback = recordingStatusCallback;
     payload.recordingStatusCallbackMethod = "POST";
     payload.recordingStatusCallbackEvent = ["completed", "absent"];
   }
-  const recording = await getClient().calls(callSid).recordings.create(payload);
+  const recording = await getClient(cfg).calls(callSid).recordings.create(payload);
   return {
     recordingSid: recording.sid,
     callSid: recording.callSid || callSid,
@@ -154,10 +233,12 @@ async function startCallRecording({ callSid, recordingStatusCallback }) {
   };
 }
 
-function generateAccessToken(identity) {
-  const apiKeySid = process.env.TWILIO_API_KEY_SID || process.env.TWILIO_API_KEY || "";
-  const apiKeySecret = process.env.TWILIO_API_KEY_SECRET || process.env.TWILIO_API_SECRET || "";
-  const twimlAppSid = process.env.TWILIO_TWIML_APP_SID || "";
+async function generateAccessToken(identity, { clinicId }) {
+  const cfg = await getClinicTwilioConfigByClinicId(clinicId);
+  const apiKeySid = cfg.twilioApiKeySid;
+  const apiKeySecret = cfg.twilioApiKeySecret;
+  const twimlAppSid = cfg.twilioTwimlAppSid;
+  const twilioAccountSid = cfg.twilioAccountSid;
 
   if (!twilioAccountSid || !apiKeySid || !apiKeySecret || !twimlAppSid) {
     throw new Error(
@@ -182,14 +263,15 @@ function generateAccessToken(identity) {
 }
 
 // Returns TwiML that dials the doctor's phone when patient's browser calls.
-function buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl = null }) {
+async function buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl = null, clinicId }) {
+  const cfg = await getClinicTwilioConfigByClinicId(clinicId);
   const target =
     String(doctorPhoneNumber || "").trim() ||
     String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
   if (!target) throw new Error("Doctor phone number is required.");
   const twiml = new twilio.twiml.VoiceResponse();
   const dialOptions = {
-    callerId: twilioPhoneNumber || undefined,
+    callerId: cfg.twilioPhoneNumber || undefined,
     answerOnBridge: true,
     timeout: 30
   };
@@ -202,19 +284,23 @@ function buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl = null }) {
   return twiml.toString();
 }
 
-function trackCallStatus({ callSid, statusCallbackEvent, callStatus, identity }) {
+function trackCallStatus({ callSid, statusCallbackEvent, callStatus, identity, clinicId = null, twilioPhoneNumber = null }) {
   if (!callSid) return null;
   const status = String(callStatus || statusCallbackEvent || "").toLowerCase() || "unknown";
   const current = twilioCallSessions.get(callSid) || {
     callSid,
     identity: identity || "unknown",
-    isMuted: false
+    isMuted: false,
+    clinicId: clinicId || null,
+    twilioPhoneNumber: twilioPhoneNumber || null
   };
   const next = {
     ...current,
     callSid,
     identity: identity || current.identity || "unknown",
-    status
+    status,
+    clinicId: clinicId || current.clinicId || null,
+    twilioPhoneNumber: twilioPhoneNumber || current.twilioPhoneNumber || null
   };
   twilioCallSessions.set(callSid, next);
   return next;
@@ -227,7 +313,9 @@ function setCallMuted({ callSid, isMuted }) {
     callSid,
     identity: "unknown",
     status: "unknown",
-    isMuted: false
+    isMuted: false,
+    clinicId: null,
+    twilioPhoneNumber: null
   };
   const next = { ...current, isMuted };
   twilioCallSessions.set(callSid, next);
@@ -244,5 +332,7 @@ module.exports = {
   setCallMuted,
   generateAccessToken,
   buildOutboundDialTwiml,
-  isE164
+  isE164,
+  getClinicTwilioConfigByPhoneNumber,
+  getClinicTwilioConfigByClinicId
 };

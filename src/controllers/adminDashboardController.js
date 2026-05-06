@@ -79,6 +79,7 @@ function makeClinicSummary(clinicId) {
     name: `Clinic ${clinicId}`,
     acronym: `C${clinicId}`,
     city: "",
+    twilioConfigured: false,
     elevenLabsConfigured: false,
     elevenLabsVoiceConfigured: false,
     elevenLabsVoiceId: null
@@ -117,6 +118,14 @@ async function listClinics(req, res, next) {
       tel: row.phone || "",
       web: row.web || "",
       portal: row.portal || "",
+      twilioConfigured: Boolean(
+        row.twilioPhoneNumber &&
+          row.twilioAccountSid &&
+          row.twilioAuthToken &&
+          row.twilioApiKeySid &&
+          row.twilioApiKeySecret &&
+          row.twilioTwimlAppSid
+      ),
       elevenLabsConfigured: Boolean(row.elevenlabsApiKey),
       elevenLabsVoiceConfigured: Boolean(row.elevenlabsVoiceId),
       elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null
@@ -273,6 +282,19 @@ function sanitizeText(value) {
   return trimmed.length ? trimmed : null;
 }
 
+function normalizeTwilioUsPhoneNumber(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const digits = raw.replace(/[^\d]/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  return null;
+}
+
 async function updateClinicElevenLabsApiKey(req, res, next) {
   try {
     const id = Number(req.params.id);
@@ -305,6 +327,113 @@ async function updateClinicElevenLabsApiKey(req, res, next) {
 
     await clinic.update(updates);
     return res.status(200).json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function getClinicElevenLabsConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+    const clinic = await Clinic.findByPk(id, { attributes: ["id", "elevenlabsApiKey"] });
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+    return res.status(200).json({
+      apiKey: clinic.elevenlabsApiKey ? String(clinic.elevenlabsApiKey) : ""
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function updateClinicTwilioConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const twilioPhoneNumberRaw = String(req.body?.twilioPhoneNumber || "").trim();
+    const twilioPhoneNumber = normalizeTwilioUsPhoneNumber(twilioPhoneNumberRaw);
+    const twilioAccountSid = String(req.body?.twilioAccountSid || "").trim();
+    const twilioAuthToken = String(req.body?.twilioAuthToken || "").trim();
+    const twilioApiKeySid = String(req.body?.twilioApiKeySid || "").trim();
+    const twilioApiKeySecret = String(req.body?.twilioApiKeySecret || "").trim();
+    const twilioTwimlAppSid = String(req.body?.twilioTwimlAppSid || "").trim();
+
+    if (
+      !twilioPhoneNumber ||
+      !twilioAccountSid ||
+      !twilioAuthToken ||
+      !twilioApiKeySid ||
+      !twilioApiKeySecret ||
+      !twilioTwimlAppSid
+    ) {
+      return res.status(400).json({
+        error:
+          "twilioPhoneNumber, twilioAccountSid, twilioAuthToken, twilioApiKeySid, twilioApiKeySecret and twilioTwimlAppSid are required."
+      });
+    }
+    if (!/^\+1\d{10}$/.test(twilioPhoneNumber)) {
+      return res.status(400).json({
+        error: "twilioPhoneNumber must be a US number in +1XXXXXXXXXX format."
+      });
+    }
+
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    await clinic.update({
+      twilioPhoneNumber,
+      twilioAccountSid,
+      twilioAuthToken,
+      twilioApiKeySid,
+      twilioApiKeySecret,
+      twilioTwimlAppSid
+    });
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function getClinicTwilioConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const clinic = await Clinic.findByPk(id, {
+      attributes: [
+        "id",
+        "twilioPhoneNumber",
+        "twilioAccountSid",
+        "twilioAuthToken",
+        "twilioApiKeySid",
+        "twilioApiKeySecret",
+        "twilioTwimlAppSid"
+      ]
+    });
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    return res.status(200).json({
+      twilioPhoneNumber: clinic.twilioPhoneNumber ? String(clinic.twilioPhoneNumber) : "",
+      twilioAccountSid: clinic.twilioAccountSid ? String(clinic.twilioAccountSid) : "",
+      twilioAuthToken: clinic.twilioAuthToken ? String(clinic.twilioAuthToken) : "",
+      twilioApiKeySid: clinic.twilioApiKeySid ? String(clinic.twilioApiKeySid) : "",
+      twilioApiKeySecret: clinic.twilioApiKeySecret ? String(clinic.twilioApiKeySecret) : "",
+      twilioTwimlAppSid: clinic.twilioTwimlAppSid ? String(clinic.twilioTwimlAppSid) : ""
+    });
   } catch (err) {
     return next(err);
   }
@@ -559,6 +688,9 @@ async function listIncomingCallMessages(req, res, next) {
 module.exports = {
   listClinics,
   updateClinicElevenLabsApiKey,
+  getClinicElevenLabsConfig,
+  updateClinicTwilioConfig,
+  getClinicTwilioConfig,
   listClinicElevenLabsVoices,
   previewClinicElevenLabsVoice,
   streamElevenLabsPreviewSource,

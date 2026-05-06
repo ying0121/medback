@@ -9,7 +9,9 @@ const {
   setCallMuted,
   generateAccessToken,
   buildOutboundDialTwiml,
-  isE164
+  isE164,
+  getClinicTwilioConfigByPhoneNumber,
+  getClinicTwilioConfigByClinicId
 } = require("../services/twilioService");
 const {
   generateAssistantReply,
@@ -477,13 +479,13 @@ async function runInboundAssistantTwiMl({
   });
 }
 
-async function fetchRecordingBase64(recordingUrl) {
-  const accountSid = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
-  const authToken = String(process.env.TWILIO_AUTH_TOKEN || "").trim();
-  if (!recordingUrl || !accountSid || !authToken) return null;
+async function fetchRecordingBase64(recordingUrl, { accountSid, authToken }) {
+  const sid = String(accountSid || "").trim();
+  const token = String(authToken || "").trim();
+  if (!recordingUrl || !sid || !token) return null;
   const mediaUrl = String(recordingUrl).endsWith(".mp3") ? String(recordingUrl) : `${recordingUrl}.mp3`;
   const response = await axios.get(mediaUrl, {
-    auth: { username: accountSid, password: authToken },
+    auth: { username: sid, password: token },
     responseType: "arraybuffer",
     timeout: 20000
   });
@@ -539,10 +541,15 @@ module.exports = {
     try {
       const rawIdentity =
         req.query?.identity || req.body?.identity || null;
+      const clinicIdRaw = req.query?.clinicId || req.body?.clinicId;
+      const clinicId = Number(clinicIdRaw);
+      if (!Number.isFinite(clinicId) || clinicId <= 0) {
+        return res.status(400).json({ error: "clinicId is required." });
+      }
       const identity = rawIdentity
         ? normalizeIdentity(rawIdentity) || createRandomIdentity("patient")
         : createRandomIdentity("patient");
-      const jwt = generateAccessToken(identity);
+      const jwt = await generateAccessToken(identity, { clinicId });
       // eslint-disable-next-line no-console
       console.log(`[Twilio][token] issued for identity=${identity}`);
       return res.status(200).json({ ok: true, token: jwt, identity });
@@ -562,6 +569,7 @@ module.exports = {
     // If the frontend did NOT pass a phone number as To (e.g. it passed a
     // TwiML App SID or nothing), we fall back to EXAMPLE_DOCTOR_PHONE_NUMBER.
     const rawTo = String(req.body?.To || req.query?.To || "").trim();
+    const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
     const doctorPhoneNumber = isE164(rawTo)
       ? rawTo
       : String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
@@ -578,11 +586,15 @@ module.exports = {
 
     try {
       const dialActionUrl = `${getServerUrl(req)}/api/twilio/voice/dial-result`;
-      const twilioNumber = String(process.env.TWILIO_PHONE_NUMBER || "").trim();
+      if (!Number.isFinite(clinicId) || clinicId <= 0) {
+        throw new Error("clinicId is required.");
+      }
+      const clinicTwilio = await getClinicTwilioConfigByClinicId(clinicId);
+      const twilioNumber = clinicTwilio.twilioPhoneNumber;
       // eslint-disable-next-line no-console
       console.log(`[Twilio][twiml] callerId=${twilioNumber || "MISSING"} dialAction=${dialActionUrl}`);
 
-      const twiml = buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl });
+      const twiml = await buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl, clinicId });
       // eslint-disable-next-line no-console
       console.log(`[Twilio][twiml] generated XML: ${twiml}`);
       res.type("text/xml");
@@ -639,9 +651,12 @@ module.exports = {
     const greeting = process.env.TWILIO_INBOUND_VOICE_GREETING || "Hello. This is our automated assistant. You may speak in any language. Please ask me your question.";
     const callSid = String(req.body?.CallSid || "").trim();
     const from = String(req.body?.From || "").trim();
+    const to = String(req.body?.To || "").trim();
     const session = callSid ? getInboundVoiceSession(callSid) : null;
     try {
+      const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
       if (callSid) {
+        if (session) session.clinicId = clinicTwilio.clinicId;
         await findOrCreateCallBySid({
           callSid,
           from,
@@ -650,7 +665,11 @@ module.exports = {
         if (session && session.recordingStarted !== true) {
           try {
             const recordingStatusCallback = `${getServerUrl(req)}/api/twilio/voice/recording-status`;
-            const recording = await startCallRecording({ callSid, recordingStatusCallback });
+            const recording = await startCallRecording({
+              callSid,
+              recordingStatusCallback,
+              clinicId: clinicTwilio.clinicId
+            });
             session.recordingStarted = true;
             // eslint-disable-next-line no-console
             console.log(
@@ -922,6 +941,7 @@ module.exports = {
       const recordingStatus = String(req.body?.RecordingStatus || "").trim().toLowerCase();
       const recordingDuration = Number(req.body?.RecordingDuration || 0);
       const from = String(req.body?.From || "").trim();
+      const to = String(req.body?.To || "").trim();
 
       // eslint-disable-next-line no-console
       console.log(
@@ -949,7 +969,11 @@ module.exports = {
       let audioBase64 = null;
       if (recordingStatus === "completed" && recordingUrl) {
         try {
-          audioBase64 = await fetchRecordingBase64(recordingUrl);
+          const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
+          audioBase64 = await fetchRecordingBase64(recordingUrl, {
+            accountSid: clinicTwilio.twilioAccountSid,
+            authToken: clinicTwilio.twilioAuthToken
+          });
         } catch (downloadErr) {
           // eslint-disable-next-line no-console
           console.error(`[Twilio][recording:download] sid=${recordingSid} error=${downloadErr.message}`);
@@ -1054,6 +1078,7 @@ module.exports = {
     try {
       const providedIdentity = normalizeIdentity(req.body?.identity || req.query?.identity);
       const identity = providedIdentity || createRandomIdentity("patient");
+      const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
       const doctorPhoneNumber =
         req.body?.toPhoneNumber ||
         req.body?.doctorPhoneNumber ||
@@ -1067,6 +1092,9 @@ module.exports = {
         process.env.EXAMPLE_PATIENT_PHONE_NUMBER ||
         null;
 
+      if (!Number.isFinite(clinicId) || clinicId <= 0) {
+        return res.status(400).json({ error: "clinicId is required." });
+      }
       if (!doctorPhoneNumber || !patientPhoneNumber) {
         return res.status(400).json({
           error: "doctor and patient phone numbers are required."
@@ -1078,7 +1106,8 @@ module.exports = {
       const call = await initiateCall({
         toPhoneNumber: doctorPhoneNumber,
         patientPhoneNumber,
-        callbackUrl: callbackUrl
+        callbackUrl: callbackUrl,
+        clinicId
       });
 
       return res.status(200).json({
@@ -1100,7 +1129,20 @@ module.exports = {
       const callStatus = req.body?.CallStatus || null;
       const identity = req.body?.Caller || req.body?.From || "unknown";
       const callDuration = Number(req.body?.CallDuration || 0);
-      trackCallStatus({ callSid, statusCallbackEvent, callStatus, identity });
+      let clinicTwilio = null;
+      try {
+        clinicTwilio = await getClinicTwilioConfigByPhoneNumber(req.body?.To || "");
+      } catch {
+        clinicTwilio = null;
+      }
+      trackCallStatus({
+        callSid,
+        statusCallbackEvent,
+        callStatus,
+        identity,
+        clinicId: clinicTwilio?.clinicId || null,
+        twilioPhoneNumber: clinicTwilio?.twilioPhoneNumber || null
+      });
       const lifecycle = mapLifecycleEvent(callStatus || statusCallbackEvent);
 
       // Persist inbound call status and duration when available.
@@ -1134,8 +1176,10 @@ module.exports = {
   async stopCall(req, res, next) {
     try {
       const callSid = String(req.body?.callSid || "").trim();
+      const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
       if (!callSid) return res.status(400).json({ error: "callSid required." });
-      const ended = await endCall(callSid);
+      if (!Number.isFinite(clinicId) || clinicId <= 0) return res.status(400).json({ error: "clinicId required." });
+      const ended = await endCall(callSid, { clinicId });
       // eslint-disable-next-line no-console
       console.log(`[Twilio][stop] callSid=${ended.callSid} status=${ended.status}`);
       return res.status(200).json({ ok: true, callSid: ended.callSid, status: ended.status });

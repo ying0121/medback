@@ -51,10 +51,31 @@ async function ensureClinicElevenlabsVoiceColumn() {
   }
 }
 
+async function ensureClinicTwilioColumns() {
+  const statements = [
+    "ALTER TABLE clinics ADD COLUMN twilio_phone_number VARCHAR(64) NULL",
+    "ALTER TABLE clinics ADD COLUMN twilio_account_sid VARCHAR(128) NULL",
+    "ALTER TABLE clinics ADD COLUMN twilio_auth_token TEXT NULL",
+    "ALTER TABLE clinics ADD COLUMN twilio_api_key_sid VARCHAR(128) NULL",
+    "ALTER TABLE clinics ADD COLUMN twilio_api_key_secret TEXT NULL",
+    "ALTER TABLE clinics ADD COLUMN twilio_twiml_app_sid VARCHAR(128) NULL"
+  ];
+
+  for (const sql of statements) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      if (!/duplicate column name/i.test(msg)) throw err;
+    }
+  }
+}
+
 async function syncDatabase() {
   await sequelize.sync();
   await ensureClinicElevenlabsColumn();
   await ensureClinicElevenlabsVoiceColumn();
+  await ensureClinicTwilioColumns();
 }
 
 async function initializeDatabase() {

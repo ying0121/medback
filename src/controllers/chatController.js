@@ -72,8 +72,10 @@ module.exports = {
   async getCallStatus(req, res, next) {
     try {
       const callSid = String(req.params.callSid || "").trim();
+      const clinicId = Number(req.query?.clinicId || req.body?.clinicId || 0);
       if (!callSid) return res.status(400).json({ error: "callSid is required." });
-      const call = await getTwilioCallStatus(callSid);
+      if (!Number.isFinite(clinicId) || clinicId <= 0) return res.status(400).json({ error: "clinicId is required." });
+      const call = await getTwilioCallStatus(callSid, clinicId);
       return res.status(200).json(call);
     } catch (err) {
       return next(err);
@@ -82,8 +84,10 @@ module.exports = {
   async endCall(req, res, next) {
     try {
       const callSid = String(req.body?.callSid || "").trim();
+      const clinicId = Number(req.body?.clinicId || 0);
       if (!callSid) return res.status(400).json({ error: "callSid is required." });
-      const ended = await endTwilioCall(callSid);
+      if (!Number.isFinite(clinicId) || clinicId <= 0) return res.status(400).json({ error: "clinicId is required." });
+      const ended = await endTwilioCall(callSid, clinicId);
       return res.status(200).json(ended);
     } catch (err) {
       return next(err);

@@ -2,10 +2,10 @@ const { Conversation, Message, Clinic, Knowledge } = require("../db");
 const {
   generateAssistantReply,
   detectTwilioIntent,
-  transcribeAudioBase64,
-  generateSpeechFromText
+  transcribeAudioBase64
 } = require("./openaiService");
 const { getCallStatus, endCall } = require("./twilioService");
+const { textToSpeechMp3 } = require("./elevenlabsService");
 
 async function createConversation({ clinicId, userInfo }) {
   const created = await Conversation.create({
@@ -79,6 +79,19 @@ async function buildContextPrompts(clinicId) {
   const knowledgePrompt = knowledgeText ? `Product Knowledge:\n${knowledgeText}` : null;
 
   return { clinicPrompt, knowledgePrompt };
+}
+
+async function getClinicElevenLabsConfig(clinicId) {
+  if (!clinicId) return null;
+  const clinic = await Clinic.findOne({
+    where: { clinicId },
+    attributes: ["id", "elevenlabsApiKey", "elevenlabsVoiceId"]
+  });
+  if (!clinic) return null;
+  const apiKey = String(clinic.elevenlabsApiKey || "").trim();
+  const voiceId = String(clinic.elevenlabsVoiceId || "").trim();
+  if (!apiKey || !voiceId) return null;
+  return { apiKey, voiceId };
 }
 
 async function listMessages(conversationId) {
@@ -196,13 +209,19 @@ async function processIncomingMessage({
           knowledgePrompt: contextPrompts.knowledgePrompt
         }
       );
-      const voiceAudio = await generateSpeechFromText({ text: assistantText });
+      const elevenlabs = await getClinicElevenLabsConfig(conversation.clinicId);
+      if (!elevenlabs) {
+        throw new Error("ElevenLabs is not configured for this clinic.");
+      }
+      const mp3 = await textToSpeechMp3(elevenlabs.apiKey, elevenlabs.voiceId, assistantText);
+      const audioBase64Out = mp3.toString("base64");
+      const audioMimeTypeOut = "audio/mpeg";
 
       await createMessage({
         conversationId: ensuredConversationId,
         userType: "bot",
         message: assistantText,
-        audio: voiceAudio.audioBase64,
+        audio: audioBase64Out,
         messageType: "voice",
         isTopic,
         status: "success"
@@ -214,8 +233,8 @@ async function processIncomingMessage({
         twilioIntent,
         assistantReply: assistantText,
         transcriptText,
-        audioBase64: voiceAudio.audioBase64,
-        audioMimeType: voiceAudio.audioMimeType
+        audioBase64: audioBase64Out,
+        audioMimeType: audioMimeTypeOut
       };
     } catch (err) {
       const errorMessage = err.message || "OpenAI voice generation failed.";
@@ -323,12 +342,12 @@ async function processIncomingMessage({
   }
 }
 
-async function getTwilioCallStatus(callSid) {
-  return getCallStatus(callSid);
+async function getTwilioCallStatus(callSid, clinicId) {
+  return getCallStatus(callSid, { clinicId });
 }
 
-async function endTwilioCall(callSid) {
-  return endCall(callSid);
+async function endTwilioCall(callSid, clinicId) {
+  return endCall(callSid, { clinicId });
 }
 
 module.exports = {

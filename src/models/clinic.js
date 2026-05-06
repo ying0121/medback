@@ -68,6 +68,36 @@ const Clinic = sequelize.define(
       type: DataTypes.STRING(128),
       allowNull: true,
       field: "elevenlabs_voice_id"
+    },
+    twilioPhoneNumber: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      field: "twilio_phone_number"
+    },
+    twilioAccountSid: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "twilio_account_sid"
+    },
+    twilioAuthToken: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "twilio_auth_token"
+    },
+    twilioApiKeySid: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "twilio_api_key_sid"
+    },
+    twilioApiKeySecret: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "twilio_api_key_secret"
+    },
+    twilioTwimlAppSid: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "twilio_twiml_app_sid"
     }
   },
   {

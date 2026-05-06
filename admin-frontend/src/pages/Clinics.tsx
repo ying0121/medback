@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play } from "lucide-react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,9 @@ import {
   updateClinic,
   deleteClinic,
   syncClinicsFromExternalApi,
+  getClinicTwilioConfig,
+  updateClinicTwilioConfig,
+  getClinicElevenLabsConfig,
   updateClinicElevenLabsApiKey,
   listClinicElevenLabsVoices,
   fetchClinicElevenLabsPreviewBlob,
@@ -26,6 +29,7 @@ import {
   updateClinicElevenLabsVoice,
   type Clinic,
   type ElevenLabsVoice,
+  type ClinicTwilioConfigInput,
 } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
@@ -38,6 +42,34 @@ const EMPTY: ClinicForm = {
   tel: "", web: "", portal: "",
 };
 
+const EMPTY_TWILIO_FORM: ClinicTwilioConfigInput = {
+  twilioPhoneNumber: "",
+  twilioAccountSid: "",
+  twilioAuthToken: "",
+  twilioApiKeySid: "",
+  twilioApiKeySecret: "",
+  twilioTwimlAppSid: ""
+};
+
+function normalizeUsPhoneForSave(value: string) {
+  const digits = String(value || "").replace(/[^\d]/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  return "";
+}
+
+function formatUsPhoneForDisplay(value: string) {
+  const digits = String(value || "").replace(/[^\d]/g, "");
+  const local = digits.startsWith("1") ? digits.slice(1, 11) : digits.slice(0, 10);
+  const a = local.slice(0, 3);
+  const b = local.slice(3, 6);
+  const c = local.slice(6, 10);
+  if (!a) return "+1";
+  if (!b) return `+1 (${a}`;
+  if (!c) return `+1 (${a}) ${b}`;
+  return `+1 (${a}) ${b}-${c}`;
+}
+
 export default function Clinics() {
   const [data, setData] = useState<Clinic[]>([]);
   const [open, setOpen] = useState(false);
@@ -45,9 +77,15 @@ export default function Clinics() {
   const [form, setForm] = useState<ClinicForm>(EMPTY);
   const [confirmDelete, setConfirmDelete] = useState<Clinic | null>(null);
   const [syncingExternal, setSyncingExternal] = useState(false);
+  const [twilioClinic, setTwilioClinic] = useState<Clinic | null>(null);
+  const [twilioForm, setTwilioForm] = useState<ClinicTwilioConfigInput>(EMPTY_TWILIO_FORM);
+  const [twilioPhoneDisplay, setTwilioPhoneDisplay] = useState("+1");
+  const [savingTwilio, setSavingTwilio] = useState(false);
+  const [loadingTwilio, setLoadingTwilio] = useState(false);
   const [elevenLabsClinic, setElevenLabsClinic] = useState<Clinic | null>(null);
   const [elevenLabsKey, setElevenLabsKey] = useState("");
   const [savingElevenLabs, setSavingElevenLabs] = useState(false);
+  const [loadingElevenLabs, setLoadingElevenLabs] = useState(false);
 
   const [voiceModalClinic, setVoiceModalClinic] = useState<Clinic | null>(null);
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
@@ -128,9 +166,39 @@ export default function Clinics() {
     refresh();
   };
 
-  const openElevenLabs = (c: Clinic) => {
+  const openElevenLabs = async (c: Clinic) => {
     setElevenLabsClinic(c);
     setElevenLabsKey("");
+    try {
+      setLoadingElevenLabs(true);
+      const data = await getClinicElevenLabsConfig(c.id);
+      setElevenLabsKey(data.apiKey || "");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load ElevenLabs key";
+      toast.error(msg);
+    } finally {
+      setLoadingElevenLabs(false);
+    }
+  };
+
+  const openTwilio = async (c: Clinic) => {
+    setTwilioClinic(c);
+    setTwilioForm(EMPTY_TWILIO_FORM);
+    setTwilioPhoneDisplay("+1");
+    try {
+      setLoadingTwilio(true);
+      const data = await getClinicTwilioConfig(c.id);
+      setTwilioForm({
+        ...data,
+        twilioPhoneNumber: normalizeUsPhoneForSave(data.twilioPhoneNumber) || data.twilioPhoneNumber
+      });
+      setTwilioPhoneDisplay(formatUsPhoneForDisplay(data.twilioPhoneNumber || ""));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load Twilio settings";
+      toast.error(msg);
+    } finally {
+      setLoadingTwilio(false);
+    }
   };
 
   const playVoicePreview = async (v: ElevenLabsVoice) => {
@@ -212,6 +280,34 @@ export default function Clinics() {
     }
   };
 
+  const saveTwilio = async () => {
+    if (!twilioClinic) return;
+    const payload: ClinicTwilioConfigInput = {
+      twilioPhoneNumber: twilioForm.twilioPhoneNumber.trim(),
+      twilioAccountSid: twilioForm.twilioAccountSid.trim(),
+      twilioAuthToken: twilioForm.twilioAuthToken.trim(),
+      twilioApiKeySid: twilioForm.twilioApiKeySid.trim(),
+      twilioApiKeySecret: twilioForm.twilioApiKeySecret.trim(),
+      twilioTwimlAppSid: twilioForm.twilioTwimlAppSid.trim()
+    };
+    if (Object.values(payload).some((value) => !value)) {
+      return toast.error("All Twilio fields are required");
+    }
+    try {
+      setSavingTwilio(true);
+      await updateClinicTwilioConfig(twilioClinic.id, payload);
+      toast.success("Twilio account saved");
+      setTwilioClinic(null);
+      setTwilioForm(EMPTY_TWILIO_FORM);
+      refresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to save Twilio settings";
+      toast.error(msg);
+    } finally {
+      setSavingTwilio(false);
+    }
+  };
+
   const onSyncExternal = async () => {
     try {
       setSyncingExternal(true);
@@ -254,6 +350,14 @@ export default function Clinics() {
     ) : <span className="text-muted-foreground text-sm">—</span> },
     { key: "actions", header: "", className: "w-56 text-right", searchable: () => "", render: (r) => (
       <div className="flex items-center justify-end gap-1">
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => openTwilio(r)}
+          title={r.twilioConfigured ? "Twilio account — configured" : "Twilio account"}
+        >
+          <Phone className={`h-4 w-4 ${r.twilioConfigured ? "text-emerald-600" : "text-muted-foreground"}`} />
+        </Button>
         <Button
           size="icon"
           variant="ghost"
@@ -441,6 +545,100 @@ export default function Clinics() {
       </Dialog>
 
       <Dialog
+        open={!!twilioClinic}
+        onOpenChange={(o) => {
+          if (!o) {
+            setTwilioClinic(null);
+            setTwilioForm(EMPTY_TWILIO_FORM);
+            setTwilioPhoneDisplay("+1");
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Twilio account</DialogTitle>
+            <DialogDescription>
+              {twilioClinic ? (
+                <>
+                  Set Twilio credentials for <strong>{twilioClinic.name}</strong>. These are saved per clinic.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-1">
+            <Field label="Twilio phone number *">
+              <SecretInput
+                autoComplete="off"
+                placeholder="+1 (555) 123-4567"
+                value={twilioPhoneDisplay}
+                onChange={(e) => {
+                  const raw = e.target.value || "";
+                  setTwilioPhoneDisplay(formatUsPhoneForDisplay(raw));
+                  setTwilioForm({
+                    ...twilioForm,
+                    twilioPhoneNumber: normalizeUsPhoneForSave(raw)
+                  });
+                }}
+              />
+            </Field>
+            <Field label="Twilio account SID *">
+              <SecretInput
+                autoComplete="off"
+                placeholder="AC..."
+                value={twilioForm.twilioAccountSid}
+                onChange={(e) => setTwilioForm({ ...twilioForm, twilioAccountSid: e.target.value })}
+              />
+            </Field>
+            <Field label="Twilio auth token *">
+              <SecretInput
+                autoComplete="off"
+                value={twilioForm.twilioAuthToken}
+                onChange={(e) => setTwilioForm({ ...twilioForm, twilioAuthToken: e.target.value })}
+              />
+            </Field>
+            <Field label="Twilio API key SID *">
+              <SecretInput
+                autoComplete="off"
+                placeholder="SK..."
+                value={twilioForm.twilioApiKeySid}
+                onChange={(e) => setTwilioForm({ ...twilioForm, twilioApiKeySid: e.target.value })}
+              />
+            </Field>
+            <Field label="Twilio API key secret *">
+              <SecretInput
+                autoComplete="off"
+                value={twilioForm.twilioApiKeySecret}
+                onChange={(e) => setTwilioForm({ ...twilioForm, twilioApiKeySecret: e.target.value })}
+              />
+            </Field>
+            <Field label="Twilio TwiML app SID *">
+              <SecretInput
+                autoComplete="off"
+                placeholder="AP..."
+                value={twilioForm.twilioTwimlAppSid}
+                onChange={(e) => setTwilioForm({ ...twilioForm, twilioTwimlAppSid: e.target.value })}
+              />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setTwilioClinic(null);
+                setTwilioForm(EMPTY_TWILIO_FORM);
+                setTwilioPhoneDisplay("+1");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={saveTwilio} disabled={savingTwilio || loadingTwilio} className="bg-gradient-primary text-primary-foreground">
+              {loadingTwilio ? "Loading..." : savingTwilio ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={!!elevenLabsClinic}
         onOpenChange={(o) => {
           if (!o) {
@@ -455,16 +653,14 @@ export default function Clinics() {
             <DialogDescription>
               {elevenLabsClinic ? (
                 <>
-                  Set the API key for <strong>{elevenLabsClinic.name}</strong>. The key is stored on the server and is
-                  not shown again after saving.
+                  Set the API key for <strong>{elevenLabsClinic.name}</strong>. The key is stored on the server.
                 </>
               ) : null}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-1">
             <Field label="API key">
-              <Input
-                type="password"
+              <SecretInput
                 autoComplete="off"
                 placeholder="xi_…"
                 value={elevenLabsKey}
@@ -482,8 +678,8 @@ export default function Clinics() {
             >
               Cancel
             </Button>
-            <Button onClick={saveElevenLabs} disabled={savingElevenLabs} className="bg-gradient-primary text-primary-foreground">
-              {savingElevenLabs ? "Saving…" : "Save"}
+            <Button onClick={saveElevenLabs} disabled={savingElevenLabs || loadingElevenLabs} className="bg-gradient-primary text-primary-foreground">
+              {loadingElevenLabs ? "Loading..." : savingElevenLabs ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -512,6 +708,41 @@ function Field({ label, children, className }: { label: string; children: React.
     <div className={className}>
       <Label className="text-xs text-muted-foreground mb-1.5 block">{label}</Label>
       {children}
+    </div>
+  );
+}
+
+function SecretInput({
+  value,
+  onChange,
+  autoComplete = "off",
+  placeholder
+}: {
+  value: string;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  autoComplete?: string;
+  placeholder?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <Input
+        type={show ? "text" : "password"}
+        autoComplete={autoComplete}
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        className="pr-9"
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 text-muted-foreground"
+        onClick={() => setShow((v) => !v)}
+      >
+        {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </Button>
     </div>
   );
 }
