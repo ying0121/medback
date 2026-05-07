@@ -17,7 +17,8 @@ const {
   generateAssistantReply,
   generateInboundMergedTurn,
   detectInboundSpeechLanguage,
-  generateSpeechFromText
+  generateSpeechFromText,
+  transcribeAudioBase64
 } = require("../services/openaiService");
 const { Call, IncomingMessage, Clinic, Knowledge } = require("../db");
 const { textToSpeechMp3 } = require("../services/elevenlabsService");
@@ -30,6 +31,101 @@ const INBOUND_MAX_MESSAGES = 24;
 
 /** Short-lived MP3 blobs for Twilio <Play> (ElevenLabs TTS). */
 const ttsPlaybackCache = new Map();
+
+/**
+ * Gentle 440 Hz (A4) wait tone — soft sine wave with short fade-in/out.
+ * Pure Node.js WAV (no external dependency). Pre-built once at startup.
+ */
+function buildGentleWaitToneWav(durationSec = 3) {
+  const sampleRate = 8000;
+  const numSamples = Math.ceil(sampleRate * durationSec);
+  const dataBytes  = numSamples * 2;
+  const buf = Buffer.alloc(44 + dataBytes);
+
+  buf.write("RIFF", 0, "ascii");
+  buf.writeUInt32LE(36 + dataBytes, 4);
+  buf.write("WAVE", 8, "ascii");
+  buf.write("fmt ", 12, "ascii");
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);               // PCM
+  buf.writeUInt16LE(1, 22);               // mono
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write("data", 36, "ascii");
+  buf.writeUInt32LE(dataBytes, 40);
+
+  const FREQ      = 440;   // A4 — clean, recognisable, non-jarring
+  const AMP       = 0.22;
+  const FADE_IN   = 0.10;  // s
+  const FADE_OUT  = 0.30;  // s
+
+  for (let i = 0; i < numSamples; i++) {
+    const t      = i / sampleRate;
+    const fadeIn  = t < FADE_IN  ? t / FADE_IN  : 1.0;
+    const fadeOut = t > durationSec - FADE_OUT ? (durationSec - t) / FADE_OUT : 1.0;
+    const env     = Math.max(0, fadeIn * fadeOut) * AMP;
+    const s       = Math.round(Math.max(-32768, Math.min(32767,
+      Math.sin(2 * Math.PI * FREQ * t) * env * 32767
+    )));
+    buf.writeInt16LE(s, 44 + i * 2);
+  }
+  return buf;
+}
+
+/** Pre-built buffer served by GET /api/twilio/voice/wait-tone.wav */
+const WAIT_TONE_WAV = buildGentleWaitToneWav(3);
+
+/**
+ * Returns TwiML <Record> options for capturing the caller's speech per turn.
+ * Action posts to the same inbound-gather endpoint; we distinguish Record vs
+ * legacy Gather by checking for RecordingUrl in the body.
+ */
+function recordOptsInbound(actionUrl) {
+  const rawTimeout = String(process.env.TWILIO_INBOUND_SPEECH_TIMEOUT || "").trim();
+  const timeout    = rawTimeout === "auto" || !rawTimeout ? "3" : rawTimeout;
+  return {
+    action:    actionUrl,
+    method:    "POST",
+    maxLength: 30,
+    timeout,
+    playBeep:  false,
+    trim:      "trim-silence"
+  };
+}
+
+/**
+ * Downloads a Twilio per-turn WAV recording (created by <Record>).
+ * WAV is preferred because it is available faster than MP3 on Twilio's side.
+ * Retries up to maxRetries with back-off for 404/503 (recording may not be
+ * ready the instant the action URL fires).
+ */
+async function downloadRecordingWithRetry(recordingUrl, { accountSid, authToken }, maxRetries = 3) {
+  const sid   = String(accountSid  || process.env.TWILIO_ACCOUNT_SID  || "").trim();
+  const token = String(authToken   || process.env.TWILIO_AUTH_TOKEN   || "").trim();
+  if (!recordingUrl || !sid || !token) return null;
+
+  const baseUrl = recordingUrl.replace(/\.(mp3|wav|json)$/i, "");
+  const wavUrl  = `${baseUrl}.wav`;
+
+  let lastErr;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 1000 * attempt));
+    try {
+      const resp = await axios.get(wavUrl, {
+        auth: { username: sid, password: token },
+        responseType: "arraybuffer",
+        timeout: 10000
+      });
+      return { buffer: Buffer.from(resp.data), mimeType: "audio/wav" };
+    } catch (err) {
+      lastErr = err;
+      if (!err.response || ![404, 503].includes(err.response.status)) break;
+    }
+  }
+  throw lastErr || new Error("Recording download failed");
+}
 
 function pruneTtsPlaybackCache() {
   const now = Date.now();
@@ -127,6 +223,7 @@ function getInboundVoiceSession(callSid) {
     s = {
       messages: [],
       expiresAt: now + INBOUND_SESSION_TTL_MS,
+      startedAt: now,
       speechBcp47:
         String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
       sayVoiceName:
@@ -140,6 +237,7 @@ function getInboundVoiceSession(callSid) {
   }
   s.expiresAt = now + INBOUND_SESSION_TTL_MS;
   if (s.inboundAwaitingReply === undefined) s.inboundAwaitingReply = false;
+  if (!Number.isFinite(Number(s.startedAt))) s.startedAt = now;
   return s;
 }
 
@@ -227,8 +325,16 @@ async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
     .filter(Boolean)
     .join("\n");
   const knowledgePrompt = knowledgeText ? `Product Knowledge:\n${knowledgeText}` : null;
-  const elApiKey = String(clinic.elevenlabsApiKey || "").trim() || null;
-  const elVoiceId = String(clinic.elevenlabsVoiceId || "").trim() || null;
+  // Clinic DB credentials take priority; fall back to system-wide env vars so
+  // the bot always has something to use even before per-clinic keys are saved.
+  const elApiKey =
+    String(clinic.elevenlabsApiKey || "").trim() ||
+    String(process.env.SYSTEM_ELEVEN_LABS_API_KEY || "").trim() ||
+    null;
+  const elVoiceId =
+    String(clinic.elevenlabsVoiceId || "").trim() ||
+    String(process.env.SYSTEM_ELEVEN_LABS_VOICE_ID || "").trim() ||
+    null;
 
   return { clinicPrompt, knowledgePrompt, elApiKey, elVoiceId };
 }
@@ -253,6 +359,31 @@ async function findOrCreateCallBySid({ callSid, from, status = null }) {
     });
   }
   return call;
+}
+
+/**
+ * Updates calls.seconds from inbound session elapsed time.
+ * This is a safety net for inbound numbers that do not send Twilio status callbacks
+ * to /api/twilio/call-status. We only ever increase seconds.
+ */
+async function touchInboundCallSeconds(callSid) {
+  const sid = String(callSid || "").trim();
+  if (!sid) return;
+  const session = inboundVoiceSessions.get(sid);
+  if (!session) return;
+  const startedAt = Number(session.startedAt || 0);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return;
+  const elapsedSec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (elapsedSec <= 0) return;
+
+  const call = await Call.findOne({ where: { callSid: sid } });
+  if (!call) return;
+  const current = Number(call.seconds || 0);
+  if (elapsedSec > current) {
+    await call.update({ seconds: elapsedSec });
+    // eslint-disable-next-line no-console
+    console.log(`[Twilio][inbound] touch seconds callSid=${sid} seconds=${elapsedSec}`);
+  }
 }
 
 async function saveIncomingMessageRow({
@@ -438,22 +569,83 @@ async function buildInboundAssistantAudioResult({
   }
 }
 
+/**
+ * Starts the background job that produces the bot's spoken reply.
+ *
+ * Record mode  (recordingUrl supplied):
+ *   1. Download the Twilio WAV (with retry — recording may not be ready immediately).
+ *   2. Transcribe with Whisper.
+ *   3. Push transcription to session + save IncomingMessage with audio base64.
+ *   4. Run LLM + ElevenLabs TTS.
+ *
+ * Legacy Gather mode  (no recordingUrl):
+ *   User message already in session.messages — go straight to LLM + TTS.
+ */
 function startInboundAssistantBackgroundJob({
   callSid,
   session,
   maxReplyChars,
   useMerged,
   inboundModel,
-  inboundMaxTokens
+  inboundMaxTokens,
+  // Record-mode extras (all optional):
+  recordingUrl     = null,
+  twilioAccountSid = null,
+  twilioAuthToken  = null,
+  call             = null
 }) {
-  const p = buildInboundAssistantAudioResult({
-    session,
-    callSid,
-    maxReplyChars,
-    useMerged,
-    inboundModel,
-    inboundMaxTokens
-  });
+  const p = (async () => {
+    if (recordingUrl) {
+      try {
+        // Phase 1: download caller audio
+        const dlResult = await downloadRecordingWithRetry(recordingUrl, {
+          accountSid: twilioAccountSid,
+          authToken:  twilioAuthToken
+        });
+        if (!dlResult) return { error: "recording_download_empty" };
+
+        const { buffer, mimeType } = dlResult;
+        const audioBase64 = buffer.toString("base64");
+
+        // Phase 2: transcribe with Whisper
+        const transcription = await transcribeAudioBase64({ audioBase64, audioMimeType: mimeType });
+        if (!transcription) return { error: "transcription_empty" };
+
+        // eslint-disable-next-line no-console
+        console.log(`[Twilio][inbound] whisper callSid=${callSid} text="${transcription.slice(0, 80)}"`);
+
+        // Phase 3: push to session + save to DB (fire-and-forget for DB)
+        pushInboundVoiceMessage(callSid, "user", transcription);
+        if (call) {
+          saveIncomingMessageRow({
+            callId: call.id,
+            audio: audioBase64,
+            transcription,
+            userType: "user",
+            status: "success"
+          }).catch((e) => {
+            // eslint-disable-next-line no-console
+            console.error(`[Twilio][inbound] save user audio failed: ${e.message}`);
+          });
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[Twilio][inbound] record+whisper FAILED callSid=${callSid}: ${err.message}`);
+        return { error: err.message };
+      }
+    }
+
+    // Phase 4: LLM + ElevenLabs TTS
+    return buildInboundAssistantAudioResult({
+      session,
+      callSid,
+      maxReplyChars,
+      useMerged,
+      inboundModel,
+      inboundMaxTokens
+    });
+  })();
+
   inboundAssistantJobs.set(callSid, p);
   return p;
 }
@@ -478,7 +670,7 @@ async function finalizeInboundAssistantTwiml({
       callSid,
       "Sorry, I could not complete that. Please try again."
     );
-    vr.gather(gatherOptsInbound(session, gatherUrl));
+    vr.record(recordOptsInbound(gatherUrl));
     await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
     vr.hangup();
     return;
@@ -508,7 +700,7 @@ async function finalizeInboundAssistantTwiml({
     console.log(`[Twilio][inbound] end_call detected — hanging up callSid=${callSid}`);
     vr.hangup();
   } else {
-    vr.gather(gatherOptsInbound(session, gatherUrl));
+    vr.record(recordOptsInbound(gatherUrl));
     await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
     vr.hangup();
   }
@@ -773,18 +965,7 @@ module.exports = {
       const vr = new twilio.twiml.VoiceResponse();
       const sessionForTts = session || minimalInboundSessionForEl();
       await twimlPlayElevenLabsOrSay(vr, req, sessionForTts, callSid || "-", greeting);
-      const gatherConfig = session
-        ? gatherOptsInbound(session, gatherUrl)
-        : {
-            input: "speech",
-            action: gatherUrl,
-            method: "POST",
-            speechTimeout: process.env.TWILIO_INBOUND_SPEECH_TIMEOUT || "auto",
-            language: String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
-            speechModel: process.env.TWILIO_INBOUND_SPEECH_MODEL || "phone_call",
-            profanityFilter: "false"
-          };
-      vr.gather(gatherConfig);
+      vr.record(recordOptsInbound(gatherUrl));
       await twimlPlayElevenLabsOrSay(
         vr,
         req,
@@ -807,15 +988,22 @@ module.exports = {
   },
 
   // POST /api/twilio/voice/inbound-gather
-  // Twilio posts here after speech recognition (Gather input=speech).
-  // When wait-before-reply is on, LLM+TTS starts in parallel with spoken cue + optional SFX <Play> loops, then redirect.
+  // Twilio posts here after <Record> captures the caller's speech.
+  // When wait-before-reply is on, download+Whisper+LLM+TTS all run in the background
+  // while the caller hears the gentle wait tone; then Twilio redirects to inbound-reply.
   async inboundVoiceGather(req, res) {
-    const callSid = String(req.body?.CallSid || "").trim();
-    const from = String(req.body?.From || "").trim();
-    const to = String(req.body?.To || "").trim();
-    const speechResult = String(req.body?.SpeechResult || "").trim();
-    const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
+    const callSid      = String(req.body?.CallSid      || "").trim();
+    const from         = String(req.body?.From         || "").trim();
+    const to           = String(req.body?.To           || "").trim();
+    // <Record> provides RecordingUrl; legacy <Gather> provides SpeechResult
+    const recordingUrl = String(req.body?.RecordingUrl || "").trim();
+    const speechResult = String(req.body?.SpeechResult || "").trim(); // legacy fallback
+    const recDuration  = Number(req.body?.RecordingDuration || 0);
+    const digits       = String(req.body?.Digits       || "").trim();
+    const gatherUrl    = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
     const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
+
+    if (digits === "hangup") return res.sendStatus(200);
 
     if (!callSid) {
       res.type("text/xml");
@@ -824,6 +1012,7 @@ module.exports = {
     }
 
     const session = getInboundVoiceSession(callSid);
+    await touchInboundCallSeconds(callSid).catch(() => {});
 
     // Create call record first — must not depend on clinic lookup success.
     const call = await findOrCreateCallBySid({
@@ -837,32 +1026,45 @@ module.exports = {
     });
 
     try {
+      // Load clinic context — also capture Twilio creds needed for recording download.
+      let twilioAccountSid = "";
+      let twilioAuthToken  = "";
       if (!session.clinicPrompt || !session.knowledgePrompt) {
         try {
           const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
-          session.clinicId = clinicTwilio.clinicId;
-          const inboundContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
-          session.clinicPrompt = inboundContext.clinicPrompt;
+          session.clinicId      = clinicTwilio.clinicId;
+          twilioAccountSid      = clinicTwilio.twilioAccountSid;
+          twilioAuthToken       = clinicTwilio.twilioAuthToken;
+          const inboundContext  = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
+          session.clinicPrompt    = inboundContext.clinicPrompt;
           session.knowledgePrompt = inboundContext.knowledgePrompt;
-          session.elApiKey = inboundContext.elApiKey;
-          session.elVoiceId = inboundContext.elVoiceId;
+          session.elApiKey        = inboundContext.elApiKey;
+          session.elVoiceId       = inboundContext.elVoiceId;
         } catch {
           /* continue without clinic context */
         }
+      } else if (session.clinicId) {
+        try {
+          const cfg = await getClinicTwilioConfigByClinicId(session.clinicId);
+          twilioAccountSid = cfg.twilioAccountSid;
+          twilioAuthToken  = cfg.twilioAuthToken;
+        } catch { /* fallback: downloadRecordingWithRetry uses env vars */ }
       }
+
       const persistQueue = [];
       const vr = new twilio.twiml.VoiceResponse();
 
-      const inboundMaxTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 450);
-      const inboundModel = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || null;
-      const useMerged = String(process.env.TWILIO_INBOUND_MERGED_LLM || "true").toLowerCase() !== "false";
+      const inboundMaxTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 200);
+      const inboundModel     = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || null;
+      const useMerged        = String(process.env.TWILIO_INBOUND_MERGED_LLM || "true").toLowerCase() !== "false";
 
-      if (!speechResult) {
+      // Record mode: has audio file URL. Legacy Gather mode: has SpeechResult text.
+      const hasRecording = !!recordingUrl;
+      const hasSpeech    = hasRecording || !!speechResult;
+
+      if (!hasSpeech) {
         await twimlPlayElevenLabsOrSay(
-          vr,
-          req,
-          session,
-          callSid,
+          vr, req, session, callSid,
           "Sorry, I did not catch that. Please try again."
         );
         if (call) {
@@ -875,46 +1077,52 @@ module.exports = {
             })
           );
         }
-        vr.gather(gatherOptsInbound(session, gatherUrl));
+        vr.record(recordOptsInbound(gatherUrl));
         await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
         vr.hangup();
       } else {
-        if (call) {
-          persistQueue.push(() =>
-            saveIncomingMessageRow({
-              callId: call.id,
-              audio: null, // Twilio <Gather input=\"speech\"> does not provide raw caller audio.
-              transcription: speechResult,
-              userType: "user",
-              status: "success-no-audio"
-            })
-          );
+        if (!hasRecording && speechResult) {
+          // Legacy Gather path — save transcription only (no audio available).
+          if (call) {
+            persistQueue.push(() =>
+              saveIncomingMessageRow({
+                callId: call.id,
+                audio: null,
+                transcription: speechResult,
+                userType: "user",
+                status: "success-no-audio"
+              })
+            );
+          }
+          pushInboundVoiceMessage(callSid, "user", speechResult);
         }
-
-        pushInboundVoiceMessage(callSid, "user", speechResult);
+        // Record mode: message push + audio save happen inside the background job
+        // (after download + Whisper finish). Do NOT push the message here.
 
         if (useInboundWaitBeforeReply()) {
           session.inboundAwaitingReply = true;
+          // Start download + Whisper + LLM + EL TTS — all in background.
           startInboundAssistantBackgroundJob({
             callSid,
             session,
             maxReplyChars,
             useMerged,
             inboundModel,
-            inboundMaxTokens
+            inboundMaxTokens,
+            ...(hasRecording ? { recordingUrl, twilioAccountSid, twilioAuthToken, call } : {})
           });
-          const waitSay = String(process.env.TWILIO_INBOUND_WAIT_SAY_TEXT || "").trim();
-          if (waitSay) {
-            await twimlPlayElevenLabsOrSay(vr, req, session, callSid, waitSay);
-          }
-          const sfxUrl = getInboundWaitSfxUrl();
+
+          // Play wait audio while background job runs (custom URL > built-in tone).
+          const sfxUrl  = getInboundWaitSfxUrl();
           const holdUrl = getInboundWaitAudioUrl();
           if (isHttpsOrHttpUrl(sfxUrl)) {
             vr.play({ loop: getInboundWaitSfxLoopCount() }, sfxUrl);
           } else if (isHttpsOrHttpUrl(holdUrl)) {
             vr.play({ loop: getInboundWaitPlayLoopCount() }, holdUrl);
           } else {
-            vr.pause({ length: 2 });
+            // Built-in gentle 440 Hz tone, 3 s × 2 plays = up to 6 s coverage.
+            const toneUrl = `${getServerUrl(req)}/api/twilio/voice/wait-tone.wav`;
+            vr.play({ loop: 2 }, toneUrl);
           }
           const replyUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-reply`;
           vr.redirect({ method: "POST" }, replyUrl);
@@ -968,6 +1176,7 @@ module.exports = {
     }
 
     const session = getInboundVoiceSession(callSid);
+    await touchInboundCallSeconds(callSid).catch(() => {});
 
     // Create call record first — must not depend on clinic lookup or awaiting-reply state.
     const call = await findOrCreateCallBySid({
@@ -996,7 +1205,7 @@ module.exports = {
       }
       if (!session.inboundAwaitingReply) {
         const vr = new twilio.twiml.VoiceResponse();
-        vr.gather(gatherOptsInbound(session, gatherUrl));
+        vr.record(recordOptsInbound(gatherUrl));
         await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
         vr.hangup();
         res.type("text/xml");
@@ -1283,9 +1492,36 @@ module.exports = {
           const updates = {
             status: String(callStatus || statusCallbackEvent || "").toLowerCase() || persistedCall.status
           };
+
+          const isCompleted =
+            String(callStatus         || "").toLowerCase() === "completed" ||
+            String(statusCallbackEvent || "").toLowerCase() === "completed";
+
           if (Number.isFinite(callDuration) && callDuration > 0) {
+            // Twilio reports exact billing duration — most accurate, always prefer it.
             updates.seconds = callDuration;
+          } else if (isCompleted) {
+            // Twilio did not send CallDuration (StatusCallback URL not configured on
+            // the phone number, or the field was absent). Calculate from record creation
+            // time which is set when the very first inbound webhook fires.
+            const recordCreatedAt =
+              persistedCall.dataValues?.created_at ||
+              persistedCall.dataValues?.createdAt  ||
+              persistedCall.createdAt;
+            if (recordCreatedAt) {
+              const elapsedSec = Math.max(0, Math.round(
+                (Date.now() - new Date(recordCreatedAt).getTime()) / 1000
+              ));
+              if (elapsedSec > 0) {
+                updates.seconds = elapsedSec;
+                // eslint-disable-next-line no-console
+                console.log(
+                  `[Twilio][call-status] callSid=${callSid} CallDuration absent — estimated ${elapsedSec}s from createdAt`
+                );
+              }
+            }
           }
+
           await persistedCall.update(updates);
         }
       }
@@ -1343,5 +1579,14 @@ module.exports = {
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Cache-Control", "no-store");
     return res.send(buf);
+  },
+
+  // GET /api/twilio/voice/wait-tone.wav
+  // Serves the pre-built gentle 440 Hz wait tone so Twilio <Play> can loop it
+  // while the background LLM + ElevenLabs job is running.
+  waitToneAudio(req, res) {
+    res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.send(WAIT_TONE_WAV);
   }
 };
