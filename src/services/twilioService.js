@@ -1,8 +1,16 @@
 const twilio = require("twilio");
+const axios = require("axios");
 const { Clinic } = require("../db");
 
 const twilioCallSessions = new Map(); // callSid -> { callSid, identity, isMuted, status }
 const clientCache = new Map(); // accountSid:authToken -> twilio client
+
+/** Default retry policy for fetching a freshly-created Twilio recording. */
+const RECORDING_DOWNLOAD_DEFAULTS = {
+  maxRetries:     3,
+  backoffMs:      1000,
+  requestTimeout: 10000
+};
 
 function isE164(phone) {
   return /^\+[1-9]\d{6,14}$/.test(String(phone || "").trim());
@@ -322,6 +330,57 @@ function setCallMuted({ callSid, isMuted }) {
   return next;
 }
 
+/**
+ * Download a per-turn recording produced by Twilio <Record> (or by
+ * <Record action> in the inbound voice flow).
+ *
+ * WAV is preferred over MP3 because Twilio makes it available faster on its
+ * media servers (no transcoding step). The first attempt may 404/503 because
+ * we hit it the moment Twilio fires our action URL — we back off linearly and
+ * retry up to `maxRetries` times.
+ *
+ * @returns {Promise<{ buffer: Buffer, mimeType: string }|null>} null when
+ *   credentials/URL are missing; throws on persistent download failure.
+ */
+async function downloadTwilioRecording(
+  recordingUrl,
+  { accountSid, authToken } = {},
+  options = {}
+) {
+  const { maxRetries, backoffMs, requestTimeout } = {
+    ...RECORDING_DOWNLOAD_DEFAULTS,
+    ...options
+  };
+
+  const sid   = String(accountSid || process.env.TWILIO_ACCOUNT_SID || "").trim();
+  const token = String(authToken  || process.env.TWILIO_AUTH_TOKEN  || "").trim();
+  if (!recordingUrl || !sid || !token) return null;
+
+  const baseUrl = String(recordingUrl).replace(/\.(mp3|wav|json)$/i, "");
+  const wavUrl  = `${baseUrl}.wav`;
+
+  let lastErr;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, backoffMs * attempt));
+    }
+    try {
+      const response = await axios.get(wavUrl, {
+        auth: { username: sid, password: token },
+        responseType: "arraybuffer",
+        timeout: requestTimeout
+      });
+      return { buffer: Buffer.from(response.data), mimeType: "audio/wav" };
+    } catch (err) {
+      lastErr = err;
+      // Only retry transient "not yet available" responses.
+      const status = err?.response?.status;
+      if (![404, 503].includes(status)) break;
+    }
+  }
+  throw lastErr || new Error("Recording download failed");
+}
+
 module.exports = {
   sendAlertSms,
   initiateCall,
@@ -334,5 +393,6 @@ module.exports = {
   buildOutboundDialTwiml,
   isE164,
   getClinicTwilioConfigByPhoneNumber,
-  getClinicTwilioConfigByClinicId
+  getClinicTwilioConfigByClinicId,
+  downloadTwilioRecording
 };

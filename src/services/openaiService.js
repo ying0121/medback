@@ -1,5 +1,24 @@
+/**
+ * OpenAI service — single point of contact for the OpenAI SDK.
+ *
+ * Functions in this file ONLY format prompts and call OpenAI; pure parsing of
+ * structured JSON responses lives in `openaiParseService` so callers can use
+ * the same fallback logic without depending on this file's network code.
+ *
+ * Conventions:
+ *   - All returned text is trimmed, never null.
+ *   - Detection helpers return safe fallbacks instead of throwing so that the
+ *     calling controller never has to wrap them in try/catch for the
+ *     happy-path of "could not classify".
+ */
+
 const OpenAI = require("openai");
 const { toFile } = require("openai/uploads");
+const {
+  parseLanguageHints,
+  parseInboundMergedTurn,
+  parseEndCallFlag
+} = require("./openaiParseService");
 
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
 const openaiModel = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -133,22 +152,10 @@ async function generateInboundMergedTurn(messages, options = {}) {
     english_name: "English",
     twilio_bcp47: "en-US",
     twilio_voice: "Polly.Joanna-Neural",
-    reply: "Sorry, I could not process that. Could you repeat your question?"
+    reply: "Sorry, I could not process that. Could you repeat your question?",
+    end_call: false
   };
-  try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-    const reply = String(parsed.reply || parsed.answer || "").trim();
-    const twilio_bcp47 = String(parsed.twilio_bcp47 || parsed.twilioBcp47 || "").trim();
-    const twilio_voice = String(parsed.twilio_voice || parsed.twilioVoice || "").trim();
-    const english_name = String(parsed.english_name || parsed.englishName || "English").trim();
-    const iso_639_1 = String(parsed.iso_639_1 || parsed.iso6391 || "en").trim();
-    const end_call = parsed.end_call === true;
-    if (!reply || !twilio_bcp47 || !twilio_voice) return fallback;
-    return { iso_639_1, english_name, twilio_bcp47, twilio_voice, reply, end_call };
-  } catch {
-    return fallback;
-  }
+  return parseInboundMergedTurn(raw) || fallback;
 }
 
 /**
@@ -184,18 +191,7 @@ async function detectInboundSpeechLanguage(userText) {
   });
 
   const raw = String(completion.choices?.[0]?.message?.content || "").trim();
-  try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-    const twilio_bcp47 = String(parsed.twilio_bcp47 || parsed.twilioBcp47 || "").trim();
-    const twilio_voice = String(parsed.twilio_voice || parsed.twilioVoice || "").trim();
-    const english_name = String(parsed.english_name || parsed.englishName || "that language").trim();
-    const iso_639_1 = String(parsed.iso_639_1 || parsed.iso6391 || "en").trim();
-    if (!twilio_bcp47 || !twilio_voice) return fallback;
-    return { iso_639_1, english_name, twilio_bcp47, twilio_voice };
-  } catch {
-    return fallback;
-  }
+  return parseLanguageHints(raw, fallback);
 }
 
 async function detectInboundEndCallIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
@@ -222,16 +218,7 @@ async function detectInboundEndCallIntent({ text, clinicPrompt = null, knowledge
   });
 
   const raw = String(completion.choices?.[0]?.message?.content || "").trim();
-  try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-    return parsed?.end_call === true;
-  } catch {
-    const lower = raw.toLowerCase();
-    if (/\btrue\b/.test(lower)) return true;
-    if (/\bfalse\b/.test(lower)) return false;
-    return false;
-  }
+  return parseEndCallFlag(raw);
 }
 
 async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {

@@ -1,4 +1,17 @@
-const { Conversation, Message, Clinic, Knowledge } = require("../db");
+/**
+ * Chat service — orchestrates persistent text and voice turns over Socket.IO.
+ *
+ * Responsibilities:
+ *   - Conversation lifecycle (create / resolve on connect)
+ *   - Reading and writing Message rows
+ *   - Building the LLM context (prompts + history) for each turn
+ *   - Voice turns: STT → reply → TTS, returning audio for the client
+ *
+ * Prompt building lives in `contextPromptService` so chat and inbound voice
+ * share one source of truth and cannot drift in their answers.
+ */
+
+const { Conversation, Message, Clinic } = require("../db");
 const {
   generateAssistantReply,
   detectTwilioIntent,
@@ -6,6 +19,7 @@ const {
 } = require("./openaiService");
 const { getCallStatus, endCall } = require("./twilioService");
 const { textToSpeechMp3 } = require("./elevenlabsService");
+const { buildClinicContextByBusinessClinicId } = require("./contextPromptService");
 
 async function createConversation({ clinicId, userInfo }) {
   const created = await Conversation.create({
@@ -47,33 +61,13 @@ async function resolveConversationOnConnect({ conversationId, clinicId, userInfo
   return createConversation({ clinicId, userInfo });
 }
 
+/**
+ * Build clinic + knowledge prompts for chat mode.
+ * Thin wrapper kept for backward compatibility; real logic lives in
+ * `contextPromptService` so chat and inbound voice share one source of truth.
+ */
 async function buildContextPrompts(clinicId) {
-  if (!clinicId) return { clinicPrompt: null, knowledgePrompt: null };
-
-  const [clinic, knowledgeRows] = await Promise.all([
-    Clinic.findOne({ where: { clinicId } }),
-    Knowledge.findAll({
-      where: { clinicId, status: "active" },
-      order: [["id", "DESC"]]
-    })
-  ]);
-
-  const clinicPrompt = clinic
-    ? [
-        "Clinic Information:",
-        `- Name: ${clinic.name || ""}`,
-        `- Acronym: ${clinic.acronym || ""}`,
-        `- Web: ${clinic.web || ""}`
-      ].join("\n")
-    : "Clinic Information:\n- Name: \n- Acronym: \n- Web: ";
-
-  const knowledgeText = knowledgeRows
-    .map((row, idx) => `${idx + 1}. ${String(row.knowledge || "").trim()}`)
-    .filter(Boolean)
-    .join("\n");
-  const knowledgePrompt = knowledgeText ? `Product Knowledge:\n${knowledgeText}` : null;
-
-  return { clinicPrompt, knowledgePrompt };
+  return buildClinicContextByBusinessClinicId(clinicId);
 }
 
 async function getClinicElevenLabsConfig(clinicId) {
