@@ -198,6 +198,42 @@ async function detectInboundSpeechLanguage(userText) {
   }
 }
 
+async function detectInboundEndCallIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
+  if (!text || !String(text).trim()) return false;
+  if (!openaiApiKey) return false;
+
+  const endCallPrompt = [
+    "Classify whether the caller clearly wants to finish the phone call right now.",
+    "Return JSON only: {\"end_call\": true|false}.",
+    "Set true only for explicit ending intent (goodbye, bye, hang up, end call, I'm done, etc.).",
+    "If the user is asking a question, requesting info, or continuing the conversation, set false."
+  ].join(" ");
+
+  const completion = await client.chat.completions.create({
+    model: openaiInboundModel,
+    temperature: 0,
+    max_completion_tokens: 16,
+    messages: [
+      { role: "system", content: endCallPrompt },
+      ...(clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
+      ...(knowledgePrompt ? [{ role: "system", content: knowledgePrompt }] : []),
+      { role: "user", content: String(text).trim().slice(0, 1000) }
+    ]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+    return parsed?.end_call === true;
+  } catch {
+    const lower = raw.toLowerCase();
+    if (/\btrue\b/.test(lower)) return true;
+    if (/\bfalse\b/.test(lower)) return false;
+    return false;
+  }
+}
+
 async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
   if (!text || !String(text).trim()) return false;
   if (!openaiApiKey) return false;
@@ -348,6 +384,7 @@ module.exports = {
   generateVoiceReply,
   detectTwilioIntent,
   detectInboundSpeechLanguage,
+  detectInboundEndCallIntent,
   transcribeAudioBase64,
   generateSpeechFromText
 };

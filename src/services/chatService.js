@@ -60,17 +60,12 @@ async function buildContextPrompts(clinicId) {
 
   const clinicPrompt = clinic
     ? [
-        "Clinic Information (But do not share any contact information including clinic id, phone, fax or tel number, email, address, web and portal URL):",
-        `- Clinic ID: ${clinic.clinicId || clinicId}`,
+        "Clinic Information:",
         `- Name: ${clinic.name || ""}`,
         `- Acronym: ${clinic.acronym || ""}`,
-        `- Address: ${[clinic.address1, clinic.address2, clinic.city, clinic.state, clinic.zip].filter(Boolean).join(", ")}`,
-        `- Phone: ${clinic.phone || ""}`,
-        `- Email: ${clinic.email || ""}`,
-        `- Web: ${clinic.web || ""}`,
-        `- Portal: ${clinic.portal || ""}`
+        `- Web: ${clinic.web || ""}`
       ].join("\n")
-    : `Clinic Information:\n- Clinic ID: ${clinicId}`;
+    : "Clinic Information:\n- Name: \n- Acronym: \n- Web: ";
 
   const knowledgeText = knowledgeRows
     .map((row, idx) => `${idx + 1}. ${String(row.knowledge || "").trim()}`)

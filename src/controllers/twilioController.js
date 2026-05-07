@@ -17,6 +17,7 @@ const {
   generateAssistantReply,
   generateInboundMergedTurn,
   detectInboundSpeechLanguage,
+  detectInboundEndCallIntent,
   generateSpeechFromText,
   transcribeAudioBase64
 } = require("../services/openaiService");
@@ -309,15 +310,10 @@ async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
     : [];
 
   const clinicPrompt = [
-    "Clinic Information (But do not share any contact information including clinic id, phone, fax or tel number, email, address, web and portal URL):",
-    `- Clinic ID: ${clinic.clinicId || clinic.id}`,
+    "Clinic Information:",
     `- Name: ${clinic.name || ""}`,
     `- Acronym: ${clinic.acronym || ""}`,
-    `- Address: ${[clinic.address1, clinic.address2, clinic.city, clinic.state, clinic.zip].filter(Boolean).join(", ")}`,
-    `- Phone: ${clinic.phone || ""}`,
-    `- Email: ${clinic.email || ""}`,
-    `- Web: ${clinic.web || ""}`,
-    `- Portal: ${clinic.portal || ""}`
+    `- Web: ${clinic.web || ""}`
   ].join("\n");
 
   const knowledgeText = knowledgeRows
@@ -524,6 +520,11 @@ async function buildInboundAssistantAudioResult({
           ...(inboundModel ? { model: inboundModel } : {}),
           maxCompletionTokens: inboundMaxTokens
         });
+        end_call = await detectInboundEndCallIntent({
+          text: speechResult,
+          clinicPrompt: session.clinicPrompt || null,
+          knowledgePrompt: session.knowledgePrompt || null
+        });
         spoken = truncateForPhoneSay(reply, maxReplyChars);
       }
     } else {
@@ -541,6 +542,11 @@ async function buildInboundAssistantAudioResult({
         languageConstraint,
         ...(inboundModel ? { model: inboundModel } : {}),
         maxCompletionTokens: inboundMaxTokens
+      });
+      end_call = await detectInboundEndCallIntent({
+        text: speechResult,
+        clinicPrompt: session.clinicPrompt || null,
+        knowledgePrompt: session.knowledgePrompt || null
       });
       spoken = truncateForPhoneSay(reply, maxReplyChars);
     }
@@ -1056,7 +1062,8 @@ module.exports = {
 
       const inboundMaxTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 200);
       const inboundModel     = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || null;
-      const useMerged        = String(process.env.TWILIO_INBOUND_MERGED_LLM || "true").toLowerCase() !== "false";
+      // Force chat-like prompt path for inbound consistency with chat mode.
+      const useMerged        = false;
 
       // Record mode: has audio file URL. Legacy Gather mode: has SpeechResult text.
       const hasRecording = !!recordingUrl;
@@ -1216,7 +1223,8 @@ module.exports = {
       const vr = new twilio.twiml.VoiceResponse();
       const inboundMaxTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 450);
       const inboundModel = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || null;
-      const useMerged = String(process.env.TWILIO_INBOUND_MERGED_LLM || "true").toLowerCase() !== "false";
+      // Force chat-like prompt path for inbound consistency with chat mode.
+      const useMerged = false;
 
       let resultPromise = inboundAssistantJobs.get(callSid);
       let result;
