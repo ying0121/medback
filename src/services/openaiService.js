@@ -86,7 +86,7 @@ const inboundMergedJsonPrompt = [
   "You are answering a live phone caller (PSTN). Be fast and concise.",
   "The conversation messages include the caller's latest utterance.",
   "Output exactly one JSON object (no markdown, no code fences) with keys:",
-  "iso_639_1, english_name, twilio_bcp47, twilio_voice, reply",
+  "iso_639_1, english_name, twilio_bcp47, twilio_voice, reply, end_call",
   "- iso_639_1: two-letter ISO 639-1 code of the language the caller used in their last message.",
   "- english_name: that language's name in English (e.g. Korean, Spanish).",
   "- twilio_bcp47: one BCP-47 locale for Twilio speech (e.g. en-US, ko-KR, es-ES).",
@@ -95,7 +95,11 @@ const inboundMergedJsonPrompt = [
   "  es-ES Polly.Lucia-Neural, fr-FR Polly.Lea-Neural, de-DE Polly.Vicki-Neural, pt-BR Polly.Camila-Neural,",
   "  hi-IN Polly.Aditi, ar-AE Polly.Zeina. If unsure, pick closest Polly Neural.",
   "- reply: your helpful answer in the SAME language as the caller. Plain text only.",
-  "  Keep reply very short for telephony (1–3 short sentences; max ~400 characters) unless a medical safety detail requires slightly more."
+  "  Keep reply very short for telephony (1–3 short sentences; max ~400 characters) unless a medical safety detail requires slightly more.",
+  "- end_call: boolean. Set true ONLY when the caller clearly wants to finish the call",
+  "  (e.g. goodbye, bye, hang up, end call, I'm done, 끊을게요, 통화 종료, 終わります, etc.).",
+  "  When end_call is true, set reply to a warm short farewell in the caller's language.",
+  "  Otherwise always set end_call to false."
 ].join("\n");
 
 /**
@@ -139,8 +143,9 @@ async function generateInboundMergedTurn(messages, options = {}) {
     const twilio_voice = String(parsed.twilio_voice || parsed.twilioVoice || "").trim();
     const english_name = String(parsed.english_name || parsed.englishName || "English").trim();
     const iso_639_1 = String(parsed.iso_639_1 || parsed.iso6391 || "en").trim();
+    const end_call = parsed.end_call === true;
     if (!reply || !twilio_bcp47 || !twilio_voice) return fallback;
-    return { iso_639_1, english_name, twilio_bcp47, twilio_voice, reply };
+    return { iso_639_1, english_name, twilio_bcp47, twilio_voice, reply, end_call };
   } catch {
     return fallback;
   }
