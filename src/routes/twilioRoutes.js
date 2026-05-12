@@ -4,9 +4,7 @@ const {
   voiceTwiml,
   voiceDialResultTwiml,
   inboundVoiceWebhook,
-  inboundVoiceGather,
-  inboundGatherReply,
-  inboundVoiceRecordingStatus,
+  inboundVoiceStreamStatus,
   ttsPlaybackAudio,
   waitToneAudio,
   messageTwiml,
@@ -28,11 +26,13 @@ router.get("/voice/tts/:token", ttsPlaybackAudio);
 router.get("/voice/wait-tone.wav", waitToneAudio);
 router.post("/voice/twiml", voiceTwiml);
 router.post("/voice/dial-result", voiceDialResultTwiml);
+
+// Inbound PSTN voice bot (live-streaming via Twilio Media Streams + Deepgram)
 router.post("/voice/inbound", inboundVoiceWebhook);
-router.post("/voice/inbound-gather", inboundVoiceGather);
-router.post("/voice/inbound-reply", inboundGatherReply);
-router.post("/voice/recording-status", inboundVoiceRecordingStatus);
+router.post("/voice/stream-status", inboundVoiceStreamStatus);
 router.post("/voice/fallback", voiceFallbackTwiml);
+
+// Messaging
 router.post("/message/twiml", messageTwiml);
 router.post("/message/fallback", messageFallbackTwiml);
 router.post("/message-status", messageStatusCallback);

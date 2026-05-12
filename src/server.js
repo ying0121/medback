@@ -5,14 +5,15 @@ require("dotenv").config();
 const app = require("./app");
 const { connectDatabase, syncDatabase } = require("./db");
 const { attachChatSocket } = require("./realtime/chatSocketHandler");
+const { attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const configuredSocketPath = process.env.SOCKET_IO_PATH || process.env.WEBSOCKET_CHAT_URL || "/ws/chat";
+const configuredSocketPath = process.env.WEBSOCKET_CHAT_URL || "/ws/chat";
 const socketPath = configuredSocketPath.startsWith("/") ? configuredSocketPath : `/${configuredSocketPath}`;
-const SOCKET_IO_PING_INTERVAL_MS = Number(process.env.SOCKET_IO_PING_INTERVAL_MS || process.env.WS_PING_INTERVAL_MS) || 25000;
-const SOCKET_IO_PING_TIMEOUT_MS  = Number(process.env.SOCKET_IO_PING_TIMEOUT_MS) || 60000;
+const SOCKET_IO_PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS) || 25000;
+const SOCKET_IO_PING_TIMEOUT_MS  = Number(process.env.WS_PING_TIMEOUT_MS) || 60000;
 
 // Comma-separated list, normalised to lowercase + no trailing slash for fast comparison.
 const allowedOrigins = process.env.ALLOWED_WS_ORIGINS
@@ -46,6 +47,9 @@ const io = new Server(server, {
 // All per-socket message handling is encapsulated in the realtime module so
 // this file remains a thin bootstrap.
 attachChatSocket(io);
+
+// Twilio Media Streams WebSocket for inbound PSTN voice bot (path: /api/twilio/voice/stream)
+attachInboundStreamWS(server);
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 

@@ -1,31 +1,20 @@
 /**
  * Twilio voice + telephony controller.
  *
- * This file owns ALL TwiML response assembly and request orchestration for
- * both inbound (PSTN → bot) and outbound (Voice SDK → PSTN) flows. Everything
- * that does NOT touch TwiML directly has been pushed down into shared
- * services so this controller stays focused on Twilio request/response shape:
+ * Inbound PSTN voice bot uses Twilio Media Streams (live-streaming mode):
+ *   1. POST /voice/inbound  – returns <Connect><Stream> TwiML; pre-loads clinic
+ *      context and registers it for the WebSocket phase.
+ *   2. WS   /api/twilio/voice/stream  – Deepgram STT → LLM → ElevenLabs TTS
+ *      pipeline runs in real-time over the Media Stream WebSocket
+ *      (see realtime/inboundStreamHandler.js + services/inboundCallSession.js).
  *
- *   - context/knowledge prompts → `services/contextPromptService`
- *   - call row + duration       → `services/callPersistenceService`
- *   - recording download        → `services/twilioService.downloadTwilioRecording`
- *   - structured LLM JSON       → `services/openaiParseService`
- *   - WAV wait tone             → `services/waitToneService`
- *   - <Play> URL token cache    → `services/ttsPlaybackCache`
- *
- * The inbound voice loop is roughly:
- *   1. /voice/inbound          – greet caller, prime <Record>
- *   2. /voice/inbound-gather   – receive recording URL, kick LLM job, play wait tone
- *   3. /voice/inbound-reply    – when LLM job done, speak via ElevenLabs (or
- *                                fall back to <Say>) and either loop or hangup
+ * Outbound (Voice SDK → PSTN) flows remain unchanged.
  */
 
 const twilio = require("twilio");
-const axios = require("axios");
 const {
   initiateCall,
   endCall,
-  startCallRecording,
   trackCallStatus,
   setCallMuted,
   generateAccessToken,
@@ -33,561 +22,19 @@ const {
   isE164,
   getClinicTwilioConfigByPhoneNumber,
   getClinicTwilioConfigByClinicId,
-  downloadTwilioRecording
 } = require("../services/twilioService");
-const {
-  generateAssistantReply,
-  generateInboundMergedTurn,
-  detectInboundSpeechLanguage,
-  detectInboundEndCallIntent,
-  generateSpeechFromText,
-  transcribeAudioBase64
-} = require("../services/openaiService");
-const { IncomingMessage } = require("../db");
-const { textToSpeechMp3 } = require("../services/elevenlabsService");
 const { buildInboundClinicContextBySystemClinicId } = require("../services/contextPromptService");
 const {
   findOrCreateCallBySid,
-  touchCallSecondsFromSession,
   computeFinalCallSeconds,
-  saveIncomingMessageRow
 } = require("../services/callPersistenceService");
-const { registerTtsPlayback, getTtsPlaybackBuffer } = require("../services/ttsPlaybackCache");
+const { getTtsPlaybackBuffer } = require("../services/ttsPlaybackCache");
 const { WAIT_TONE_WAV } = require("../services/waitToneService");
-
-/** Per-call OpenAI chat history for inbound PSTN → voice bot (in-memory). */
-const inboundVoiceSessions = new Map();
-
-const INBOUND_SESSION_TTL_MS = 35 * 60 * 1000;
-const INBOUND_MAX_MESSAGES = 24;
-
-/**
- * Returns TwiML <Record> options for capturing the caller's speech per turn.
- * Action posts to the same inbound-gather endpoint; we distinguish Record vs
- * legacy Gather by checking for RecordingUrl in the body.
- */
-function recordOptsInbound(actionUrl) {
-  const rawTimeout = String(process.env.TWILIO_INBOUND_SPEECH_TIMEOUT || "").trim();
-  const timeout    = rawTimeout === "auto" || !rawTimeout ? "3" : rawTimeout;
-  return {
-    action:    actionUrl,
-    method:    "POST",
-    maxLength: 30,
-    timeout,
-    playBeep:  false,
-    trim:      "trim-silence"
-  };
-}
-
-/** In-memory session shape for <Say> fallback params when no full gather session exists. */
-function minimalInboundSessionForEl(overrides = {}) {
-  return {
-    speechBcp47: String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
-    sayVoiceName: String(process.env.TWILIO_INBOUND_DEFAULT_SAY_VOICE || "").trim() || "Polly.Joanna-Neural",
-    ...overrides
-  };
-}
-
-/**
- * Speaks text using ElevenLabs MP3 + <Play>, using the clinic's DB credentials stored in session.
- * Falls back to Twilio <Say> (Polly) if ElevenLabs is unconfigured or fails,
- * so the caller always hears something.
- * @returns {Promise<Buffer|null>} MP3 buffer when ElevenLabs was used, else null.
- */
-async function twimlPlayElevenLabsOrSay(vr, req, session, callSid, text) {
-  const saySession = session || minimalInboundSessionForEl();
-  const spoken = truncateForPhoneSay(text, 2500);
-
-  const apiKey = String(session?.elApiKey || "").trim();
-  const voiceId = String(session?.elVoiceId || "").trim();
-
-  if (!apiKey || !voiceId) {
-    // eslint-disable-next-line no-console
-    console.warn(`[Twilio][elevenlabs] ElevenLabs not configured for this clinic — using Twilio <Say> for callSid=${callSid}`);
-    vr.say(sayParamsForInbound(saySession), spoken);
-    return null;
-  }
-
-  try {
-    const inboundElModel =
-      String(process.env.ELEVENLABS_INBOUND_TTS_MODEL || process.env.ELEVENLABS_TTS_MODEL || "").trim() ||
-      "eleven_turbo_v2_5";
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][elevenlabs] TTS start callSid=${callSid} voiceId=${voiceId} model=${inboundElModel} textLen=${spoken.length}`);
-    const mp3 = await textToSpeechMp3(apiKey, voiceId, spoken, { modelId: inboundElModel });
-    const token = registerTtsPlayback(mp3);
-    const url = `${getServerUrl(req)}/api/twilio/voice/tts/${token}`;
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][elevenlabs] TTS ok callSid=${callSid} playUrl=${url}`);
-    vr.play(url);
-    return mp3;
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(`[Twilio][elevenlabs] TTS FAILED callSid=${callSid}: ${err.message} — falling back to Twilio <Say>`);
-    vr.say(sayParamsForInbound(saySession), spoken);
-    return null;
-  }
-}
-
-/** Inbound-only: speak message + Hangup. Uses clinic EL credentials from session if available. */
-async function buildInboundErrorTwimlXml(req, message, { callSid = "" } = {}) {
-  const sid = String(callSid || "").trim();
-  // Use the real session (which has clinic EL credentials) when callSid is known.
-  const session = sid ? (inboundVoiceSessions.get(sid) || minimalInboundSessionForEl()) : minimalInboundSessionForEl();
-  const vr = new twilio.twiml.VoiceResponse();
-  await twimlPlayElevenLabsOrSay(vr, req, session, sid || "-", message);
-  vr.hangup();
-  return vr.toString();
-}
-
-function getInboundVoiceSession(callSid) {
-  const now = Date.now();
-  let s = inboundVoiceSessions.get(callSid);
-  if (!s || s.expiresAt < now) {
-    s = {
-      messages: [],
-      expiresAt: now + INBOUND_SESSION_TTL_MS,
-      startedAt: now,
-      speechBcp47:
-        String(process.env.TWILIO_INBOUND_INITIAL_SPEECH_LANGUAGE || "").trim() || "en-US",
-      sayVoiceName:
-        String(process.env.TWILIO_INBOUND_DEFAULT_SAY_VOICE || "").trim() || "Polly.Joanna-Neural",
-      elApiKey: null,
-      elVoiceId: null,
-      recordingStarted: false,
-      inboundAwaitingReply: false
-    };
-    inboundVoiceSessions.set(callSid, s);
-  }
-  s.expiresAt = now + INBOUND_SESSION_TTL_MS;
-  if (s.inboundAwaitingReply === undefined) s.inboundAwaitingReply = false;
-  if (!Number.isFinite(Number(s.startedAt))) s.startedAt = now;
-  return s;
-}
-
-function pushInboundVoiceMessage(callSid, role, content) {
-  const s = getInboundVoiceSession(callSid);
-  s.messages.push({ role, content });
-  if (s.messages.length > INBOUND_MAX_MESSAGES) {
-    s.messages.splice(0, s.messages.length - INBOUND_MAX_MESSAGES);
-  }
-}
-
-function sayVoice() {
-  return process.env.TWILIO_SAY_VOICE || "alice";
-}
-
-/** Twilio <Say> options: Polly/Google voices need language for multilingual TTS. */
-function sayParamsForInbound(session) {
-  const voice = session?.sayVoiceName || "Polly.Joanna-Neural";
-  const v = String(voice).toLowerCase();
-  const opts = { voice };
-  if (v.startsWith("polly.") || v.startsWith("google.")) {
-    opts.language = session?.speechBcp47 || "en-US";
-  }
-  return opts;
-}
-
-function gatherOptsInbound(session, gatherUrl) {
-  const opts = {
-    input: "speech",
-    action: gatherUrl,
-    method: "POST",
-    speechTimeout: process.env.TWILIO_INBOUND_SPEECH_TIMEOUT || "auto",
-    language: session?.speechBcp47 || "en-US",
-    speechModel: process.env.TWILIO_INBOUND_SPEECH_MODEL || "phone_call",
-    profanityFilter: "false"
-  };
-  const hints = String(process.env.TWILIO_INBOUND_SPEECH_HINTS || "").trim();
-  if (hints) opts.hints = hints;
-  return opts;
-}
-
-function truncateForPhoneSay(text, maxChars) {
-  const s = String(text || "").trim();
-  if (!s) return "I could not generate a reply.";
-  if (s.length <= maxChars) return s;
-  return `${s.slice(0, Math.max(0, maxChars - 3))}...`;
-}
+const { registerPendingInboundSession } = require("../realtime/inboundStreamHandler");
 
 function normalizeInboundPromptText(rawText, fallbackText) {
   const base = String(rawText || "").trim() || fallbackText;
-  // Speech gather has no guaranteed "beep", so avoid promising a tone.
   return base.replace(/after the tone[:,]?\s*/gi, "");
-}
-
-/**
- * Inbound-only wrapper around `touchCallSecondsFromSession` that resolves the
- * in-memory session by CallSid before delegating to the shared helper.
- */
-async function touchInboundCallSeconds(callSid) {
-  const sid = String(callSid || "").trim();
-  if (!sid) return;
-  const session = inboundVoiceSessions.get(sid);
-  if (!session) return;
-  return touchCallSecondsFromSession(sid, session);
-}
-
-/** Run after TwiML is sent so Twilio is not blocked on DB writes. */
-function flushInboundPersistQueue(queue) {
-  if (!queue || queue.length === 0) return;
-  const tasks = queue.splice(0, queue.length);
-  setImmediate(() => {
-    (async () => {
-      for (const fn of tasks) {
-        try {
-          await fn();
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error(`[Twilio][inbound] deferred persist failed: ${e.message}`);
-        }
-      }
-    })();
-  });
-}
-
-function useInboundWaitBeforeReply() {
-  return String(process.env.TWILIO_INBOUND_WAIT_BEFORE_REPLY || "true").toLowerCase() !== "false";
-}
-
-function getInboundWaitAudioUrl() {
-  return String(process.env.TWILIO_INBOUND_WAIT_AUDIO_URL || "").trim();
-}
-
-function getInboundWaitPlayLoopCount() {
-  const n = Number(process.env.TWILIO_INBOUND_WAIT_AUDIO_LOOPS || 4);
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(20, Math.floor(n));
-}
-
-function getInboundWaitSfxUrl() {
-  return String(process.env.TWILIO_INBOUND_WAIT_SFX_URL || "").trim();
-}
-
-function getInboundWaitSfxLoopCount() {
-  const n = Number(process.env.TWILIO_INBOUND_WAIT_SFX_LOOPS || 15);
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(1000, Math.floor(n));
-}
-
-function isHttpsOrHttpUrl(value) {
-  const s = String(value || "").trim();
-  return s.startsWith("https://") || s.startsWith("http://");
-}
-
-/** callSid → Promise of buildInboundAssistantAudioResult (LLM+TTS) started while Twilio plays wait audio. */
-const inboundAssistantJobs = new Map();
-
-async function synthesizeInboundAssistantMp3(session, callSid, spoken) {
-  const apiKey = String(session?.elApiKey || "").trim();
-  const voiceId = String(session?.elVoiceId || "").trim();
-  if (!apiKey || !voiceId) return { mp3Buf: null, ttsToken: null };
-  const text = truncateForPhoneSay(spoken, 2500);
-  try {
-    const inboundElModel =
-      String(process.env.ELEVENLABS_INBOUND_TTS_MODEL || process.env.ELEVENLABS_TTS_MODEL || "").trim() ||
-      "eleven_turbo_v2_5";
-    const mp3 = await textToSpeechMp3(apiKey, voiceId, text, { modelId: inboundElModel });
-    const ttsToken = registerTtsPlayback(mp3);
-    return { mp3Buf: mp3, ttsToken };
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(`[Twilio][inbound] ElevenLabs TTS failed callSid=${callSid}: ${err.message}`);
-    return { mp3Buf: null, ttsToken: null };
-  }
-}
-
-/**
- * LLM + TTS only (no TwiML). Used on the reply webhook and optionally started in parallel during wait audio.
- * @returns {Promise<{ spoken: string, ttsToken: string|null, mp3Buf: Buffer|null, botAudioBase64: string|null } | { error: string }>}
- */
-async function buildInboundAssistantAudioResult({
-  session,
-  callSid,
-  maxReplyChars,
-  useMerged,
-  inboundModel,
-  inboundMaxTokens
-}) {
-  const last = session.messages[session.messages.length - 1];
-  const speechResult = last?.role === "user" ? String(last.content || "").trim() : "";
-  if (!speechResult) {
-    return { error: "no_user_message" };
-  }
-
-  let spoken = "";
-
-  let end_call = false;
-
-  try {
-    if (useMerged) {
-      try {
-        const contextOpts = {
-          clinicPrompt: session.clinicPrompt || null,
-          knowledgePrompt: session.knowledgePrompt || null
-        };
-        const merged = await generateInboundMergedTurn(session.messages, contextOpts);
-        session.speechBcp47 = merged.twilio_bcp47;
-        session.sayVoiceName = merged.twilio_voice;
-        end_call = merged.end_call === true;
-        spoken = truncateForPhoneSay(merged.reply, maxReplyChars);
-      } catch (mergeErr) {
-        // eslint-disable-next-line no-console
-        console.error(`[Twilio][inbound] merged LLM failed, using two-step: ${mergeErr.message}`);
-        const detected = await detectInboundSpeechLanguage(speechResult);
-        session.speechBcp47 = detected.twilio_bcp47;
-        session.sayVoiceName = detected.twilio_voice;
-        const languageConstraint = [
-          `The caller is speaking ${detected.english_name} (BCP-47 ${detected.twilio_bcp47}, ISO ${detected.iso_639_1}).`,
-          "You MUST answer ONLY in that same language.",
-          "Use natural wording and the appropriate writing system for speech (no unnecessary English)."
-        ].join(" ");
-        const reply = await generateAssistantReply(session.messages, {
-          clinicPrompt: session.clinicPrompt || null,
-          knowledgePrompt: session.knowledgePrompt || null,
-          languageConstraint,
-          ...(inboundModel ? { model: inboundModel } : {}),
-          maxCompletionTokens: inboundMaxTokens
-        });
-        end_call = await detectInboundEndCallIntent({
-          text: speechResult,
-          clinicPrompt: session.clinicPrompt || null,
-          knowledgePrompt: session.knowledgePrompt || null
-        });
-        spoken = truncateForPhoneSay(reply, maxReplyChars);
-      }
-    } else {
-      const detected = await detectInboundSpeechLanguage(speechResult);
-      session.speechBcp47 = detected.twilio_bcp47;
-      session.sayVoiceName = detected.twilio_voice;
-      const languageConstraint = [
-        `The caller is speaking ${detected.english_name} (BCP-47 ${detected.twilio_bcp47}, ISO ${detected.iso_639_1}).`,
-        "You MUST answer ONLY in that same language.",
-        "Use natural wording and the appropriate writing system for speech (no unnecessary English)."
-      ].join(" ");
-      const reply = await generateAssistantReply(session.messages, {
-        clinicPrompt: session.clinicPrompt || null,
-        knowledgePrompt: session.knowledgePrompt || null,
-        languageConstraint,
-        ...(inboundModel ? { model: inboundModel } : {}),
-        maxCompletionTokens: inboundMaxTokens
-      });
-      end_call = await detectInboundEndCallIntent({
-        text: speechResult,
-        clinicPrompt: session.clinicPrompt || null,
-        knowledgePrompt: session.knowledgePrompt || null
-      });
-      spoken = truncateForPhoneSay(reply, maxReplyChars);
-    }
-
-    pushInboundVoiceMessage(callSid, "assistant", spoken);
-    const { mp3Buf, ttsToken } = await synthesizeInboundAssistantMp3(session, callSid, spoken);
-    let botAudioBase64 = null;
-    if (mp3Buf) {
-      botAudioBase64 = mp3Buf.toString("base64");
-    } else {
-      try {
-        const botSpeech = await generateSpeechFromText({ text: spoken });
-        botAudioBase64 = botSpeech.audioBase64 || null;
-      } catch (audioErr) {
-        // eslint-disable-next-line no-console
-        console.error(`[Twilio][inbound] bot audio generation failed: ${audioErr.message}`);
-      }
-    }
-    // eslint-disable-next-line no-console
-    console.log(
-      `[Twilio][inbound] callSid=${callSid} lang=${session.speechBcp47} merged=${useMerged} end_call=${end_call} userLen=${speechResult.length} replyLen=${spoken.length}`
-    );
-    return { spoken, ttsToken, mp3Buf, botAudioBase64, end_call };
-  } catch (e) {
-    return { error: e.message || String(e) };
-  }
-}
-
-/**
- * Starts the background job that produces the bot's spoken reply.
- *
- * Record mode  (recordingUrl supplied):
- *   1. Download the Twilio WAV (with retry — recording may not be ready immediately).
- *   2. Transcribe with Whisper.
- *   3. Push transcription to session + save IncomingMessage with audio base64.
- *   4. Run LLM + ElevenLabs TTS.
- *
- * Legacy Gather mode  (no recordingUrl):
- *   User message already in session.messages — go straight to LLM + TTS.
- */
-function startInboundAssistantBackgroundJob({
-  callSid,
-  session,
-  maxReplyChars,
-  useMerged,
-  inboundModel,
-  inboundMaxTokens,
-  // Record-mode extras (all optional):
-  recordingUrl     = null,
-  twilioAccountSid = null,
-  twilioAuthToken  = null,
-  call             = null
-}) {
-  const p = (async () => {
-    if (recordingUrl) {
-      try {
-        // Phase 1: download caller audio
-        const dlResult = await downloadTwilioRecording(recordingUrl, {
-          accountSid: twilioAccountSid,
-          authToken:  twilioAuthToken
-        });
-        if (!dlResult) return { error: "recording_download_empty" };
-
-        const { buffer, mimeType } = dlResult;
-        const audioBase64 = buffer.toString("base64");
-
-        // Phase 2: transcribe with Whisper
-        const transcription = await transcribeAudioBase64({ audioBase64, audioMimeType: mimeType });
-        if (!transcription) return { error: "transcription_empty" };
-
-        // eslint-disable-next-line no-console
-        console.log(`[Twilio][inbound] whisper callSid=${callSid} text="${transcription.slice(0, 80)}"`);
-
-        // Phase 3: push to session + save to DB (fire-and-forget for DB)
-        pushInboundVoiceMessage(callSid, "user", transcription);
-        if (call) {
-          saveIncomingMessageRow({
-            callId: call.id,
-            audio: audioBase64,
-            transcription,
-            userType: "user",
-            status: "success"
-          }).catch((e) => {
-            // eslint-disable-next-line no-console
-            console.error(`[Twilio][inbound] save user audio failed: ${e.message}`);
-          });
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[Twilio][inbound] record+whisper FAILED callSid=${callSid}: ${err.message}`);
-        return { error: err.message };
-      }
-    }
-
-    // Phase 4: LLM + ElevenLabs TTS
-    return buildInboundAssistantAudioResult({
-      session,
-      callSid,
-      maxReplyChars,
-      useMerged,
-      inboundModel,
-      inboundMaxTokens
-    });
-  })();
-
-  inboundAssistantJobs.set(callSid, p);
-  return p;
-}
-
-async function finalizeInboundAssistantTwiml({
-  vr,
-  req,
-  session,
-  callSid,
-  call,
-  persistQueue,
-  gatherUrl,
-  result
-}) {
-  if (result.error) {
-    // eslint-disable-next-line no-console
-    console.error(`[Twilio][inbound] assistant pipeline error: ${result.error}`);
-    await twimlPlayElevenLabsOrSay(
-      vr,
-      req,
-      session,
-      callSid,
-      "Sorry, I could not complete that. Please try again."
-    );
-    vr.record(recordOptsInbound(gatherUrl));
-    await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
-    vr.hangup();
-    return;
-  }
-
-  const { spoken, ttsToken, botAudioBase64, end_call } = result;
-  if (call) {
-    persistQueue.push(() =>
-      saveIncomingMessageRow({
-        callId: call.id,
-        audio: botAudioBase64,
-        transcription: spoken,
-        userType: "bot",
-        status: botAudioBase64 ? "success" : "success-no-audio"
-      })
-    );
-  }
-
-  if (ttsToken) {
-    vr.play(`${getServerUrl(req)}/api/twilio/voice/tts/${ttsToken}`);
-  } else {
-    await twimlPlayElevenLabsOrSay(vr, req, session, callSid, spoken);
-  }
-
-  if (end_call) {
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][inbound] end_call detected — hanging up callSid=${callSid}`);
-    vr.hangup();
-  } else {
-    vr.record(recordOptsInbound(gatherUrl));
-    await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
-    vr.hangup();
-  }
-}
-
-/**
- * LLM + assistant TTS + next Gather + closing line (shared by gather and inbound-reply).
- */
-async function runInboundAssistantTwiMl({
-  vr,
-  req,
-  session,
-  callSid,
-  call,
-  persistQueue,
-  maxReplyChars,
-  gatherUrl,
-  useMerged,
-  inboundModel,
-  inboundMaxTokens
-}) {
-  const result = await buildInboundAssistantAudioResult({
-    session,
-    callSid,
-    maxReplyChars,
-    useMerged,
-    inboundModel,
-    inboundMaxTokens
-  });
-  await finalizeInboundAssistantTwiml({
-    vr,
-    req,
-    session,
-    callSid,
-    call,
-    persistQueue,
-    gatherUrl,
-    result
-  });
-}
-
-async function fetchRecordingBase64(recordingUrl, { accountSid, authToken }) {
-  const sid = String(accountSid || "").trim();
-  const token = String(authToken || "").trim();
-  if (!recordingUrl || !sid || !token) return null;
-  const mediaUrl = String(recordingUrl).endsWith(".mp3") ? String(recordingUrl) : `${recordingUrl}.mp3`;
-  const response = await axios.get(mediaUrl, {
-    auth: { username: sid, password: token },
-    responseType: "arraybuffer",
-    timeout: 20000
-  });
-  return Buffer.from(response.data).toString("base64");
 }
 
 function normalizeIdentity(value) {
@@ -743,434 +190,87 @@ module.exports = {
 
   // POST /api/twilio/voice/inbound
   // Configure your Twilio phone number "A call comes in" → Webhook → this URL (POST).
-  // Greets the caller and collects speech; each utterance is sent to OpenAI.
+  // Responds with TwiML <Connect><Stream> to open a bidirectional Media Stream
+  // WebSocket. The live pipeline (Deepgram STT → LLM → ElevenLabs TTS) runs
+  // entirely over the WebSocket in inboundStreamHandler.js.
   async inboundVoiceWebhook(req, res) {
-    const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
-    const greeting = normalizeInboundPromptText(
-      process.env.TWILIO_INBOUND_VOICE_GREETING,
-      "Hello. This is our automated assistant. You may speak in any language. Please ask me your question."
-    );
-    const callSid = String(req.body?.CallSid || "").trim();
-    const from = String(req.body?.From || "").trim();
-    const to = String(req.body?.To || "").trim();
-    const session = callSid ? getInboundVoiceSession(callSid) : null;
-
-    // Create call record immediately — must happen even if clinic lookup fails so history saves.
-    if (callSid) {
-      try {
-        await findOrCreateCallBySid({ callSid, from, status: String(req.body?.CallStatus || "in-progress") });
-      } catch (dbErr) {
-        // eslint-disable-next-line no-console
-        console.error(`[Twilio][inbound] call DB create failed callSid=${callSid}: ${dbErr.message}`);
-      }
-    }
-
-    try {
-      const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
-      const inboundContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
-      if (callSid && session) {
-        session.clinicId = clinicTwilio.clinicId;
-        session.clinicPrompt = inboundContext.clinicPrompt;
-        session.knowledgePrompt = inboundContext.knowledgePrompt;
-        session.elApiKey = inboundContext.elApiKey;
-        session.elVoiceId = inboundContext.elVoiceId;
-        // eslint-disable-next-line no-console
-        console.log(`[Twilio][elevenlabs] clinic EL config loaded — clinicId=${clinicTwilio.clinicId} hasApiKey=${!!inboundContext.elApiKey} hasVoiceId=${!!inboundContext.elVoiceId}`);
-      }
-      if (callSid) {
-        if (session && session.recordingStarted !== true) {
-          try {
-            const recordingStatusCallback = `${getServerUrl(req)}/api/twilio/voice/recording-status`;
-            const recording = await startCallRecording({
-              callSid,
-              recordingStatusCallback,
-              clinicId: clinicTwilio.clinicId
-            });
-            session.recordingStarted = true;
-            // eslint-disable-next-line no-console
-            console.log(
-              `[Twilio][recording:start] callSid=${callSid} recordingSid=${recording.recordingSid} status=${recording.status}`
-            );
-          } catch (recordErr) {
-            // eslint-disable-next-line no-console
-            console.error(`[Twilio][recording:start] callSid=${callSid} error=${recordErr.message}`);
-          }
-        }
-      }
-      const vr = new twilio.twiml.VoiceResponse();
-      const sessionForTts = session || minimalInboundSessionForEl();
-      await twimlPlayElevenLabsOrSay(vr, req, sessionForTts, callSid || "-", greeting);
-      vr.record(recordOptsInbound(gatherUrl));
-      await twimlPlayElevenLabsOrSay(
-        vr,
-        req,
-        sessionForTts,
-        callSid || "-",
-        "I did not hear anything. Goodbye."
-      );
-      vr.hangup();
-      res.type("text/xml");
-      return res.send(vr.toString());
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][inbound] greeting error: ${err.message}`);
-      res.type("text/xml");
-      const xml = await buildInboundErrorTwimlXml(req, "Sorry, we could not start the call. Goodbye.", {
-        callSid
-      });
-      return res.send(xml);
-    }
-  },
-
-  // POST /api/twilio/voice/inbound-gather
-  // Twilio posts here after <Record> captures the caller's speech.
-  // When wait-before-reply is on, download+Whisper+LLM+TTS all run in the background
-  // while the caller hears the gentle wait tone; then Twilio redirects to inbound-reply.
-  async inboundVoiceGather(req, res) {
-    const callSid      = String(req.body?.CallSid      || "").trim();
-    const from         = String(req.body?.From         || "").trim();
-    const to           = String(req.body?.To           || "").trim();
-    // <Record> provides RecordingUrl; legacy <Gather> provides SpeechResult
-    const recordingUrl = String(req.body?.RecordingUrl || "").trim();
-    const speechResult = String(req.body?.SpeechResult || "").trim(); // legacy fallback
-    const recDuration  = Number(req.body?.RecordingDuration || 0);
-    const digits       = String(req.body?.Digits       || "").trim();
-    const gatherUrl    = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
-    const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
-
-    if (digits === "hangup") return res.sendStatus(200);
-
-    if (!callSid) {
-      res.type("text/xml");
-      const xml = await buildInboundErrorTwimlXml(req, "Goodbye.");
-      return res.send(xml);
-    }
-
-    const session = getInboundVoiceSession(callSid);
-    await touchInboundCallSeconds(callSid).catch(() => {});
-
-    // Create call record first — must not depend on clinic lookup success.
-    const call = await findOrCreateCallBySid({
-      callSid,
-      from,
-      status: String(req.body?.CallStatus || "in-progress")
-    }).catch((dbErr) => {
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][inbound-gather] call DB create failed callSid=${callSid}: ${dbErr.message}`);
-      return null;
-    });
-
-    try {
-      // Load clinic context — also capture Twilio creds needed for recording download.
-      let twilioAccountSid = "";
-      let twilioAuthToken  = "";
-      if (!session.clinicPrompt || !session.knowledgePrompt) {
-        try {
-          const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
-          session.clinicId      = clinicTwilio.clinicId;
-          twilioAccountSid      = clinicTwilio.twilioAccountSid;
-          twilioAuthToken       = clinicTwilio.twilioAuthToken;
-          const inboundContext  = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
-          session.clinicPrompt    = inboundContext.clinicPrompt;
-          session.knowledgePrompt = inboundContext.knowledgePrompt;
-          session.elApiKey        = inboundContext.elApiKey;
-          session.elVoiceId       = inboundContext.elVoiceId;
-        } catch {
-          /* continue without clinic context */
-        }
-      } else if (session.clinicId) {
-        try {
-          const cfg = await getClinicTwilioConfigByClinicId(session.clinicId);
-          twilioAccountSid = cfg.twilioAccountSid;
-          twilioAuthToken  = cfg.twilioAuthToken;
-        } catch { /* fallback: downloadTwilioRecording uses env vars */ }
-      }
-
-      const persistQueue = [];
-      const vr = new twilio.twiml.VoiceResponse();
-
-      const inboundMaxTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 200);
-      const inboundModel     = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || null;
-      // Force chat-like prompt path for inbound consistency with chat mode.
-      const useMerged        = false;
-
-      // Record mode: has audio file URL. Legacy Gather mode: has SpeechResult text.
-      const hasRecording = !!recordingUrl;
-      const hasSpeech    = hasRecording || !!speechResult;
-
-      if (!hasSpeech) {
-        await twimlPlayElevenLabsOrSay(
-          vr, req, session, callSid,
-          "Sorry, I did not catch that. Please try again."
-        );
-        if (call) {
-          persistQueue.push(() =>
-            saveIncomingMessageRow({
-              callId: call.id,
-              transcription: null,
-              userType: "user",
-              status: "no-speech-no-audio"
-            })
-          );
-        }
-        vr.record(recordOptsInbound(gatherUrl));
-        await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
-        vr.hangup();
-      } else {
-        if (!hasRecording && speechResult) {
-          // Legacy Gather path — save transcription only (no audio available).
-          if (call) {
-            persistQueue.push(() =>
-              saveIncomingMessageRow({
-                callId: call.id,
-                audio: null,
-                transcription: speechResult,
-                userType: "user",
-                status: "success-no-audio"
-              })
-            );
-          }
-          pushInboundVoiceMessage(callSid, "user", speechResult);
-        }
-        // Record mode: message push + audio save happen inside the background job
-        // (after download + Whisper finish). Do NOT push the message here.
-
-        if (useInboundWaitBeforeReply()) {
-          session.inboundAwaitingReply = true;
-          // Start download + Whisper + LLM + EL TTS — all in background.
-          startInboundAssistantBackgroundJob({
-            callSid,
-            session,
-            maxReplyChars,
-            useMerged,
-            inboundModel,
-            inboundMaxTokens,
-            ...(hasRecording ? { recordingUrl, twilioAccountSid, twilioAuthToken, call } : {})
-          });
-
-          // Play wait audio while background job runs (custom URL > built-in tone).
-          const sfxUrl  = getInboundWaitSfxUrl();
-          const holdUrl = getInboundWaitAudioUrl();
-          if (isHttpsOrHttpUrl(sfxUrl)) {
-            vr.play({ loop: getInboundWaitSfxLoopCount() }, sfxUrl);
-          } else if (isHttpsOrHttpUrl(holdUrl)) {
-            vr.play({ loop: getInboundWaitPlayLoopCount() }, holdUrl);
-          } else {
-            // Built-in gentle 440 Hz tone, 3 s × 2 plays = up to 6 s coverage.
-            const toneUrl = `${getServerUrl(req)}/api/twilio/voice/wait-tone.wav`;
-            vr.play({ loop: 2 }, toneUrl);
-          }
-          const replyUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-reply`;
-          vr.redirect({ method: "POST" }, replyUrl);
-        } else {
-          await runInboundAssistantTwiMl({
-            vr,
-            req,
-            session,
-            callSid,
-            call,
-            persistQueue,
-            maxReplyChars,
-            gatherUrl,
-            useMerged,
-            inboundModel,
-            inboundMaxTokens
-          });
-        }
-      }
-
-      const xml = vr.toString();
-      res.type("text/xml");
-      res.send(xml);
-      flushInboundPersistQueue(persistQueue);
-      return;
-    } catch (err) {
-      inboundAssistantJobs.delete(callSid);
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][inbound-gather] error: ${err.message}`);
-      res.type("text/xml");
-      const xml = await buildInboundErrorTwimlXml(req, "Sorry, something went wrong. Goodbye.", {
-        callSid
-      });
-      return res.send(xml);
-    }
-  },
-
-  // POST /api/twilio/voice/inbound-reply
-  // After wait cue + SFX/hold audio, Twilio follows redirect here. Consumes background LLM+TTS job when present.
-  async inboundGatherReply(req, res) {
-    const callSid = String(req.body?.CallSid || "").trim();
-    const from = String(req.body?.From || "").trim();
-    const to = String(req.body?.To || "").trim();
-    const gatherUrl = `${getServerUrl(req)}/api/twilio/voice/inbound-gather`;
-    const maxReplyChars = Number(process.env.TWILIO_INBOUND_MAX_REPLY_CHARS) || 800;
-
-    if (!callSid) {
-      res.type("text/xml");
-      const xml = await buildInboundErrorTwimlXml(req, "Goodbye.");
-      return res.send(xml);
-    }
-
-    const session = getInboundVoiceSession(callSid);
-    await touchInboundCallSeconds(callSid).catch(() => {});
-
-    // Create call record first — must not depend on clinic lookup or awaiting-reply state.
-    const call = await findOrCreateCallBySid({
-      callSid,
-      from,
-      status: String(req.body?.CallStatus || "in-progress")
-    }).catch((dbErr) => {
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][inbound-reply] call DB create failed callSid=${callSid}: ${dbErr.message}`);
-      return null;
-    });
-
-    try {
-      if (!session.clinicPrompt || !session.knowledgePrompt) {
-        try {
-          const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
-          session.clinicId = clinicTwilio.clinicId;
-          const inboundContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
-          session.clinicPrompt = inboundContext.clinicPrompt;
-          session.knowledgePrompt = inboundContext.knowledgePrompt;
-          session.elApiKey = inboundContext.elApiKey;
-          session.elVoiceId = inboundContext.elVoiceId;
-        } catch {
-          /* continue without clinic context */
-        }
-      }
-      if (!session.inboundAwaitingReply) {
-        const vr = new twilio.twiml.VoiceResponse();
-        vr.record(recordOptsInbound(gatherUrl));
-        await twimlPlayElevenLabsOrSay(vr, req, session, callSid, "Thank you for calling. Goodbye.");
-        vr.hangup();
-        res.type("text/xml");
-        return res.send(vr.toString());
-      }
-      session.inboundAwaitingReply = false;
-      const persistQueue = [];
-      const vr = new twilio.twiml.VoiceResponse();
-      const inboundMaxTokens = Number(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || 450);
-      const inboundModel = String(process.env.OPENAI_INBOUND_MODEL || "").trim() || null;
-      // Force chat-like prompt path for inbound consistency with chat mode.
-      const useMerged = false;
-
-      let resultPromise = inboundAssistantJobs.get(callSid);
-      let result;
-      if (resultPromise) {
-        result = await resultPromise;
-        inboundAssistantJobs.delete(callSid);
-      } else {
-        const hasUserMessage = session.messages.some((m) => m && m.role === "user" && String(m.content || "").trim());
-        if (!hasUserMessage) {
-          res.type("text/xml");
-          const xml = await buildInboundErrorTwimlXml(req, "Sorry, please try again.", { callSid });
-          return res.send(xml);
-        }
-        result = await buildInboundAssistantAudioResult({
-          session,
-          callSid,
-          maxReplyChars,
-          useMerged,
-          inboundModel,
-          inboundMaxTokens
-        });
-      }
-      await finalizeInboundAssistantTwiml({
-        vr,
-        req,
-        session,
-        callSid,
-        call,
-        persistQueue,
-        gatherUrl,
-        result
-      });
-
-      const xml = vr.toString();
-      res.type("text/xml");
-      res.send(xml);
-      flushInboundPersistQueue(persistQueue);
-      return;
-    } catch (err) {
-      session.inboundAwaitingReply = false;
-      inboundAssistantJobs.delete(callSid);
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][inbound-reply] error: ${err.message}`);
-      res.type("text/xml");
-      const xml = await buildInboundErrorTwimlXml(req, "Sorry, something went wrong. Goodbye.", {
-        callSid
-      });
-      return res.send(xml);
-    }
-  },
-
-  // POST /api/twilio/voice/recording-status
-  // Twilio recording callback for inbound calls; persists caller audio as base64.
-  async inboundVoiceRecordingStatus(req, res, next) {
     try {
       const callSid = String(req.body?.CallSid || "").trim();
-      const recordingSid = String(req.body?.RecordingSid || "").trim();
-      const recordingUrl = String(req.body?.RecordingUrl || "").trim();
-      const recordingStatus = String(req.body?.RecordingStatus || "").trim().toLowerCase();
-      const recordingDuration = Number(req.body?.RecordingDuration || 0);
-      const from = String(req.body?.From || "").trim();
-      const to = String(req.body?.To || "").trim();
+      const from    = String(req.body?.From    || "").trim();
+      const to      = String(req.body?.To      || "").trim();
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[Twilio][recording:status] callSid=${callSid || "-"} recordingSid=${recordingSid || "-"} status=${recordingStatus || "-"} duration=${Number.isFinite(recordingDuration) ? recordingDuration : "-"}s`
+      const greetingText = normalizeInboundPromptText(
+        process.env.TWILIO_INBOUND_VOICE_GREETING,
+        "Hello. This is our automated assistant. How can I help you today?"
       );
 
-      if (!callSid || !recordingSid) return res.sendStatus(200);
-
-      const call = await findOrCreateCallBySid({
-        callSid,
-        from,
-        status: recordingStatus || null
-      });
-      if (!call) return res.sendStatus(200);
-
-      const existing = await IncomingMessage.findOne({
-        where: {
-          callId: call.id,
-          userType: "user",
-          status: `recording-${recordingSid}`
-        }
-      });
-      if (existing) return res.sendStatus(200);
-
-      let audioBase64 = null;
-      if (recordingStatus === "completed" && recordingUrl) {
-        try {
-          const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
-          audioBase64 = await fetchRecordingBase64(recordingUrl, {
-            accountSid: clinicTwilio.twilioAccountSid,
-            authToken: clinicTwilio.twilioAuthToken
-          });
-        } catch (downloadErr) {
+      // 1. Create call record — must happen even if clinic lookup fails.
+      let call = null;
+      if (callSid) {
+        call = await findOrCreateCallBySid({
+          callSid,
+          from,
+          status: String(req.body?.CallStatus || "in-progress"),
+        }).catch((dbErr) => {
           // eslint-disable-next-line no-console
-          console.error(`[Twilio][recording:download] sid=${recordingSid} error=${downloadErr.message}`);
-        }
-      }
-
-      await saveIncomingMessageRow({
-        callId: call.id,
-        audio: audioBase64,
-        transcription: `Twilio recording ${recordingSid}${Number.isFinite(recordingDuration) ? ` (${recordingDuration}s)` : ""}`,
-        userType: "user",
-        status: `recording-${recordingSid}`
-      });
-
-      if (Number.isFinite(recordingDuration) && recordingDuration >= 0) {
-        await call.update({
-          seconds: recordingDuration > Number(call.seconds || 0) ? recordingDuration : Number(call.seconds || 0)
+          console.error(`[Twilio][inbound] call DB create failed callSid=${callSid}: ${dbErr.message}`);
+          return null;
         });
       }
 
-      return res.sendStatus(200);
+      // 2. Load clinic context (prompts + ElevenLabs credentials).
+      let clinicContext = { clinicPrompt: null, knowledgePrompt: null, elApiKey: null, elVoiceId: null };
+      try {
+        const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
+        clinicContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} hasElKey=${!!clinicContext.elApiKey} hasElVoice=${!!clinicContext.elVoiceId}`
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[Twilio][inbound] clinic lookup failed callSid=${callSid}: ${err.message}`);
+      }
+
+      // 3. Register context so the WebSocket handler can retrieve it when Twilio connects.
+      if (callSid) {
+        registerPendingInboundSession(callSid, {
+          ...clinicContext,
+          call,
+          greetingText,
+        });
+      }
+
+      // 4. Return TwiML that opens a Media Stream WebSocket back to this server.
+      const wsBaseUrl = String(process.env.TWILIO_STREAM_WSS_URL || "").trim()
+        || (process.env.SERVER_URL || `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`)
+          .replace(/^http/i, "ws");
+      const wsUrl = `${wsBaseUrl.replace(/\/$/, "")}/api/twilio/voice/stream`;
+
+      // Twilio Media Streams require secure websocket URL in production.
+      if (!/^wss:\/\//i.test(wsUrl)) {
+        throw new Error(`invalid stream url (must be wss://): ${wsUrl}`);
+      }
+
+      const streamStatusUrl = `${getServerUrl(req)}/api/twilio/voice/stream-status`;
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${wsUrl}" statusCallback="${streamStatusUrl}" statusCallbackMethod="POST">
+      <Parameter name="callSid" value="${callSid}" />
+    </Stream>
+  </Connect>
+</Response>`;
+
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][inbound] returning Media Stream TwiML callSid=${callSid} wsUrl=${wsUrl}`);
+      res.type("text/xml");
+      return res.send(twiml);
     } catch (err) {
-      return next(err);
+      // eslint-disable-next-line no-console
+      console.error(`[Twilio][inbound] failed to build TwiML: ${err.message}`);
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse("We are unable to connect your call right now. Please try again later."));
     }
   },
 
@@ -1194,6 +294,20 @@ module.exports = {
     }
   },
 
+  // POST /api/twilio/voice/stream-status
+  // Twilio Media Streams lifecycle callback (connected/start/stop/error).
+  async inboundVoiceStreamStatus(req, res) {
+    const callSid = String(req.body?.CallSid || "").trim() || "-";
+    const streamSid = String(req.body?.StreamSid || "").trim() || "-";
+    const streamEvent = String(req.body?.StreamEvent || "").trim() || "-";
+    const streamError = String(req.body?.StreamError || "").trim() || "-";
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Twilio][stream-status] callSid=${callSid} streamSid=${streamSid} event=${streamEvent} error=${streamError}`
+    );
+    return res.sendStatus(200);
+  },
+
   // POST /api/twilio/voice/fallback
   // Fallback webhook when Twilio cannot execute the primary Voice URL.
   async voiceFallbackTwiml(req, res, next) {
@@ -1204,8 +318,7 @@ module.exports = {
       // eslint-disable-next-line no-console
       console.log(`[Twilio][voice:fallback] callSid=${req.body?.CallSid || "-"} from=${req.body?.From || "-"}`);
       res.type("text/xml");
-      const xml = await buildInboundErrorTwimlXml(req, message, { callSid: String(req.body?.CallSid || "").trim() });
-      return res.send(xml);
+      return res.send(buildSafeVoiceResponse(message));
     } catch (err) {
       return next(err);
     }
