@@ -68,9 +68,10 @@ class InboundCallSession {
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   async start() {
-    // Play greeting before opening Deepgram so (1) Twilio outbound audio is not
-    // competing with the STT websocket handshake and (2) early mic frames still
-    // queue in DeepgramService once connect runs.
+    // 1. Play greeting FIRST before connecting Deepgram.
+    //    This ensures: (a) no STT noise cancels the greeting, (b) the large
+    //    audio queue that builds up during greeting playback is discarded before
+    //    Deepgram opens (prevents stale silence/echo from confusing the STT).
     if (this.greetingText) {
       try {
         await this._speakGreeting();
@@ -78,6 +79,13 @@ class InboundCallSession {
         console.error(`[InboundSession] greeting failed callSid=${this.callSid}: ${err.message}`);
       }
     }
+
+    // 2. Discard audio that queued while the greeting was playing.
+    //    That audio is silence/echo from the caller's side while they were
+    //    listening — it should not be sent to Deepgram.
+    this.stt.clearQueue();
+
+    // 3. Now connect Deepgram; new audio from the caller's speech will flow in.
     await this.stt.connect();
     console.log(`[InboundSession] started callSid=${this.callSid}`);
   }
@@ -105,23 +113,19 @@ class InboundCallSession {
   // ─── Greeting ──────────────────────────────────────────────────────────────
 
   async _speakGreeting() {
-    // Do NOT set isProcessing here — while greeting runs, Deepgram may emit
-    // interim/final noise; _runPipeline() would see isProcessing and call
-    // _cancelPipeline(), setting cancelFlag and killing greeting audio.
     this._greetingActive = true;
     this.cancelFlag = false;
     this.isBotSpeaking = false;
 
     try {
-      const sentences = splitIntoSentences(this.greetingText);
-      console.log(`[InboundSession] greeting start callSid=${this.callSid} sentences=${sentences.length} streamSid=${this.streamSid}`);
-      for (const sentence of sentences) {
-        if (this.cancelFlag) {
-          console.log(`[InboundSession] greeting cancelled early callSid=${this.callSid}`);
-          break;
-        }
-        await this._streamTTSToTwilio(sentence);
-      }
+      console.log(
+        `[InboundSession] greeting start callSid=${this.callSid} streamSid=${this.streamSid}`
+      );
+      // Send the ENTIRE greeting as a single TTS call — no sentence splitting.
+      // Multiple API calls create audible silence gaps between sentences and
+      // introduce more failure points.  A single streaming call is simpler and
+      // plays the greeting continuously without gaps.
+      await this._streamTTSToTwilio(this.greetingText);
       console.log(`[InboundSession] greeting done callSid=${this.callSid}`);
 
       if (this.call) {
@@ -159,30 +163,28 @@ class InboundCallSession {
     this.stt.on("final", (transcript) => {
       if (this._greetingActive) return;
 
+      console.log(`[InboundSession] STT final="${transcript}" callSid=${this.callSid}`);
       if (!transcript?.trim()) return;
+
       this.partialTranscript = "";
-
-      if (this.earlyFlushTriggered) {
-        this.earlyFlushTriggered = false;
-        if (this.isProcessing) {
-          console.log(
-            `[InboundSession] final received but pipeline already running — skipping callSid=${this.callSid}`
-          );
-          return;
-        }
-      }
-
       this.earlyFlushTriggered = false;
+
+      // Always run the pipeline on a final transcript.
+      // If a pipeline is already running from an early flush, _runPipeline
+      // cancels it and restarts with the complete text.
       this._runPipeline(transcript);
     });
 
     this.stt.on("utteranceEnd", () => {
       if (this._greetingActive) return;
 
-      if (this.partialTranscript.trim() && !this.isProcessing) {
-        console.log(`[InboundSession] utteranceEnd safety flush callSid=${this.callSid}`);
-        const text = this.partialTranscript;
+      const text = this.partialTranscript.trim();
+      if (text && !this.isProcessing) {
+        console.log(
+          `[InboundSession] utteranceEnd safety flush text="${text}" callSid=${this.callSid}`
+        );
         this.partialTranscript = "";
+        this.earlyFlushTriggered = false;
         this._runPipeline(text);
       }
     });
@@ -267,14 +269,51 @@ class InboundCallSession {
   async _streamTTSToTwilio(text) {
     if (this.cancelFlag || !text?.trim()) return;
 
+    console.log(
+      `[InboundSession] TTS start callSid=${this.callSid} text="${text.slice(0, 60)}"`
+    );
+
     const audioStream = await this.tts.streamAudio(text);
-    if (!audioStream) return;
+    if (!audioStream) {
+      console.warn(`[InboundSession] TTS returned null stream callSid=${this.callSid}`);
+      return;
+    }
 
     this.isBotSpeaking = true;
+    let chunkCount = 0;
 
     try {
-      // Prefer async iteration so chunks are not missed if the stream emits
-      // before legacy .on("data") listeners attach.
+      // Path A: web ReadableStream (from ElevenLabs native fetch on Node 18+).
+      // Use getReader() directly — most reliable for WHATWG ReadableStream.
+      if (typeof audioStream.getReader === "function") {
+        const reader = audioStream.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (this.cancelFlag) break;
+            if (this.ws.readyState !== 1 /* OPEN */) break;
+            if (!value || !value.length) continue;
+            const buf = Buffer.from(value);
+            this.ws.send(
+              JSON.stringify({
+                event: "media",
+                streamSid: this.streamSid,
+                media: { payload: buf.toString("base64") },
+              })
+            );
+            chunkCount++;
+          }
+        } finally {
+          try { reader.releaseLock(); } catch { /* ignore */ }
+        }
+        console.log(
+          `[InboundSession] TTS done (getReader) chunks=${chunkCount} callSid=${this.callSid}`
+        );
+        return;
+      }
+
+      // Path B: Node.js async iterable (Readable.fromWeb, Readable.from, etc.)
       if (typeof audioStream[Symbol.asyncIterator] === "function") {
         for await (const chunk of audioStream) {
           if (this.cancelFlag) break;
@@ -288,31 +327,42 @@ class InboundCallSession {
               media: { payload: buf.toString("base64") },
             })
           );
+          chunkCount++;
         }
+        console.log(
+          `[InboundSession] TTS done (asyncIterator) chunks=${chunkCount} callSid=${this.callSid}`
+        );
         return;
       }
 
+      // Path C: legacy Node.js Readable with .on("data") events.
       await new Promise((resolve) => {
         audioStream.on("data", (chunk) => {
           if (this.cancelFlag) {
-            audioStream.destroy();
+            audioStream.destroy?.();
             resolve();
             return;
           }
           if (this.ws.readyState === 1 /* OPEN */) {
             const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            this.ws.send(
-              JSON.stringify({
-                event: "media",
-                streamSid: this.streamSid,
-                media: { payload: buf.toString("base64") },
-              })
-            );
+            if (buf.length > 0) {
+              this.ws.send(
+                JSON.stringify({
+                  event: "media",
+                  streamSid: this.streamSid,
+                  media: { payload: buf.toString("base64") },
+                })
+              );
+              chunkCount++;
+            }
           }
         });
-
-        audioStream.on("end", () => resolve());
-
+        audioStream.on("end", () => {
+          console.log(
+            `[InboundSession] TTS done (on-data) chunks=${chunkCount} callSid=${this.callSid}`
+          );
+          resolve();
+        });
         audioStream.on("error", (err) => {
           console.warn(
             `[InboundSession] TTS stream error callSid=${this.callSid}: ${err.message}`
@@ -344,12 +394,6 @@ class InboundCallSession {
       this.ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
     }
   }
-}
-
-function splitIntoSentences(text) {
-  const s = String(text || "").trim();
-  if (!s) return [];
-  return s.split(/(?<=[.!?])\s+/).filter(Boolean);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

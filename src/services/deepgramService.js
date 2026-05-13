@@ -28,9 +28,21 @@ class DeepgramService extends EventEmitter {
     this.audioQueue = [];
   }
 
+  /**
+   * Discard all queued audio (e.g. silence collected during greeting playback).
+   * Call this before connect() to avoid sending stale audio to Deepgram.
+   */
+  clearQueue() {
+    const dropped = this.audioQueue.length;
+    this.audioQueue = [];
+    if (dropped > 0) {
+      console.log(`[Deepgram] cleared ${dropped} stale audio frames callSid=${this.callSid}`);
+    }
+  }
+
   async connect() {
     const endpointingMs = parseInt(process.env.VAD_SILENCE_MS || "600", 10);
-    // Deepgram requires utterance_end_ms >= 1000 when using UtteranceEnd; lower values can reject the connection (400).
+    // Deepgram requires utterance_end_ms >= 1000 when using UtteranceEnd; lower values reject the connection (400).
     const utteranceEndConfigured = parseInt(
       process.env.DEEPGRAM_UTTERANCE_END_MS || String(Math.max(1000, endpointingMs + 400)),
       10
@@ -39,7 +51,9 @@ class DeepgramService extends EventEmitter {
       ? Math.max(1000, utteranceEndConfigured)
       : 1000;
 
-    // v5: client.listen.v1.connect() returns the socket object (not yet connected).
+    // v5: client.listen.v1.connect() returns a Promise that resolves to the
+    // socket wrapper (WrappedListenV1Socket) — NOT yet connected.
+    // Call socket.connect() afterwards to open the underlying WebSocket.
     this.socket = await this.client.listen.v1.connect({
       model: "nova-2-phonecall",
       language: "en-US",
@@ -55,7 +69,9 @@ class DeepgramService extends EventEmitter {
 
     this.socket.on("open", () => {
       this.isOpen = true;
-      console.log(`[Deepgram] connection opened callSid=${this.callSid}`);
+      console.log(
+        `[Deepgram] connection opened callSid=${this.callSid} queuedFrames=${this.audioQueue.length}`
+      );
       for (const chunk of this.audioQueue) {
         this.socket.sendMedia(chunk);
       }
@@ -63,23 +79,32 @@ class DeepgramService extends EventEmitter {
     });
 
     // v5: all server messages (transcripts, utterance end, metadata, etc.)
-    // arrive on the "message" event. Distinguish by data.type.
+    // arrive on the "message" event keyed by data.type.
     this.socket.on("message", (data) => {
       if (!data) return;
+
+      const msgType = data.type ?? (typeof data === "string" ? "raw-string" : "unknown");
+      // Log non-Results/non-SpeechStarted messages for diagnostics (avoid log spam for every interim)
+      if (msgType !== "Results" && msgType !== "SpeechStarted") {
+        console.log(`[Deepgram] msg type=${msgType} callSid=${this.callSid}`);
+      }
 
       if (data.type === "UtteranceEnd") {
         this.emit("utteranceEnd");
         return;
       }
 
-      // Results message — same shape as v3 transcript response.
       if (data.type === "Results" || data.channel) {
         const alt = data?.channel?.alternatives?.[0];
         if (!alt || !String(alt.transcript || "").trim()) return;
 
         const transcript = alt.transcript.trim();
-        const isFinal = data.is_final;
-        const speechFinal = data.speech_final;
+        const isFinal = Boolean(data.is_final);
+        const speechFinal = Boolean(data.speech_final);
+
+        console.log(
+          `[Deepgram] transcript="${transcript}" is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
+        );
 
         if (isFinal || speechFinal) {
           this.emit("final", transcript);
@@ -100,8 +125,9 @@ class DeepgramService extends EventEmitter {
       this.emit("close");
     });
 
-    // v5: must call connect() to actually open the WebSocket.
+    // v5: must call connect() to actually open the underlying WebSocket.
     this.socket.connect();
+    console.log(`[Deepgram] connecting callSid=${this.callSid}`);
   }
 
   sendAudio(buffer) {

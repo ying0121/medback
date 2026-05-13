@@ -4,62 +4,14 @@
  * Streams μ-law 8 kHz audio via ElevenLabs for a single inbound call.
  * Uses per-clinic API key and voice ID loaded from the clinics table.
  *
- * Returns a Node.js Readable stream of raw μ-law audio chunks that can be
- * forwarded directly over the Twilio Media Streams WebSocket without any
- * format conversion.
+ * Returns the raw HTTP response body (a WHATWG ReadableStream on Node 18+).
+ * InboundCallSession._streamTTSToTwilio handles consumption via getReader().
  *
  * If ElevenLabs credentials are not configured the service logs a warning
  * and returns null — the session pipeline handles the null case gracefully.
  */
 
 const { ElevenLabsClient } = require("elevenlabs");
-const { Readable } = require("stream");
-
-/**
- * ElevenLabs streaming responses may be a Web ReadableStream, a Node Readable, or an async iterable.
- * InboundCallSession expects a Node.js Readable with .on("data").
- */
-function toNodeReadableStream(body, callSid) {
-  if (!body) return null;
-  if (typeof body.on === "function" && typeof body.pipe === "function") {
-    return body;
-  }
-  if (typeof Readable.fromWeb === "function" && typeof body.getReader === "function") {
-    try {
-      return Readable.fromWeb(body);
-    } catch (err) {
-      console.warn(`[InboundTTS] Readable.fromWeb failed callSid=${callSid}: ${err.message}`);
-    }
-  }
-  if (typeof body.getReader === "function") {
-    const reader = body.getReader();
-    return Readable.from(
-      (async function* ulawChunks() {
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value) yield Buffer.isBuffer(value) ? value : Buffer.from(value);
-          }
-        } finally {
-          try {
-            reader.releaseLock();
-          } catch {
-            /* ignore */
-          }
-        }
-      })(),
-      { objectMode: false }
-    );
-  }
-  if (body && typeof body[Symbol.asyncIterator] === "function") {
-    return Readable.from(body, { objectMode: false });
-  }
-  console.warn(
-    `[InboundTTS] unknown stream type callSid=${callSid} keys=${body && typeof body === "object" ? Object.keys(body).slice(0, 8).join(",") : typeof body}`
-  );
-  return null;
-}
 
 class InboundTtsService {
   /**
@@ -79,22 +31,26 @@ class InboundTtsService {
   }
 
   /**
-   * Stream audio for a single sentence/chunk of text.
+   * Stream audio for a chunk of text.
+   * Returns the raw WHATWG ReadableStream from ElevenLabs (on Node 18+) or
+   * null when ElevenLabs is not configured or the call fails.
    * @param {string} text
-   * @returns {Promise<import("stream").Readable|null>}
+   * @returns {Promise<ReadableStream|null>}
    */
   async streamAudio(text) {
     if (!text?.trim()) return null;
 
     if (!this.client || !this.voiceId) {
-      console.warn(`[InboundTTS] ElevenLabs not configured — skipping TTS for callSid=${this.callSid}`);
+      console.warn(
+        `[InboundTTS] ElevenLabs not configured — skipping TTS for callSid=${this.callSid}`
+      );
       return null;
     }
 
     try {
-      // ElevenLabs SDK v1.x+ uses textToSpeech.convertAsStream() which returns
-      // a web ReadableStream. Convert to Node.js Readable so callers can use .on().
-      const rawBody = await this.client.textToSpeech.convertAsStream(this.voiceId, {
+      // convertAsStream() returns response.body — a WHATWG ReadableStream on
+      // Node 18+.  InboundCallSession reads it directly via getReader().
+      const stream = await this.client.textToSpeech.convertAsStream(this.voiceId, {
         text,
         model_id: this.model,
         output_format: "ulaw_8000",
@@ -106,7 +62,19 @@ class InboundTtsService {
         },
       });
 
-      return toNodeReadableStream(rawBody, this.callSid);
+      console.log(
+        `[InboundTTS] stream ready callSid=${this.callSid} type=${
+          typeof stream?.getReader === "function"
+            ? "WebReadableStream"
+            : typeof stream?.[Symbol.asyncIterator] === "function"
+            ? "AsyncIterable"
+            : typeof stream?.on === "function"
+            ? "NodeReadable"
+            : typeof stream
+        }`
+      );
+
+      return stream;
     } catch (err) {
       console.error(`[InboundTTS] ElevenLabs error callSid=${this.callSid}: ${err.message}`);
       return null;
