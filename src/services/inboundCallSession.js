@@ -56,6 +56,11 @@ class InboundCallSession {
     this.isProcessing = false;
     this.cancelFlag = false;
     this.streamSid = null;
+    // Monotonic counter: incremented on every new pipeline run and on every
+    // cancel.  Each pipeline run stores its generation at start time and checks
+    // it on every await point so that a stale run exits immediately even if
+    // cancelFlag was already reset by the new run.
+    this._pipelineGen = 0;
 
     this.partialTranscript = "";
     this.earlyFlushTriggered = false;
@@ -199,10 +204,20 @@ class InboundCallSession {
   // ─── Main LLM → TTS pipeline ───────────────────────────────────────────────
 
   async _runPipeline(userText) {
+    // Cancel any running pipeline immediately.
     if (this.isProcessing) {
-      this._cancelPipeline();
-      await sleep(50);
+      this._cancelPipeline(); // also increments _pipelineGen
     }
+
+    // Claim this run's generation AFTER the possible cancel above.
+    const myGen = ++this._pipelineGen;
+
+    // Short pause so the previous pipeline's awaiting operations can detect
+    // the stale generation and exit cleanly before we reset shared flags.
+    await sleep(80);
+
+    // If another _runPipeline was called while we were sleeping, bail out.
+    if (myGen !== this._pipelineGen) return;
 
     this.isProcessing = true;
     this.cancelFlag = false;
@@ -220,15 +235,15 @@ class InboundCallSession {
 
     try {
       console.log(
-        `[InboundSession] pipeline start callSid=${this.callSid} text="${userText.slice(0, 60)}"`
+        `[InboundSession] pipeline start callSid=${this.callSid} gen=${myGen} text="${userText.slice(0, 60)}"`
       );
       const t0 = Date.now();
       let fullBotReply = "";
       let firstSentence = true;
 
       for await (const sentence of this.llm.streamReply(userText)) {
-        if (this.cancelFlag) {
-          console.log(`[InboundSession] pipeline cancelled callSid=${this.callSid}`);
+        if (this.cancelFlag || myGen !== this._pipelineGen) {
+          console.log(`[InboundSession] pipeline cancelled gen=${myGen} callSid=${this.callSid}`);
           break;
         }
 
@@ -240,9 +255,9 @@ class InboundCallSession {
         }
 
         fullBotReply += (fullBotReply ? " " : "") + sentence;
-        await this._streamTTSToTwilio(sentence);
+        await this._streamTTSToTwilio(sentence, myGen);
 
-        if (this.cancelFlag) break;
+        if (this.cancelFlag || myGen !== this._pipelineGen) break;
       }
 
       if (this.call && fullBotReply) {
@@ -266,14 +281,33 @@ class InboundCallSession {
 
   // ─── TTS → Twilio WebSocket ────────────────────────────────────────────────
 
-  async _streamTTSToTwilio(text) {
-    if (this.cancelFlag || !text?.trim()) return;
+  /**
+   * Stream TTS audio to the Twilio WebSocket.
+   * @param {string} text
+   * @param {number|null} pipelineGen  Pass the caller's generation ID so the
+   *   function exits immediately when a newer pipeline supersedes this one.
+   *   Pass null (or omit) only from _speakGreeting, which is protected by the
+   *   _greetingActive flag instead.
+   */
+  async _streamTTSToTwilio(text, pipelineGen = null) {
+    // isStale: true when this operation belongs to a cancelled/superseded pipeline
+    const isStale = () =>
+      this.cancelFlag || (pipelineGen !== null && pipelineGen !== this._pipelineGen);
+
+    if (isStale() || !text?.trim()) return;
 
     console.log(
-      `[InboundSession] TTS start callSid=${this.callSid} text="${text.slice(0, 60)}"`
+      `[InboundSession] TTS start callSid=${this.callSid} gen=${pipelineGen} text="${text.slice(0, 60)}"`
     );
 
     const audioStream = await this.tts.streamAudio(text);
+
+    // Re-check staleness after the ElevenLabs API call (which can take 300ms+)
+    if (isStale()) {
+      console.log(`[InboundSession] TTS discarded (stale gen=${pipelineGen}) callSid=${this.callSid}`);
+      return;
+    }
+
     if (!audioStream) {
       console.warn(`[InboundSession] TTS returned null stream callSid=${this.callSid}`);
       return;
@@ -291,7 +325,7 @@ class InboundCallSession {
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            if (this.cancelFlag) break;
+            if (isStale()) break;
             if (this.ws.readyState !== 1 /* OPEN */) break;
             if (!value || !value.length) continue;
             const buf = Buffer.from(value);
@@ -316,7 +350,7 @@ class InboundCallSession {
       // Path B: Node.js async iterable (Readable.fromWeb, Readable.from, etc.)
       if (typeof audioStream[Symbol.asyncIterator] === "function") {
         for await (const chunk of audioStream) {
-          if (this.cancelFlag) break;
+          if (isStale()) break;
           if (this.ws.readyState !== 1 /* OPEN */) break;
           const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           if (!buf.length) continue;
@@ -338,7 +372,7 @@ class InboundCallSession {
       // Path C: legacy Node.js Readable with .on("data") events.
       await new Promise((resolve) => {
         audioStream.on("data", (chunk) => {
-          if (this.cancelFlag) {
+          if (isStale()) {
             audioStream.destroy?.();
             resolve();
             return;
@@ -387,6 +421,7 @@ class InboundCallSession {
   _cancelPipeline() {
     this.cancelFlag = true;
     this.isBotSpeaking = false;
+    this._pipelineGen++; // invalidates all in-flight _streamTTSToTwilio calls
   }
 
   _clearTwilioAudio() {

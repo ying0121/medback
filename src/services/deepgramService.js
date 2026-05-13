@@ -106,7 +106,12 @@ class DeepgramService extends EventEmitter {
           `[Deepgram] transcript="${transcript}" is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
         );
 
-        if (isFinal || speechFinal) {
+        if (speechFinal) {
+          // speech_final=true means the user STOPPED SPEAKING (silence detected).
+          // This is the correct moment to trigger the LLM pipeline — only once
+          // per utterance.  is_final=true alone means a chunk was finalized but
+          // speech is still ongoing; treat it as interim so the pipeline does
+          // not fire prematurely on every word.
           this.emit("final", transcript);
         } else {
           this.emit("interim", transcript);
