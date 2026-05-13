@@ -220,8 +220,10 @@ module.exports = {
 
       // 2. Load clinic context (prompts + ElevenLabs credentials).
       let clinicContext = { clinicPrompt: null, knowledgePrompt: null, elApiKey: null, elVoiceId: null };
+      let inboundClinicId = null;
       try {
         const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
+        inboundClinicId = clinicTwilio.clinicId;
         clinicContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
         // eslint-disable-next-line no-console
         console.log(
@@ -236,6 +238,7 @@ module.exports = {
       if (callSid) {
         registerPendingInboundSession(callSid, {
           ...clinicContext,
+          clinicId: inboundClinicId,
           call,
           greetingText,
         });

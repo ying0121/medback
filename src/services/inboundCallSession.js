@@ -7,6 +7,8 @@
  * Flow:
  *   Twilio Media Stream WS → sendAudio()
  *     → DeepgramService → "interim" / "final" / "utteranceEnd" events
+ *       → optional wait-tone μ-law while OpenAI streams
+ *       → optional end-call classifier → farewell TTS + Twilio REST hangup
  *       → InboundLlmService.streamReply() → sentence generator
  *         → InboundTtsService.streamAudio() → μ-law audio stream
  *           → mediaWs.send() back to Twilio
@@ -23,6 +25,9 @@ const { DeepgramService } = require("./deepgramService");
 const { InboundLlmService } = require("./inboundLlmService");
 const { InboundTtsService } = require("./inboundTtsService");
 const { saveIncomingMessageRow } = require("./callPersistenceService");
+const { analyzeInboundEndCallTurn } = require("./openaiService");
+const { endCall } = require("./twilioService");
+const { WAIT_TONE_MULAW } = require("./waitToneService");
 
 const INTERIM_FLUSH_CHARS = parseInt(process.env.INTERIM_FLUSH_CHARS || "120");
 
@@ -36,7 +41,8 @@ class InboundCallSession {
    *   elApiKey: string|null,
    *   elVoiceId: string|null,
    *   call: object|null,
-   *   greetingText: string
+   *   greetingText: string,
+   *   clinicId: number|null
    * }} opts
    */
   constructor(callSid, ws, opts = {}) {
@@ -44,6 +50,10 @@ class InboundCallSession {
     this.ws = ws;
     this.call = opts.call || null;
     this.greetingText = opts.greetingText || "";
+    const cid = Number(opts.clinicId);
+    this.clinicId = Number.isFinite(cid) && cid > 0 ? cid : null;
+    this.clinicPrompt = opts.clinicPrompt || null;
+    this.knowledgePrompt = opts.knowledgePrompt || null;
 
     this.stt = new DeepgramService(callSid);
     this.llm = new InboundLlmService(callSid, {
@@ -76,6 +86,8 @@ class InboundCallSession {
      * Set to true only after start() completes.
      */
     this._startupComplete = false;
+    /** Stops the outbound wait-tone loop when the first LLM chunk is ready or on hangup. */
+    this._waitToneHalt = false;
 
     this._bindSTTEvents();
   }
@@ -235,6 +247,52 @@ class InboundCallSession {
     });
   }
 
+  // ─── Wait tone (μ-law over Media Stream) ───────────────────────────────────
+
+  /**
+   * Sends looping gentle wait-tone audio while the LLM is still generating.
+   * Stops when {@link _waitToneHalt} is set, the pipeline is cancelled, or the
+   * WebSocket closes.  Sets {@link isBotSpeaking} so Deepgram SpeechStarted can
+   * barge-in during the tone.
+   */
+  async _pumpWaitTone(myGen) {
+    if (!WAIT_TONE_MULAW?.length) return;
+
+    this.isBotSpeaking = true;
+    const chunkMs = 20;
+    const chunkSize = 160; // 8 kHz × 20 ms
+
+    try {
+      let offset = 0;
+      while (
+        !this._waitToneHalt &&
+        !this.cancelFlag &&
+        myGen === this._pipelineGen &&
+        this.ws.readyState === 1
+      ) {
+        if (offset >= WAIT_TONE_MULAW.length) offset = 0;
+        const end = Math.min(offset + chunkSize, WAIT_TONE_MULAW.length);
+        const slice = WAIT_TONE_MULAW.subarray(offset, end);
+        offset = end >= WAIT_TONE_MULAW.length ? 0 : end;
+
+        if (slice.length > 0) {
+          this.ws.send(
+            JSON.stringify({
+              event: "media",
+              streamSid: this.streamSid,
+              media: { payload: slice.toString("base64") },
+            })
+          );
+        }
+        await sleep(chunkMs);
+      }
+    } catch (err) {
+      console.warn(`[InboundSession] wait tone error callSid=${this.callSid}: ${err.message}`);
+    } finally {
+      this.isBotSpeaking = false;
+    }
+  }
+
   // ─── Main LLM → TTS pipeline ───────────────────────────────────────────────
 
   async _runPipeline(userText) {
@@ -272,15 +330,92 @@ class InboundCallSession {
       }).catch(() => {});
     }
 
+    let waitTonePromise = Promise.resolve();
+
     try {
       console.log(
         `[InboundSession] pipeline start callSid=${this.callSid} gen=${myGen} text="${userText.slice(0, 60)}"`
       );
+
+      const waitToneEnabled =
+        String(process.env.INBOUND_WAIT_TONE_ENABLED || "1").trim() !== "0" &&
+        WAIT_TONE_MULAW.length > 0;
+
+      this._waitToneHalt = false;
+      if (waitToneEnabled) {
+        console.log(`[InboundSession] wait tone on callSid=${this.callSid}`);
+        waitTonePromise = this._pumpWaitTone(myGen);
+      }
+
+      let endTurn = { endCall: false, farewell: "" };
+      try {
+        endTurn = await analyzeInboundEndCallTurn({
+          text: userText,
+          clinicPrompt: this.clinicPrompt,
+          knowledgePrompt: this.knowledgePrompt,
+        });
+      } catch (e) {
+        console.warn(
+          `[InboundSession] end-call classify failed callSid=${this.callSid}: ${e.message}`
+        );
+      }
+
+      if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
+        this._waitToneHalt = true;
+        await waitTonePromise.catch(() => {});
+
+        const fallbackFarewell = String(
+          process.env.TWILIO_INBOUND_VOICE_FAREWELL ||
+            "Thank you for calling. Take care and goodbye."
+        ).trim();
+        const farewell = String(endTurn.farewell || "").trim() || fallbackFarewell;
+
+        this.llm.history.push({ role: "user", content: userText });
+        this.llm.history.push({ role: "assistant", content: farewell });
+
+        console.log(
+          `[InboundSession] end-call farewell="${farewell.slice(0, 80)}" callSid=${this.callSid}`
+        );
+
+        await this._streamTTSToTwilio(farewell, myGen);
+
+        if (this.call) {
+          saveIncomingMessageRow({
+            callId: this.call.id,
+            audio: null,
+            transcription: farewell,
+            userType: "bot",
+            status: "success",
+          }).catch(() => {});
+        }
+
+        if (this.clinicId && this.callSid) {
+          try {
+            await endCall(this.callSid, { clinicId: this.clinicId });
+            console.log(`[InboundSession] Twilio call ended callSid=${this.callSid}`);
+          } catch (hangErr) {
+            console.error(
+              `[InboundSession] endCall REST failed callSid=${this.callSid}: ${hangErr.message}`
+            );
+          }
+        } else {
+          console.warn(
+            `[InboundSession] hangup skipped (missing clinicId) callSid=${this.callSid}`
+          );
+        }
+        return;
+      }
+
       const t0 = Date.now();
       let fullBotReply = "";
       let sentenceIdx = 0;
 
       for await (const sentence of this.llm.streamReply(userText)) {
+        if (sentenceIdx === 0) {
+          this._waitToneHalt = true;
+          await waitTonePromise.catch(() => {});
+        }
+
         sentenceIdx++;
         console.log(
           `[InboundSession] LLM sentence #${sentenceIdx} callSid=${this.callSid} gen=${myGen} text="${sentence.slice(0, 80)}"`
@@ -328,6 +463,8 @@ class InboundCallSession {
         `[InboundSession] pipeline error callSid=${this.callSid}: ${err.message}`
       );
     } finally {
+      this._waitToneHalt = true;
+      await waitTonePromise.catch(() => {});
       this.isProcessing = false;
       this.isBotSpeaking = false;
     }

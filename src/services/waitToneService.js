@@ -10,7 +10,47 @@
  * The encoded WAV is mono PCM 16-bit at 8 kHz — Twilio's narrowband phone
  * audio rate, so no resampling happens on Twilio's side and audio remains
  * artefact-free at low CPU cost.
+ *
+ * For Media Streams (outbound μ-law over WebSocket), use {@link pcm16LeWavToMulaw}
+ * on {@link WAIT_TONE_WAV} to get {@link WAIT_TONE_MULAW}.
  */
+
+/**
+ * ITU-T G.711 μ-law encode of one PCM16 sample.
+ * @param {number} sample signed int16
+ * @returns {number} 0–255
+ */
+function encodeMuLawSample(sample) {
+  const MULAW_MAX = 0x1fff;
+  const MULAW_BIAS = 33;
+  let sign = (sample >> 8) & 0x80;
+  if (sign !== 0) sample = -sample;
+  if (sample > MULAW_MAX) sample = MULAW_MAX;
+  sample += MULAW_BIAS;
+  let exponent = 7;
+  for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) {
+    /* find segment */
+  }
+  const mantissa = (sample >> (exponent + 3)) & 0x0f;
+  return ~(sign | (exponent << 4) | mantissa) & 0xff;
+}
+
+/**
+ * Convert mono PCM16 LE WAV (canonical 44-byte header) to raw μ-law @ 8 kHz.
+ * @param {Buffer} wavBuffer
+ * @returns {Buffer}
+ */
+function pcm16LeWavToMulaw(wavBuffer) {
+  if (!Buffer.isBuffer(wavBuffer) || wavBuffer.length < 44) return Buffer.alloc(0);
+  const dataOffset = 44;
+  const byteLen = wavBuffer.length - dataOffset;
+  const n = Math.floor(byteLen / 2);
+  const out = Buffer.alloc(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = encodeMuLawSample(wavBuffer.readInt16LE(dataOffset + i * 2));
+  }
+  return out;
+}
 
 /**
  * @param {number} [durationSec=3]
@@ -59,7 +99,13 @@ function buildGentleWaitToneWav(durationSec = 3) {
 /** Pre-built buffer reused across all inbound calls. */
 const WAIT_TONE_WAV = buildGentleWaitToneWav(3);
 
+/** Same tone as raw μ-law 8 kHz for Twilio Media Stream `media` outbound payloads. */
+const WAIT_TONE_MULAW = pcm16LeWavToMulaw(WAIT_TONE_WAV);
+
 module.exports = {
   buildGentleWaitToneWav,
-  WAIT_TONE_WAV
+  WAIT_TONE_WAV,
+  pcm16LeWavToMulaw,
+  encodeMuLawSample,
+  WAIT_TONE_MULAW
 };

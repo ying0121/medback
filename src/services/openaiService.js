@@ -17,7 +17,8 @@ const { toFile } = require("openai/uploads");
 const {
   parseLanguageHints,
   parseInboundMergedTurn,
-  parseEndCallFlag
+  parseEndCallFlag,
+  parseEndCallTurn
 } = require("./openaiParseService");
 
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
@@ -221,6 +222,39 @@ async function detectInboundEndCallIntent({ text, clinicPrompt = null, knowledge
   return parseEndCallFlag(raw);
 }
 
+/**
+ * Classify end-of-call intent and return a short farewell phrase for TTS when ending.
+ * @returns {Promise<{ endCall: boolean, farewell: string }>}
+ */
+async function analyzeInboundEndCallTurn({ text, clinicPrompt = null, knowledgePrompt = null }) {
+  const empty = { endCall: false, farewell: "" };
+  if (!text || !String(text).trim()) return empty;
+  if (!openaiApiKey) return empty;
+
+  const prompt = [
+    "Classify whether the caller clearly wants to finish the phone call right now.",
+    "Return JSON only: {\"end_call\": true|false, \"farewell\": string}.",
+    "When end_call is true: set farewell to ONE short warm closing sentence in the same language/script the caller used.",
+    "When end_call is false: set farewell to an empty string \"\".",
+    "If the user is asking a question or continuing the conversation, end_call must be false."
+  ].join(" ");
+
+  const completion = await client.chat.completions.create({
+    model: openaiInboundModel,
+    temperature: 0,
+    max_completion_tokens: 120,
+    messages: [
+      { role: "system", content: prompt },
+      ...(clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
+      ...(knowledgePrompt ? [{ role: "system", content: knowledgePrompt }] : []),
+      { role: "user", content: String(text).trim().slice(0, 1000) }
+    ]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  return parseEndCallTurn(raw);
+}
+
 async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
   if (!text || !String(text).trim()) return false;
   if (!openaiApiKey) return false;
@@ -372,6 +406,7 @@ module.exports = {
   detectTwilioIntent,
   detectInboundSpeechLanguage,
   detectInboundEndCallIntent,
+  analyzeInboundEndCallTurn,
   transcribeAudioBase64,
   generateSpeechFromText
 };

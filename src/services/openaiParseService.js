@@ -104,11 +104,27 @@ function parseEndCallFlag(rawText) {
   return false;
 }
 
+/**
+ * Parse `{ "end_call": bool, "farewell": "..." }` from the end-call + farewell classifier.
+ * @returns {{ endCall: boolean, farewell: string }}
+ */
+function parseEndCallTurn(rawText) {
+  const parsed = extractJsonObject(rawText);
+  if (!parsed) {
+    return { endCall: false, farewell: "" };
+  }
+  return {
+    endCall: readBooleanField(parsed, ["end_call", "endCall"]),
+    farewell: readStringField(parsed, ["farewell", "farewell_message", "goodbye", "closing"], "")
+  };
+}
+
 module.exports = {
   extractJsonObject,
   readStringField,
   readBooleanField,
   parseLanguageHints,
   parseInboundMergedTurn,
-  parseEndCallFlag
+  parseEndCallFlag,
+  parseEndCallTurn
 };
