@@ -89,6 +89,15 @@ class DeepgramService extends EventEmitter {
         console.log(`[Deepgram] msg type=${msgType} callSid=${this.callSid}`);
       }
 
+      // SpeechStarted is Deepgram's VAD signal: the user has begun speaking.
+      // We emit this so InboundCallSession can trigger barge-in ONLY when the
+      // user actually speaks, rather than on every silent audio frame.
+      if (data.type === "SpeechStarted") {
+        console.log(`[Deepgram] SpeechStarted callSid=${this.callSid}`);
+        this.emit("speechStarted");
+        return;
+      }
+
       if (data.type === "UtteranceEnd") {
         this.emit("utteranceEnd");
         return;

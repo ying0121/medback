@@ -129,11 +129,11 @@ class InboundCallSession {
     // silence/echo that would confuse Deepgram's VAD if forwarded.
     if (!this._startupComplete) return;
 
-    // Never barge-in during the greeting — Twilio sends silence/noise frames
-    // immediately on stream open and would cancel the greeting before it plays.
-    if (this.isBotSpeaking && !this._greetingActive) {
-      this._handleBargeIn();
-    }
+    // NOTE: barge-in is handled by the Deepgram "speechStarted" VAD event
+    // (see _bindSTTEvents), NOT here on every audio frame.  Triggering
+    // _handleBargeIn() on every frame was the root cause of "second speaking
+    // no reply": Twilio sends continuous silent frames every 20 ms, so barge-in
+    // fired immediately after the bot started speaking, killing every response.
     this.stt.sendAudio(audioBuffer);
   }
 
@@ -213,6 +213,18 @@ class InboundCallSession {
         this.partialTranscript = "";
         this.earlyFlushTriggered = false;
         this._runPipeline(text);
+      }
+    });
+
+    // Deepgram's VAD event: user has started speaking.
+    // This is the correct and ONLY trigger for barge-in.  We used to trigger
+    // barge-in on every sendAudio() call while isBotSpeaking=true, which fired
+    // on silent frames every 20 ms and immediately cancelled every bot response.
+    this.stt.on("speechStarted", () => {
+      if (this._greetingActive) return;
+      if (this.isBotSpeaking) {
+        console.log(`[InboundSession] barge-in via SpeechStarted callSid=${this.callSid}`);
+        this._handleBargeIn();
       }
     });
 

@@ -67,33 +67,41 @@ class InboundLlmService {
     let buffer = "";
     let fullReply = "";
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content ?? "";
-      if (!delta) continue;
+    try {
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content ?? "";
+        if (!delta) continue;
 
-      buffer += delta;
-      fullReply += delta;
+        buffer += delta;
+        fullReply += delta;
 
-      const sentences = splitIntoSentences(buffer);
-      if (sentences.length > 1) {
-        for (let i = 0; i < sentences.length - 1; i++) {
-          const sentence = sentences[i].trim();
-          if (sentence) {
-            console.log(`[InboundLLM] yielding sentence callSid=${this.callSid} text="${sentence.slice(0, 80)}"`);
-            yield sentence;
+        const sentences = splitIntoSentences(buffer);
+        if (sentences.length > 1) {
+          for (let i = 0; i < sentences.length - 1; i++) {
+            const sentence = sentences[i].trim();
+            if (sentence) {
+              console.log(`[InboundLLM] yielding sentence callSid=${this.callSid} text="${sentence.slice(0, 80)}"`);
+              yield sentence;
+            }
           }
+          buffer = sentences[sentences.length - 1];
         }
-        buffer = sentences[sentences.length - 1];
       }
-    }
 
-    if (buffer.trim()) {
-      console.log(`[InboundLLM] yielding final chunk callSid=${this.callSid} text="${buffer.trim().slice(0, 80)}"`);
-      yield buffer.trim();
+      if (buffer.trim()) {
+        console.log(`[InboundLLM] yielding final chunk callSid=${this.callSid} text="${buffer.trim().slice(0, 80)}"`);
+        yield buffer.trim();
+      }
+    } finally {
+      // Always push to history — even when the consumer breaks early (pipeline
+      // cancelled).  Without this, the next turn has two consecutive user
+      // messages which confuses the model.  A partial reply is better than
+      // a missing one.
+      if (fullReply.trim()) {
+        this.history.push({ role: "assistant", content: fullReply });
+      }
+      console.log(`[InboundLLM] callSid=${this.callSid} reply="${fullReply.slice(0, 80)}" totalChars=${fullReply.length}`);
     }
-
-    this.history.push({ role: "assistant", content: fullReply });
-    console.log(`[InboundLLM] callSid=${this.callSid} reply="${fullReply.slice(0, 80)}" totalChars=${fullReply.length}`);
   }
 
   clearHistory() {
