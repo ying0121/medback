@@ -59,6 +59,8 @@ class InboundCallSession {
 
     this.partialTranscript = "";
     this.earlyFlushTriggered = false;
+    /** When true, STT must not start the LLM pipeline (avoids canceling greeting TTS). */
+    this._greetingActive = false;
 
     this._bindSTTEvents();
   }
@@ -66,14 +68,18 @@ class InboundCallSession {
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   async start() {
+    // Play greeting before opening Deepgram so (1) Twilio outbound audio is not
+    // competing with the STT websocket handshake and (2) early mic frames still
+    // queue in DeepgramService once connect runs.
+    if (this.greetingText) {
+      try {
+        await this._speakGreeting();
+      } catch (err) {
+        console.error(`[InboundSession] greeting failed callSid=${this.callSid}: ${err.message}`);
+      }
+    }
     await this.stt.connect();
     console.log(`[InboundSession] started callSid=${this.callSid}`);
-
-    if (this.greetingText) {
-      this._speakGreeting().catch((err) => {
-        console.error(`[InboundSession] greeting failed callSid=${this.callSid}: ${err.message}`);
-      });
-    }
   }
 
   close() {
@@ -88,7 +94,9 @@ class InboundCallSession {
   // ─── Audio ingress ─────────────────────────────────────────────────────────
 
   sendAudio(audioBuffer) {
-    if (this.isBotSpeaking) {
+    // Never barge-in during the greeting — Twilio sends silence/noise frames
+    // immediately on stream open and would cancel the greeting before it plays.
+    if (this.isBotSpeaking && !this._greetingActive) {
       this._handleBargeIn();
     }
     this.stt.sendAudio(audioBuffer);
@@ -97,16 +105,24 @@ class InboundCallSession {
   // ─── Greeting ──────────────────────────────────────────────────────────────
 
   async _speakGreeting() {
-    this.isProcessing = true;
+    // Do NOT set isProcessing here — while greeting runs, Deepgram may emit
+    // interim/final noise; _runPipeline() would see isProcessing and call
+    // _cancelPipeline(), setting cancelFlag and killing greeting audio.
+    this._greetingActive = true;
     this.cancelFlag = false;
     this.isBotSpeaking = false;
 
     try {
       const sentences = splitIntoSentences(this.greetingText);
+      console.log(`[InboundSession] greeting start callSid=${this.callSid} sentences=${sentences.length} streamSid=${this.streamSid}`);
       for (const sentence of sentences) {
-        if (this.cancelFlag) break;
+        if (this.cancelFlag) {
+          console.log(`[InboundSession] greeting cancelled early callSid=${this.callSid}`);
+          break;
+        }
         await this._streamTTSToTwilio(sentence);
       }
+      console.log(`[InboundSession] greeting done callSid=${this.callSid}`);
 
       if (this.call) {
         saveIncomingMessageRow({
@@ -118,7 +134,7 @@ class InboundCallSession {
         }).catch(() => {});
       }
     } finally {
-      this.isProcessing = false;
+      this._greetingActive = false;
       this.isBotSpeaking = false;
     }
   }
@@ -127,6 +143,8 @@ class InboundCallSession {
 
   _bindSTTEvents() {
     this.stt.on("interim", (transcript) => {
+      if (this._greetingActive) return;
+
       this.partialTranscript = transcript;
 
       if (!this.earlyFlushTriggered && transcript.length >= INTERIM_FLUSH_CHARS) {
@@ -139,6 +157,8 @@ class InboundCallSession {
     });
 
     this.stt.on("final", (transcript) => {
+      if (this._greetingActive) return;
+
       if (!transcript?.trim()) return;
       this.partialTranscript = "";
 
@@ -157,6 +177,8 @@ class InboundCallSession {
     });
 
     this.stt.on("utteranceEnd", () => {
+      if (this._greetingActive) return;
+
       if (this.partialTranscript.trim() && !this.isProcessing) {
         console.log(`[InboundSession] utteranceEnd safety flush callSid=${this.callSid}`);
         const text = this.partialTranscript;
@@ -250,43 +272,63 @@ class InboundCallSession {
 
     this.isBotSpeaking = true;
 
-    return new Promise((resolve) => {
-      audioStream.on("data", (chunk) => {
-        if (this.cancelFlag) {
-          audioStream.destroy();
-          resolve();
-          return;
-        }
-        if (this.ws.readyState === 1 /* OPEN */) {
+    try {
+      // Prefer async iteration so chunks are not missed if the stream emits
+      // before legacy .on("data") listeners attach.
+      if (typeof audioStream[Symbol.asyncIterator] === "function") {
+        for await (const chunk of audioStream) {
+          if (this.cancelFlag) break;
+          if (this.ws.readyState !== 1 /* OPEN */) break;
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          if (!buf.length) continue;
           this.ws.send(
             JSON.stringify({
               event: "media",
               streamSid: this.streamSid,
-              media: { payload: chunk.toString("base64") },
+              media: { payload: buf.toString("base64") },
             })
           );
         }
-      });
+        return;
+      }
 
-      audioStream.on("end", () => {
-        this.isBotSpeaking = false;
-        resolve();
-      });
+      await new Promise((resolve) => {
+        audioStream.on("data", (chunk) => {
+          if (this.cancelFlag) {
+            audioStream.destroy();
+            resolve();
+            return;
+          }
+          if (this.ws.readyState === 1 /* OPEN */) {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            this.ws.send(
+              JSON.stringify({
+                event: "media",
+                streamSid: this.streamSid,
+                media: { payload: buf.toString("base64") },
+              })
+            );
+          }
+        });
 
-      audioStream.on("error", (err) => {
-        console.warn(
-          `[InboundSession] TTS stream error callSid=${this.callSid}: ${err.message}`
-        );
-        this.isBotSpeaking = false;
-        resolve();
+        audioStream.on("end", () => resolve());
+
+        audioStream.on("error", (err) => {
+          console.warn(
+            `[InboundSession] TTS stream error callSid=${this.callSid}: ${err.message}`
+          );
+          resolve();
+        });
       });
-    });
+    } finally {
+      this.isBotSpeaking = false;
+    }
   }
 
   // ─── Barge-in & cancellation ───────────────────────────────────────────────
 
   _handleBargeIn() {
-    if (!this.isBotSpeaking) return;
+    if (!this.isBotSpeaking || this._greetingActive) return;
     console.log(`[InboundSession] barge-in detected callSid=${this.callSid}`);
     this._cancelPipeline();
     this._clearTwilioAudio();

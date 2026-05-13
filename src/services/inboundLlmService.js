@@ -58,7 +58,8 @@ class InboundLlmService {
         ...this.history,
       ],
       temperature: 0.7,
-      max_tokens: maxTokens,
+      // gpt-5.x and other newer chat models reject max_tokens; use max_completion_tokens (same as openaiService.js).
+      max_completion_tokens: maxTokens,
     });
 
     let buffer = "";
