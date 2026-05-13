@@ -66,6 +66,16 @@ class InboundCallSession {
     this.earlyFlushTriggered = false;
     /** When true, STT must not start the LLM pipeline (avoids canceling greeting TTS). */
     this._greetingActive = false;
+    /**
+     * Guard against the race where the WebSocket message handler emits
+     * concurrent `media` event invocations while `session.start()` is still
+     * awaiting (greeting playback + Deepgram handshake).  Those frames
+     * represent silence/echo captured during the greeting — sending them to
+     * Deepgram after connect causes it to fire spurious speech_final events
+     * that cancel the first real user pipeline before TTS can play.
+     * Set to true only after start() completes.
+     */
+    this._startupComplete = false;
 
     this._bindSTTEvents();
   }
@@ -92,7 +102,12 @@ class InboundCallSession {
 
     // 3. Now connect Deepgram; new audio from the caller's speech will flow in.
     await this.stt.connect();
-    console.log(`[InboundSession] started callSid=${this.callSid}`);
+
+    // 4. Mark the session ready.  Any media frames that arrived from Twilio
+    //    while we were awaiting start() were silently dropped (see sendAudio).
+    //    From this point on, sendAudio forwards audio to Deepgram in real time.
+    this._startupComplete = true;
+    console.log(`[InboundSession] startup complete — audio active callSid=${this.callSid}`);
   }
 
   close() {
@@ -107,6 +122,13 @@ class InboundCallSession {
   // ─── Audio ingress ─────────────────────────────────────────────────────────
 
   sendAudio(audioBuffer) {
+    // Drop all audio that arrives before start() completes.
+    // The WebSocket message handler is async: while start() is awaiting
+    // (greeting + Deepgram connect, ~3-5 s), Twilio keeps sending media events
+    // as concurrent handler invocations.  Those frames are greeting-period
+    // silence/echo that would confuse Deepgram's VAD if forwarded.
+    if (!this._startupComplete) return;
+
     // Never barge-in during the greeting — Twilio sends silence/noise frames
     // immediately on stream open and would cancel the greeting before it plays.
     if (this.isBotSpeaking && !this._greetingActive) {
@@ -217,7 +239,12 @@ class InboundCallSession {
     await sleep(80);
 
     // If another _runPipeline was called while we were sleeping, bail out.
-    if (myGen !== this._pipelineGen) return;
+    if (myGen !== this._pipelineGen) {
+      console.log(
+        `[InboundSession] pipeline gen-superseded gen=${myGen} current=${this._pipelineGen} callSid=${this.callSid}`
+      );
+      return;
+    }
 
     this.isProcessing = true;
     this.cancelFlag = false;
@@ -239,25 +266,40 @@ class InboundCallSession {
       );
       const t0 = Date.now();
       let fullBotReply = "";
-      let firstSentence = true;
+      let sentenceIdx = 0;
 
       for await (const sentence of this.llm.streamReply(userText)) {
+        sentenceIdx++;
+        console.log(
+          `[InboundSession] LLM sentence #${sentenceIdx} callSid=${this.callSid} gen=${myGen} text="${sentence.slice(0, 80)}"`
+        );
+
         if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(`[InboundSession] pipeline cancelled gen=${myGen} callSid=${this.callSid}`);
+          console.log(
+            `[InboundSession] pipeline cancelled before TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
+          );
           break;
         }
 
-        if (firstSentence) {
+        if (sentenceIdx === 1) {
           console.log(
-            `[InboundSession] time-to-first-audio: ${Date.now() - t0}ms callSid=${this.callSid}`
+            `[InboundSession] time-to-first-sentence: ${Date.now() - t0}ms callSid=${this.callSid}`
           );
-          firstSentence = false;
         }
 
         fullBotReply += (fullBotReply ? " " : "") + sentence;
         await this._streamTTSToTwilio(sentence, myGen);
 
-        if (this.cancelFlag || myGen !== this._pipelineGen) break;
+        if (this.cancelFlag || myGen !== this._pipelineGen) {
+          console.log(
+            `[InboundSession] pipeline cancelled after TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
+          );
+          break;
+        }
+      }
+
+      if (sentenceIdx === 0) {
+        console.warn(`[InboundSession] LLM yielded NO sentences callSid=${this.callSid}`);
       }
 
       if (this.call && fullBotReply) {
@@ -294,7 +336,12 @@ class InboundCallSession {
     const isStale = () =>
       this.cancelFlag || (pipelineGen !== null && pipelineGen !== this._pipelineGen);
 
-    if (isStale() || !text?.trim()) return;
+    if (isStale() || !text?.trim()) {
+      console.log(
+        `[InboundSession] TTS skipped callSid=${this.callSid} gen=${pipelineGen} stale=${isStale()} emptyText=${!text?.trim()}`
+      );
+      return;
+    }
 
     console.log(
       `[InboundSession] TTS start callSid=${this.callSid} gen=${pipelineGen} text="${text.slice(0, 60)}"`
@@ -304,7 +351,9 @@ class InboundCallSession {
 
     // Re-check staleness after the ElevenLabs API call (which can take 300ms+)
     if (isStale()) {
-      console.log(`[InboundSession] TTS discarded (stale gen=${pipelineGen}) callSid=${this.callSid}`);
+      console.log(
+        `[InboundSession] TTS discarded stale after ElevenLabs call gen=${pipelineGen} currentGen=${this._pipelineGen} cancelFlag=${this.cancelFlag} callSid=${this.callSid}`
+      );
       return;
     }
 
@@ -316,6 +365,10 @@ class InboundCallSession {
     this.isBotSpeaking = true;
     let chunkCount = 0;
 
+    console.log(
+      `[InboundSession] TTS streaming start streamSid=${this.streamSid} wsState=${this.ws.readyState} callSid=${this.callSid}`
+    );
+
     try {
       // Path A: web ReadableStream (from ElevenLabs native fetch on Node 18+).
       // Use getReader() directly — most reliable for WHATWG ReadableStream.
@@ -326,8 +379,14 @@ class InboundCallSession {
             const { done, value } = await reader.read();
             if (done) break;
             if (isStale()) break;
-            if (this.ws.readyState !== 1 /* OPEN */) break;
+            if (this.ws.readyState !== 1 /* OPEN */) {
+              console.warn(`[InboundSession] WS not open (state=${this.ws.readyState}) while streaming TTS callSid=${this.callSid}`);
+              break;
+            }
             if (!value || !value.length) continue;
+            if (chunkCount === 0) {
+              console.log(`[InboundSession] TTS first chunk received gen=${pipelineGen} streamSid=${this.streamSid} callSid=${this.callSid}`);
+            }
             const buf = Buffer.from(value);
             this.ws.send(
               JSON.stringify({
@@ -419,6 +478,9 @@ class InboundCallSession {
   }
 
   _cancelPipeline() {
+    console.log(
+      `[InboundSession] _cancelPipeline oldGen=${this._pipelineGen} callSid=${this.callSid}`
+    );
     this.cancelFlag = true;
     this.isBotSpeaking = false;
     this._pipelineGen++; // invalidates all in-flight _streamTTSToTwilio calls

@@ -41,11 +41,13 @@ class InboundTtsService {
     if (!text?.trim()) return null;
 
     if (!this.client || !this.voiceId) {
-      console.warn(
-        `[InboundTTS] ElevenLabs not configured — skipping TTS for callSid=${this.callSid}`
+      console.error(
+        `[InboundTTS] ElevenLabs NOT configured — client=${!!this.client} voiceId=${!!this.voiceId} callSid=${this.callSid}`
       );
       return null;
     }
+
+    console.log(`[InboundTTS] calling ElevenLabs voiceId=${this.voiceId} model=${this.model} callSid=${this.callSid}`);
 
     try {
       // convertAsStream() returns response.body — a WHATWG ReadableStream on
