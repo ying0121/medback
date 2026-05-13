@@ -15,6 +15,8 @@
 
 const { WebSocketServer } = require("ws");
 const { InboundCallSession } = require("../services/inboundCallSession");
+const configuredStreamPath = String(process.env.TWILIO_STREAM_PATH || "/api/twilio/voice/stream").trim();
+const STREAM_PATH = configuredStreamPath.startsWith("/") ? configuredStreamPath : `/${configuredStreamPath}`;
 
 /**
  * Clinic context + call row stored by the HTTP inbound webhook
@@ -38,7 +40,6 @@ function registerPendingInboundSession(callSid, sessionData) {
  * @param {import("http").Server} server
  */
 function attachInboundStreamWS(server) {
-  const STREAM_PATH = "/api/twilio/voice/stream";
   const wss = new WebSocketServer({ server, path: STREAM_PATH });
 
   wss.on("connection", (ws) => {
@@ -134,7 +135,7 @@ function attachInboundStreamWS(server) {
     });
   });
 
-  console.log("[InboundStream] Twilio Media Stream WebSocket server attached at /api/twilio/voice/stream");
+  console.log(`[InboundStream] Twilio Media Stream WebSocket server attached at ${STREAM_PATH}`);
 }
 
-module.exports = { registerPendingInboundSession, attachInboundStreamWS };
+module.exports = { STREAM_PATH, registerPendingInboundSession, attachInboundStreamWS };

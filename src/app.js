@@ -104,6 +104,13 @@ if (hasAdminBuild) {
   });
 }
 
+// For browser navigation, route unknown non-API paths to the SPA 404 page.
+// API routes should keep returning JSON 404 responses instead of HTML redirects.
+app.get("/{*path}", (req, res, next) => {
+  if (String(req.path || "").startsWith("/api/")) return next();
+  return res.redirect("/admin/not-found");
+});
+
 app.use(errorHandler);
 
 module.exports = app;

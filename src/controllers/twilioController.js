@@ -30,7 +30,7 @@ const {
 } = require("../services/callPersistenceService");
 const { getTtsPlaybackBuffer } = require("../services/ttsPlaybackCache");
 const { WAIT_TONE_WAV } = require("../services/waitToneService");
-const { registerPendingInboundSession } = require("../realtime/inboundStreamHandler");
+const { STREAM_PATH, registerPendingInboundSession } = require("../realtime/inboundStreamHandler");
 
 function normalizeInboundPromptText(rawText, fallbackText) {
   const base = String(rawText || "").trim() || fallbackText;
@@ -245,7 +245,7 @@ module.exports = {
       const wsBaseUrl = String(process.env.TWILIO_STREAM_WSS_URL || "").trim()
         || (process.env.SERVER_URL || `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`)
           .replace(/^http/i, "ws");
-      const wsUrl = `${wsBaseUrl.replace(/\/$/, "")}/api/twilio/voice/stream`;
+      const wsUrl = `${wsBaseUrl.replace(/\/$/, "")}${STREAM_PATH}`;
 
       // Twilio Media Streams require secure websocket URL in production.
       if (!/^wss:\/\//i.test(wsUrl)) {
@@ -306,6 +306,24 @@ module.exports = {
       `[Twilio][stream-status] callSid=${callSid} streamSid=${streamSid} event=${streamEvent} error=${streamError}`
     );
     return res.sendStatus(200);
+  },
+
+  // POST /api/twilio/voice/inbound/fallback
+  // Dedicated fallback for inbound PSTN voice webhook failures.
+  async inboundVoiceFallbackTwiml(req, res, next) {
+    try {
+      const message = String(
+        process.env.TWILIO_INBOUND_VOICE_FALLBACK_MESSAGE || "We are unable to connect your call right now. Please try again later."
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `[Twilio][inbound:fallback] callSid=${req.body?.CallSid || "-"} from=${req.body?.From || "-"} to=${req.body?.To || "-"} errorCode=${req.body?.ErrorCode || "-"}`
+      );
+      res.type("text/xml");
+      return res.send(buildSafeVoiceResponse(message));
+    } catch (err) {
+      return next(err);
+    }
   },
 
   // POST /api/twilio/voice/fallback

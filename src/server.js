@@ -5,7 +5,7 @@ require("dotenv").config();
 const app = require("./app");
 const { connectDatabase, syncDatabase } = require("./db");
 const { attachChatSocket } = require("./realtime/chatSocketHandler");
-const { attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
+const { STREAM_PATH, attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -48,8 +48,13 @@ const io = new Server(server, {
 // this file remains a thin bootstrap.
 attachChatSocket(io);
 
-// Twilio Media Streams WebSocket for inbound PSTN voice bot (path: /api/twilio/voice/stream)
+// Twilio Media Streams WebSocket for inbound PSTN voice bot.
 attachInboundStreamWS(server);
+server.on("upgrade", (req) => {
+  if (req.url?.startsWith(STREAM_PATH)) {
+    console.log(`[InboundStream] HTTP upgrade request path=${req.url}`);
+  }
+});
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
