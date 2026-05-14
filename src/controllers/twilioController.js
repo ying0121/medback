@@ -37,6 +37,24 @@ function normalizeInboundPromptText(rawText, fallbackText) {
   return base.replace(/after the tone[:,]?\s*/gi, "");
 }
 
+/** Placeholder in TWILIO_INBOUND_VOICE_GREETING — replaced with DB clinic name (see applyInboundGreetingPlaceholders). */
+const CLINIC_NAME_PLACEHOLDER = /\$clinic_name\$/gi;
+
+/**
+ * Replace `$clinic_name$` in the inbound greeting with the resolved clinic name.
+ * @param {string} text
+ * @param {string} [clinicName] from DB (`clinics.name`, else acronym)
+ */
+function applyInboundGreetingPlaceholders(text, clinicName) {
+  const raw = String(text || "");
+  const trimmed = String(clinicName || "").trim();
+  const resolved =
+    trimmed ||
+    String(process.env.TWILIO_INBOUND_GREETING_CLINIC_FALLBACK || "").trim() ||
+    "our clinic";
+  return raw.replace(CLINIC_NAME_PLACEHOLDER, resolved);
+}
+
 function normalizeIdentity(value) {
   const identity = String(value || "")
     .trim()
@@ -199,7 +217,7 @@ module.exports = {
       const from    = String(req.body?.From    || "").trim();
       const to      = String(req.body?.To      || "").trim();
 
-      const greetingText = normalizeInboundPromptText(
+      let greetingText = normalizeInboundPromptText(
         process.env.TWILIO_INBOUND_VOICE_GREETING,
         "Hello. This is our automated assistant. How can I help you today?"
       );
@@ -233,6 +251,8 @@ module.exports = {
         // eslint-disable-next-line no-console
         console.error(`[Twilio][inbound] clinic lookup failed callSid=${callSid}: ${err.message}`);
       }
+
+      greetingText = applyInboundGreetingPlaceholders(greetingText, clinicContext.clinicName);
 
       // 3. Register context so the WebSocket handler can retrieve it when Twilio connects.
       if (callSid) {

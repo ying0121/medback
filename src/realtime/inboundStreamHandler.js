@@ -21,7 +21,7 @@ const STREAM_PATH = configuredStreamPath.startsWith("/") ? configuredStreamPath 
 /**
  * Clinic context + call row stored by the HTTP inbound webhook
  * until the WebSocket "start" event fires (usually within ~1 s).
- * callSid → { clinicPrompt, knowledgePrompt, elApiKey, elVoiceId, clinicId, call, greetingText }
+ * callSid → { clinicPrompt, knowledgePrompt, elApiKey, elVoiceId, clinicId, clinicName, call, greetingText }
  */
 const pendingInboundSessions = new Map();
 

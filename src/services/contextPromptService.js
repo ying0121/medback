@@ -86,10 +86,16 @@ async function buildClinicContextByBusinessClinicId(businessClinicId) {
  *   2. System-wide env fallback (`SYSTEM_ELEVEN_LABS_API_KEY`, `SYSTEM_ELEVEN_LABS_VOICE_ID`)
  *   3. null  (caller path falls back to Twilio <Say>)
  *
- * @returns {Promise<{ clinicPrompt: string|null, knowledgePrompt: string|null, elApiKey: string|null, elVoiceId: string|null }>}
+ * @returns {Promise<{ clinicPrompt: string|null, knowledgePrompt: string|null, elApiKey: string|null, elVoiceId: string|null, clinicName: string }>}
  */
 async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
-  const empty = { clinicPrompt: null, knowledgePrompt: null, elApiKey: null, elVoiceId: null };
+  const empty = {
+    clinicPrompt: null,
+    knowledgePrompt: null,
+    elApiKey: null,
+    elVoiceId: null,
+    clinicName: ""
+  };
   const id = Number(systemClinicId);
   if (!Number.isFinite(id) || id <= 0) return empty;
 
@@ -107,11 +113,17 @@ async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
     String(process.env.SYSTEM_ELEVEN_LABS_VOICE_ID || "").trim() ||
     null;
 
+  const clinicName =
+    String(clinic.name || "").trim() ||
+    String(clinic.acronym || "").trim() ||
+    "";
+
   return {
     clinicPrompt: formatClinicPrompt(clinic),
     knowledgePrompt: formatKnowledgePrompt(knowledgeRows),
     elApiKey,
-    elVoiceId
+    elVoiceId,
+    clinicName
   };
 }
 
