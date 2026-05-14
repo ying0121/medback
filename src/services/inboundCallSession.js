@@ -88,6 +88,12 @@ class InboundCallSession {
     this._startupComplete = false;
     /** Stops the outbound wait-tone loop when the first LLM chunk is ready or on hangup. */
     this._waitToneHalt = false;
+    /**
+     * True only while the gentle wait tone is being sent. Deepgram often fires
+     * SpeechStarted on mic pickup of that tone — treating it as barge-in was
+     * cancelling the pipeline before ElevenLabs TTS ran (intermittent silence).
+     */
+    this._waitToneActive = false;
 
     this._bindSTTEvents();
   }
@@ -187,6 +193,11 @@ class InboundCallSession {
   _bindSTTEvents() {
     this.stt.on("interim", (transcript) => {
       if (this._greetingActive) return;
+      // Mic still sends audio while the bot plays; echo of wait tone / TTS
+      // confuses Deepgram and can trigger early flush → second _runPipeline
+      // cancels the first and drops TTS mid-flight.
+      if (this._waitToneActive) return;
+      if (this.isBotSpeaking) return;
 
       this.partialTranscript = transcript;
 
@@ -201,6 +212,15 @@ class InboundCallSession {
 
     this.stt.on("final", (transcript) => {
       if (this._greetingActive) return;
+      // Same echo issue as interim: speech_final on leaked playback looks like
+      // a new user turn and starts a pipeline that cancels the active one.
+      if (this._waitToneActive) return;
+      if (this.isBotSpeaking) {
+        console.log(
+          `[InboundSession] STT final ignored during bot playback (echo guard) callSid=${this.callSid}`
+        );
+        return;
+      }
 
       console.log(`[InboundSession] STT final="${transcript}" callSid=${this.callSid}`);
       if (!transcript?.trim()) return;
@@ -216,6 +236,8 @@ class InboundCallSession {
 
     this.stt.on("utteranceEnd", () => {
       if (this._greetingActive) return;
+      if (this._waitToneActive) return;
+      if (this.isBotSpeaking) return;
 
       const text = this.partialTranscript.trim();
       if (text && !this.isProcessing) {
@@ -234,6 +256,8 @@ class InboundCallSession {
     // on silent frames every 20 ms and immediately cancelled every bot response.
     this.stt.on("speechStarted", () => {
       if (this._greetingActive) return;
+      // Wait tone is picked up by the caller mic almost always — not a barge-in.
+      if (this._waitToneActive) return;
       if (this.isBotSpeaking) {
         console.log(`[InboundSession] barge-in via SpeechStarted callSid=${this.callSid}`);
         this._handleBargeIn();
@@ -258,6 +282,7 @@ class InboundCallSession {
   async _pumpWaitTone(myGen) {
     if (!WAIT_TONE_MULAW?.length) return;
 
+    this._waitToneActive = true;
     this.isBotSpeaking = true;
     const chunkMs = 20;
     const chunkSize = 160; // 8 kHz × 20 ms
@@ -289,6 +314,7 @@ class InboundCallSession {
     } catch (err) {
       console.warn(`[InboundSession] wait tone error callSid=${this.callSid}: ${err.message}`);
     } finally {
+      this._waitToneActive = false;
       this.isBotSpeaking = false;
     }
   }
