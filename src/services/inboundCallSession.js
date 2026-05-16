@@ -7,7 +7,6 @@
  * Flow:
  *   Twilio Media Stream WS → sendAudio()
  *     → DeepgramService → "interim" / "final" / "utteranceEnd" events
- *       → optional wait-tone μ-law while OpenAI streams
  *       → optional end-call classifier → farewell TTS + Twilio REST hangup
  *       → InboundLlmService.streamReply() → sentence generator
  *         → InboundTtsService.streamAudio() → μ-law audio stream
@@ -27,7 +26,6 @@ const { InboundTtsService } = require("./inboundTtsService");
 const { saveIncomingMessageRow } = require("./callPersistenceService");
 const { analyzeInboundEndCallTurn } = require("./openaiService");
 const { endCall } = require("./twilioService");
-const { WAIT_TONE_MULAW } = require("./waitToneService");
 
 const INTERIM_FLUSH_CHARS = parseInt(process.env.INTERIM_FLUSH_CHARS || "120");
 
@@ -86,14 +84,6 @@ class InboundCallSession {
      * Set to true only after start() completes.
      */
     this._startupComplete = false;
-    /** Stops the outbound wait-tone loop when the first LLM chunk is ready or on hangup. */
-    this._waitToneHalt = false;
-    /**
-     * True only while the gentle wait tone is being sent. Deepgram often fires
-     * SpeechStarted on mic pickup of that tone — treating it as barge-in was
-     * cancelling the pipeline before ElevenLabs TTS ran (intermittent silence).
-     */
-    this._waitToneActive = false;
 
     this._bindSTTEvents();
   }
@@ -193,10 +183,8 @@ class InboundCallSession {
   _bindSTTEvents() {
     this.stt.on("interim", (transcript) => {
       if (this._greetingActive) return;
-      // Mic still sends audio while the bot plays; echo of wait tone / TTS
-      // confuses Deepgram and can trigger early flush → second _runPipeline
-      // cancels the first and drops TTS mid-flight.
-      if (this._waitToneActive) return;
+      // Mic still sends audio while the bot plays; TTS echo can trigger early
+      // flush → second _runPipeline cancels the first and drops TTS mid-flight.
       if (this.isBotSpeaking) return;
 
       this.partialTranscript = transcript;
@@ -214,7 +202,6 @@ class InboundCallSession {
       if (this._greetingActive) return;
       // Same echo issue as interim: speech_final on leaked playback looks like
       // a new user turn and starts a pipeline that cancels the active one.
-      if (this._waitToneActive) return;
       if (this.isBotSpeaking) {
         console.log(
           `[InboundSession] STT final ignored during bot playback (echo guard) callSid=${this.callSid}`
@@ -236,7 +223,6 @@ class InboundCallSession {
 
     this.stt.on("utteranceEnd", () => {
       if (this._greetingActive) return;
-      if (this._waitToneActive) return;
       if (this.isBotSpeaking) return;
 
       const text = this.partialTranscript.trim();
@@ -256,8 +242,6 @@ class InboundCallSession {
     // on silent frames every 20 ms and immediately cancelled every bot response.
     this.stt.on("speechStarted", () => {
       if (this._greetingActive) return;
-      // Wait tone is picked up by the caller mic almost always — not a barge-in.
-      if (this._waitToneActive) return;
       if (this.isBotSpeaking) {
         console.log(`[InboundSession] barge-in via SpeechStarted callSid=${this.callSid}`);
         this._handleBargeIn();
@@ -269,54 +253,6 @@ class InboundCallSession {
         `[InboundSession] STT error callSid=${this.callSid}: ${err?.message ?? err}`
       );
     });
-  }
-
-  // ─── Wait tone (μ-law over Media Stream) ───────────────────────────────────
-
-  /**
-   * Sends looping gentle wait-tone audio while the LLM is still generating.
-   * Stops when {@link _waitToneHalt} is set, the pipeline is cancelled, or the
-   * WebSocket closes.  Sets {@link isBotSpeaking} so Deepgram SpeechStarted can
-   * barge-in during the tone.
-   */
-  async _pumpWaitTone(myGen) {
-    if (!WAIT_TONE_MULAW?.length) return;
-
-    this._waitToneActive = true;
-    this.isBotSpeaking = true;
-    const chunkMs = 20;
-    const chunkSize = 160; // 8 kHz × 20 ms
-
-    try {
-      let offset = 0;
-      while (
-        !this._waitToneHalt &&
-        !this.cancelFlag &&
-        myGen === this._pipelineGen &&
-        this.ws.readyState === 1
-      ) {
-        if (offset >= WAIT_TONE_MULAW.length) offset = 0;
-        const end = Math.min(offset + chunkSize, WAIT_TONE_MULAW.length);
-        const slice = WAIT_TONE_MULAW.subarray(offset, end);
-        offset = end >= WAIT_TONE_MULAW.length ? 0 : end;
-
-        if (slice.length > 0) {
-          this.ws.send(
-            JSON.stringify({
-              event: "media",
-              streamSid: this.streamSid,
-              media: { payload: slice.toString("base64") },
-            })
-          );
-        }
-        await sleep(chunkMs);
-      }
-    } catch (err) {
-      console.warn(`[InboundSession] wait tone error callSid=${this.callSid}: ${err.message}`);
-    } finally {
-      this._waitToneActive = false;
-      this.isBotSpeaking = false;
-    }
   }
 
   // ─── Main LLM → TTS pipeline ───────────────────────────────────────────────
@@ -356,22 +292,10 @@ class InboundCallSession {
       }).catch(() => {});
     }
 
-    let waitTonePromise = Promise.resolve();
-
     try {
       console.log(
         `[InboundSession] pipeline start callSid=${this.callSid} gen=${myGen} text="${userText.slice(0, 60)}"`
       );
-
-      const waitToneEnabled =
-        String(process.env.INBOUND_WAIT_TONE_ENABLED || "1").trim() !== "0" &&
-        WAIT_TONE_MULAW.length > 0;
-
-      this._waitToneHalt = false;
-      if (waitToneEnabled) {
-        console.log(`[InboundSession] wait tone on callSid=${this.callSid}`);
-        waitTonePromise = this._pumpWaitTone(myGen);
-      }
 
       let endTurn = { endCall: false, farewell: "" };
       try {
@@ -387,9 +311,6 @@ class InboundCallSession {
       }
 
       if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
-        this._waitToneHalt = true;
-        await waitTonePromise.catch(() => {});
-
         const fallbackFarewell = String(
           process.env.TWILIO_INBOUND_VOICE_FAREWELL ||
             "Thank you for calling. Take care and goodbye."
@@ -437,11 +358,6 @@ class InboundCallSession {
       let sentenceIdx = 0;
 
       for await (const sentence of this.llm.streamReply(userText)) {
-        if (sentenceIdx === 0) {
-          this._waitToneHalt = true;
-          await waitTonePromise.catch(() => {});
-        }
-
         sentenceIdx++;
         console.log(
           `[InboundSession] LLM sentence #${sentenceIdx} callSid=${this.callSid} gen=${myGen} text="${sentence.slice(0, 80)}"`
@@ -489,8 +405,6 @@ class InboundCallSession {
         `[InboundSession] pipeline error callSid=${this.callSid}: ${err.message}`
       );
     } finally {
-      this._waitToneHalt = true;
-      await waitTonePromise.catch(() => {});
       this.isProcessing = false;
       this.isBotSpeaking = false;
     }

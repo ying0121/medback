@@ -29,7 +29,6 @@ const {
   computeFinalCallSeconds,
 } = require("../services/callPersistenceService");
 const { getTtsPlaybackBuffer } = require("../services/ttsPlaybackCache");
-const { WAIT_TONE_WAV } = require("../services/waitToneService");
 const { STREAM_PATH, registerPendingInboundSession } = require("../realtime/inboundStreamHandler");
 
 function normalizeInboundPromptText(rawText, fallbackText) {
@@ -559,14 +558,5 @@ module.exports = {
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Cache-Control", "no-store");
     return res.send(buf);
-  },
-
-  // GET /api/twilio/voice/wait-tone.wav
-  // Serves the pre-built gentle 440 Hz wait tone so Twilio <Play> can loop it
-  // while the background LLM + ElevenLabs job is running.
-  waitToneAudio(req, res) {
-    res.setHeader("Content-Type", "audio/wav");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    return res.send(WAIT_TONE_WAV);
   }
 };
