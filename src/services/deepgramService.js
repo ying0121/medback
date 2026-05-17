@@ -41,21 +41,29 @@ class DeepgramService extends EventEmitter {
   }
 
   async connect() {
-    const endpointingMs = parseInt(process.env.VAD_SILENCE_MS || "600", 10);
+    const endpointingRaw = parseInt(process.env.VAD_SILENCE_MS || "300", 10);
+    const endpointingMs = Number.isFinite(endpointingRaw)
+      ? Math.max(100, Math.min(2000, endpointingRaw))
+      : 300;
     // Deepgram requires utterance_end_ms >= 1000 when using UtteranceEnd; lower values reject the connection (400).
     const utteranceEndConfigured = parseInt(
-      process.env.DEEPGRAM_UTTERANCE_END_MS || String(Math.max(1000, endpointingMs + 400)),
+      process.env.DEEPGRAM_UTTERANCE_END_MS || String(Math.max(1000, endpointingMs + 300)),
       10
     );
     const utteranceEndMs = Number.isFinite(utteranceEndConfigured)
       ? Math.max(1000, utteranceEndConfigured)
       : 1000;
 
+    const model =
+      String(process.env.DEEPGRAM_MODEL || "").trim() || "nova-2-phonecall";
+    const smartFormat =
+      String(process.env.DEEPGRAM_SMART_FORMAT || "0").trim() === "1";
+
     // v5: client.listen.v1.connect() returns a Promise that resolves to the
     // socket wrapper (WrappedListenV1Socket) — NOT yet connected.
     // Call socket.connect() afterwards to open the underlying WebSocket.
     this.socket = await this.client.listen.v1.connect({
-      model: "nova-2-phonecall",
+      model,
       language: "en-US",
       encoding: "mulaw",
       sample_rate: 8000,
@@ -64,13 +72,13 @@ class DeepgramService extends EventEmitter {
       endpointing: endpointingMs,
       utterance_end_ms: utteranceEndMs,
       vad_events: true,
-      smart_format: true,
+      smart_format: smartFormat,
     });
 
     this.socket.on("open", () => {
       this.isOpen = true;
       console.log(
-        `[Deepgram] connection opened callSid=${this.callSid} queuedFrames=${this.audioQueue.length}`
+        `[Deepgram] connection opened callSid=${this.callSid} model=${model} endpointing=${endpointingMs}ms queuedFrames=${this.audioQueue.length}`
       );
       for (const chunk of this.audioQueue) {
         this.socket.sendMedia(chunk);
@@ -111,9 +119,11 @@ class DeepgramService extends EventEmitter {
         const isFinal = Boolean(data.is_final);
         const speechFinal = Boolean(data.speech_final);
 
-        console.log(
-          `[Deepgram] transcript="${transcript}" is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
-        );
+        if (speechFinal || isFinal) {
+          console.log(
+            `[Deepgram] transcript="${transcript}" is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
+          );
+        }
 
         if (speechFinal) {
           // speech_final=true means the user STOPPED SPEAKING (silence detected).

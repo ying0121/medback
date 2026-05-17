@@ -222,6 +222,15 @@ async function detectInboundEndCallIntent({ text, clinicPrompt = null, knowledge
   return parseEndCallFlag(raw);
 }
 
+/** Fast heuristic — skips an extra OpenAI round-trip on normal questions. */
+function mightBeInboundEndCall(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  return /\b(bye|goodbye|good\s*bye|see\s+you|that'?s\s+all|hang\s+up|end\s+(the\s+)?call|no\s+more\s+questions|thank\s+you|thanks)\b/.test(
+    t
+  );
+}
+
 /**
  * Classify end-of-call intent and return a short farewell phrase for TTS when ending.
  * @returns {Promise<{ endCall: boolean, farewell: string }>}
@@ -230,6 +239,8 @@ async function analyzeInboundEndCallTurn({ text, clinicPrompt = null, knowledgeP
   const empty = { endCall: false, farewell: "" };
   if (!text || !String(text).trim()) return empty;
   if (!openaiApiKey) return empty;
+  if (String(process.env.INBOUND_END_CALL_ENABLED || "1").trim() === "0") return empty;
+  if (!mightBeInboundEndCall(text)) return empty;
 
   const prompt = [
     "Classify whether the caller clearly wants to finish the phone call right now.",
@@ -242,7 +253,7 @@ async function analyzeInboundEndCallTurn({ text, clinicPrompt = null, knowledgeP
   const completion = await client.chat.completions.create({
     model: openaiInboundModel,
     temperature: 0,
-    max_completion_tokens: 120,
+    max_completion_tokens: 60,
     messages: [
       { role: "system", content: prompt },
       ...(clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
@@ -407,6 +418,7 @@ module.exports = {
   detectInboundSpeechLanguage,
   detectInboundEndCallIntent,
   analyzeInboundEndCallTurn,
+  mightBeInboundEndCall,
   transcribeAudioBase64,
   generateSpeechFromText
 };

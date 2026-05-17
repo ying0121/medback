@@ -24,7 +24,11 @@ class InboundTtsService {
     this.voiceId = String(voiceId || "").trim() || null;
     this.model =
       String(process.env.ELEVENLABS_INBOUND_TTS_MODEL || process.env.ELEVENLABS_TTS_MODEL || "").trim() ||
-      "eleven_turbo_v2_5";
+      "eleven_flash_v2_5";
+    const latencyRaw = parseInt(process.env.ELEVENLABS_STREAMING_LATENCY || "3", 10);
+    this.optimizeStreamingLatency = Number.isFinite(latencyRaw)
+      ? Math.max(0, Math.min(4, latencyRaw))
+      : 3;
 
     const key = String(apiKey || "").trim() || null;
     this.client = key ? new ElevenLabsClient({ apiKey: key }) : null;
@@ -56,9 +60,10 @@ class InboundTtsService {
         text,
         model_id: this.model,
         output_format: "ulaw_8000",
+        optimize_streaming_latency: this.optimizeStreamingLatency,
         voice_settings: {
-          stability: 0.4,
-          similarity_boost: 0.8,
+          stability: 0.3,
+          similarity_boost: 0.7,
           style: 0.0,
           use_speaker_boost: false,
         },

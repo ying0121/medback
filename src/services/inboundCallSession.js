@@ -27,7 +27,18 @@ const { saveIncomingMessageRow } = require("./callPersistenceService");
 const { analyzeInboundEndCallTurn } = require("./openaiService");
 const { endCall } = require("./twilioService");
 
-const INTERIM_FLUSH_CHARS = parseInt(process.env.INTERIM_FLUSH_CHARS || "120");
+const INTERIM_FLUSH_CHARS = Math.max(
+  12,
+  parseInt(process.env.INTERIM_FLUSH_CHARS || "36", 10)
+);
+const PIPELINE_HANDOFF_MS = Math.max(
+  0,
+  parseInt(process.env.INBOUND_PIPELINE_HANDOFF_MS || "20", 10)
+);
+const END_CALL_HEAD_START_MS = Math.max(
+  0,
+  parseInt(process.env.INBOUND_END_CALL_HEAD_START_MS || "40", 10)
+);
 
 class InboundCallSession {
   /**
@@ -226,9 +237,9 @@ class InboundCallSession {
       if (this.isBotSpeaking) return;
 
       const text = this.partialTranscript.trim();
-      if (text && !this.isProcessing) {
+      if (text.length >= 12) {
         console.log(
-          `[InboundSession] utteranceEnd safety flush text="${text}" callSid=${this.callSid}`
+          `[InboundSession] utteranceEnd flush text="${text}" callSid=${this.callSid}`
         );
         this.partialTranscript = "";
         this.earlyFlushTriggered = false;
@@ -266,9 +277,10 @@ class InboundCallSession {
     // Claim this run's generation AFTER the possible cancel above.
     const myGen = ++this._pipelineGen;
 
-    // Short pause so the previous pipeline's awaiting operations can detect
-    // the stale generation and exit cleanly before we reset shared flags.
-    await sleep(80);
+    // Brief handoff so the previous pipeline's in-flight TTS can detect stale gen.
+    if (PIPELINE_HANDOFF_MS > 0) {
+      await sleep(PIPELINE_HANDOFF_MS);
+    }
 
     // If another _runPipeline was called while we were sleeping, bail out.
     if (myGen !== this._pipelineGen) {
@@ -283,13 +295,15 @@ class InboundCallSession {
     this.isBotSpeaking = false;
 
     if (this.call) {
-      saveIncomingMessageRow({
-        callId: this.call.id,
-        audio: null,
-        transcription: userText,
-        userType: "user",
-        status: "success",
-      }).catch(() => {});
+      setImmediate(() => {
+        saveIncomingMessageRow({
+          callId: this.call.id,
+          audio: null,
+          transcription: userText,
+          userType: "user",
+          status: "success",
+        }).catch(() => {});
+      });
     }
 
     try {
@@ -297,17 +311,78 @@ class InboundCallSession {
         `[InboundSession] pipeline start callSid=${this.callSid} gen=${myGen} text="${userText.slice(0, 60)}"`
       );
 
+      // Run end-call classification in parallel with the LLM (not on the hot path).
       let endTurn = { endCall: false, farewell: "" };
-      try {
-        endTurn = await analyzeInboundEndCallTurn({
-          text: userText,
-          clinicPrompt: this.clinicPrompt,
-          knowledgePrompt: this.knowledgePrompt,
+      const endTurnPromise = analyzeInboundEndCallTurn({
+        text: userText,
+        clinicPrompt: this.clinicPrompt,
+        knowledgePrompt: this.knowledgePrompt,
+      })
+        .then((r) => {
+          endTurn = r;
+          return r;
+        })
+        .catch((e) => {
+          console.warn(
+            `[InboundSession] end-call classify failed callSid=${this.callSid}: ${e.message}`
+          );
+          return endTurn;
         });
-      } catch (e) {
-        console.warn(
-          `[InboundSession] end-call classify failed callSid=${this.callSid}: ${e.message}`
+
+      const t0 = Date.now();
+      let fullBotReply = "";
+      let segmentIdx = 0;
+      let playedAnyTts = false;
+
+      for await (const segment of this.llm.streamReply(userText)) {
+        if (segmentIdx === 0 && END_CALL_HEAD_START_MS > 0) {
+          await Promise.race([endTurnPromise, sleep(END_CALL_HEAD_START_MS)]);
+        }
+
+        if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
+          console.log(
+            `[InboundSession] end-call detected during stream callSid=${this.callSid}`
+          );
+          if (playedAnyTts) this._clearTwilioAudio();
+          break;
+        }
+
+        segmentIdx++;
+        console.log(
+          `[InboundSession] LLM segment #${segmentIdx} callSid=${this.callSid} gen=${myGen} text="${segment.slice(0, 80)}"`
         );
+
+        if (this.cancelFlag || myGen !== this._pipelineGen) {
+          console.log(
+            `[InboundSession] pipeline cancelled before TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
+          );
+          break;
+        }
+
+        if (segmentIdx === 1) {
+          console.log(
+            `[InboundSession] time-to-first-segment: ${Date.now() - t0}ms callSid=${this.callSid}`
+          );
+        }
+
+        fullBotReply += (fullBotReply ? " " : "") + segment;
+        await this._streamTTSToTwilio(segment, myGen);
+        playedAnyTts = true;
+
+        if (this.cancelFlag || myGen !== this._pipelineGen) {
+          console.log(
+            `[InboundSession] pipeline cancelled after TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
+          );
+          break;
+        }
+      }
+
+      if (!endTurn.endCall) {
+        try {
+          endTurn = await endTurnPromise;
+        } catch {
+          /* keep last endTurn */
+        }
       }
 
       if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
@@ -317,8 +392,9 @@ class InboundCallSession {
         ).trim();
         const farewell = String(endTurn.farewell || "").trim() || fallbackFarewell;
 
-        this.llm.history.push({ role: "user", content: userText });
-        this.llm.history.push({ role: "assistant", content: farewell });
+        const lastAssistant = [...this.llm.history].reverse().find((m) => m.role === "assistant");
+        if (lastAssistant) lastAssistant.content = farewell;
+        else this.llm.history.push({ role: "assistant", content: farewell });
 
         console.log(
           `[InboundSession] end-call farewell="${farewell.slice(0, 80)}" callSid=${this.callSid}`
@@ -353,45 +429,11 @@ class InboundCallSession {
         return;
       }
 
-      const t0 = Date.now();
-      let fullBotReply = "";
-      let sentenceIdx = 0;
-
-      for await (const sentence of this.llm.streamReply(userText)) {
-        sentenceIdx++;
-        console.log(
-          `[InboundSession] LLM sentence #${sentenceIdx} callSid=${this.callSid} gen=${myGen} text="${sentence.slice(0, 80)}"`
-        );
-
-        if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(
-            `[InboundSession] pipeline cancelled before TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
-          );
-          break;
-        }
-
-        if (sentenceIdx === 1) {
-          console.log(
-            `[InboundSession] time-to-first-sentence: ${Date.now() - t0}ms callSid=${this.callSid}`
-          );
-        }
-
-        fullBotReply += (fullBotReply ? " " : "") + sentence;
-        await this._streamTTSToTwilio(sentence, myGen);
-
-        if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(
-            `[InboundSession] pipeline cancelled after TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
-          );
-          break;
-        }
+      if (segmentIdx === 0) {
+        console.warn(`[InboundSession] LLM yielded NO segments callSid=${this.callSid}`);
       }
 
-      if (sentenceIdx === 0) {
-        console.warn(`[InboundSession] LLM yielded NO sentences callSid=${this.callSid}`);
-      }
-
-      if (this.call && fullBotReply) {
+      if (this.call && fullBotReply && playedAnyTts) {
         saveIncomingMessageRow({
           callId: this.call.id,
           audio: null,

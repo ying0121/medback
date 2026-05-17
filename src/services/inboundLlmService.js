@@ -1,8 +1,8 @@
 /**
  * InboundLlmService
  *
- * Streams GPT responses sentence-by-sentence so TTS can start playing
- * the first sentence while the rest is still being generated.
+ * Streams GPT responses in small speakable segments so TTS can start before
+ * the model finishes the full reply (lower time-to-first-audio).
  *
  * System prompt is assembled from:
  *   1. BOT_SYSTEM_PROMPT env var (or a sensible default)
@@ -13,6 +13,15 @@
  */
 
 const OpenAI = require("openai");
+
+const MIN_TTS_CHARS = Math.max(
+  12,
+  parseInt(process.env.INBOUND_TTS_MIN_CHARS || "28", 10)
+);
+const MAX_TTS_CHARS = Math.max(
+  MIN_TTS_CHARS + 10,
+  parseInt(process.env.INBOUND_TTS_MAX_CHARS || "100", 10)
+);
 
 class InboundLlmService {
   /**
@@ -36,7 +45,7 @@ class InboundLlmService {
   }
 
   /**
-   * Stream a reply to userText, yielding one complete sentence at a time.
+   * Stream a reply to userText, yielding speakable segments (phrases / sentences).
    * @param {string} userText
    * @returns {AsyncGenerator<string>}
    */
@@ -50,7 +59,8 @@ class InboundLlmService {
     const model =
       String(process.env.OPENAI_INBOUND_MODEL || process.env.OPENAI_MODEL || "").trim() ||
       "gpt-4o-mini";
-    const maxTokens = parseInt(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || "200");
+    const maxTokens = parseInt(process.env.OPENAI_INBOUND_MAX_COMPLETION_TOKENS || "150", 10);
+    const temperature = Number(process.env.OPENAI_INBOUND_TEMPERATURE || "0.6");
 
     const stream = await this.client.chat.completions.create({
       model,
@@ -59,8 +69,7 @@ class InboundLlmService {
         { role: "system", content: this.systemPrompt },
         ...this.history,
       ],
-      temperature: 0.7,
-      // gpt-5.x and other newer chat models reject max_tokens; use max_completion_tokens (same as openaiService.js).
+      temperature: Number.isFinite(temperature) ? temperature : 0.6,
       max_completion_tokens: maxTokens,
     });
 
@@ -75,32 +84,33 @@ class InboundLlmService {
         buffer += delta;
         fullReply += delta;
 
-        const sentences = splitIntoSentences(buffer);
-        if (sentences.length > 1) {
-          for (let i = 0; i < sentences.length - 1; i++) {
-            const sentence = sentences[i].trim();
-            if (sentence) {
-              console.log(`[InboundLLM] yielding sentence callSid=${this.callSid} text="${sentence.slice(0, 80)}"`);
-              yield sentence;
-            }
+        let cut;
+        while ((cut = findTtsChunkCut(buffer))) {
+          const { chunk: segment, rest } = cut;
+          buffer = rest;
+          if (segment) {
+            console.log(
+              `[InboundLLM] yielding segment callSid=${this.callSid} text="${segment.slice(0, 80)}"`
+            );
+            yield segment;
           }
-          buffer = sentences[sentences.length - 1];
         }
       }
 
-      if (buffer.trim()) {
-        console.log(`[InboundLLM] yielding final chunk callSid=${this.callSid} text="${buffer.trim().slice(0, 80)}"`);
-        yield buffer.trim();
+      const tail = findTtsChunkCut(buffer, true);
+      if (tail?.chunk) {
+        console.log(
+          `[InboundLLM] yielding final segment callSid=${this.callSid} text="${tail.chunk.slice(0, 80)}"`
+        );
+        yield tail.chunk;
       }
     } finally {
-      // Always push to history — even when the consumer breaks early (pipeline
-      // cancelled).  Without this, the next turn has two consecutive user
-      // messages which confuses the model.  A partial reply is better than
-      // a missing one.
       if (fullReply.trim()) {
         this.history.push({ role: "assistant", content: fullReply });
       }
-      console.log(`[InboundLLM] callSid=${this.callSid} reply="${fullReply.slice(0, 80)}" totalChars=${fullReply.length}`);
+      console.log(
+        `[InboundLLM] callSid=${this.callSid} reply="${fullReply.slice(0, 80)}" totalChars=${fullReply.length}`
+      );
     }
   }
 
@@ -109,8 +119,53 @@ class InboundLlmService {
   }
 }
 
-function splitIntoSentences(text) {
-  return text.split(/(?<=[.!?])\s+/);
+/**
+ * Find the next speakable chunk in the LLM buffer (word/phrase boundaries, not
+ * only full sentences) so ElevenLabs can start sooner.
+ * @param {string} buffer
+ * @param {boolean} [forceEnd]
+ * @returns {{ chunk: string, rest: string }|null}
+ */
+function findTtsChunkCut(buffer, forceEnd = false) {
+  const trimmed = buffer.trimStart();
+  if (!trimmed) return null;
+
+  if (!forceEnd && trimmed.length < MIN_TTS_CHARS) return null;
+
+  const sentenceMatch = trimmed.match(/^(.+?[.!?])(?:\s+|$)/s);
+  if (sentenceMatch && sentenceMatch[1].trim().length >= MIN_TTS_CHARS) {
+    return {
+      chunk: sentenceMatch[1].trim(),
+      rest: trimmed.slice(sentenceMatch[0].length),
+    };
+  }
+
+  if (trimmed.length >= MAX_TTS_CHARS) {
+    const window = trimmed.slice(0, MAX_TTS_CHARS);
+    let space = window.lastIndexOf(" ");
+    if (space < MIN_TTS_CHARS) space = MAX_TTS_CHARS;
+    return {
+      chunk: trimmed.slice(0, space).trim(),
+      rest: trimmed.slice(space).trimStart(),
+    };
+  }
+
+  if (!forceEnd && trimmed.length >= MIN_TTS_CHARS) {
+    const window = trimmed.slice(0, Math.min(trimmed.length, MAX_TTS_CHARS));
+    const space = window.lastIndexOf(" ");
+    if (space >= MIN_TTS_CHARS - 1) {
+      return {
+        chunk: window.slice(0, space).trim(),
+        rest: trimmed.slice(space).trimStart(),
+      };
+    }
+  }
+
+  if (forceEnd) {
+    return { chunk: trimmed.trim(), rest: "" };
+  }
+
+  return null;
 }
 
-module.exports = { InboundLlmService };
+module.exports = { InboundLlmService, findTtsChunkCut, MIN_TTS_CHARS, MAX_TTS_CHARS };
