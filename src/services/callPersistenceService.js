@@ -1,3 +1,4 @@
+const logger = require("../utils/logger");
 /**
  * Call lifecycle persistence helpers (database-side concerns only).
  *
@@ -70,8 +71,7 @@ async function touchCallSecondsFromSession(callSid, session) {
   const current = Number(call.seconds || 0);
   if (elapsedSec > current) {
     await call.update({ seconds: elapsedSec });
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][inbound] touch seconds callSid=${sid} seconds=${elapsedSec}`);
+    // logger.info(`[Twilio][inbound] touch seconds callSid=${sid} seconds=${elapsedSec}`);
   }
 }
 

@@ -54,8 +54,6 @@ class InboundLlmService {
 
     this.history.push({ role: "user", content: userText });
 
-    console.log(`[InboundLLM] streamReply start callSid=${this.callSid} text="${userText.slice(0, 80)}"`);
-
     const model =
       String(process.env.OPENAI_INBOUND_MODEL || process.env.OPENAI_MODEL || "").trim() ||
       "gpt-4o-mini";
@@ -89,9 +87,6 @@ class InboundLlmService {
           const { chunk: segment, rest } = cut;
           buffer = rest;
           if (segment) {
-            console.log(
-              `[InboundLLM] yielding segment callSid=${this.callSid} text="${segment.slice(0, 80)}"`
-            );
             yield segment;
           }
         }
@@ -99,18 +94,12 @@ class InboundLlmService {
 
       const tail = findTtsChunkCut(buffer, true);
       if (tail?.chunk) {
-        console.log(
-          `[InboundLLM] yielding final segment callSid=${this.callSid} text="${tail.chunk.slice(0, 80)}"`
-        );
         yield tail.chunk;
       }
     } finally {
       if (fullReply.trim()) {
         this.history.push({ role: "assistant", content: fullReply });
       }
-      console.log(
-        `[InboundLLM] callSid=${this.callSid} reply="${fullReply.slice(0, 80)}" totalChars=${fullReply.length}`
-      );
     }
   }
 

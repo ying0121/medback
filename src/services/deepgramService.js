@@ -33,11 +33,7 @@ class DeepgramService extends EventEmitter {
    * Call this before connect() to avoid sending stale audio to Deepgram.
    */
   clearQueue() {
-    const dropped = this.audioQueue.length;
     this.audioQueue = [];
-    if (dropped > 0) {
-      console.log(`[Deepgram] cleared ${dropped} stale audio frames callSid=${this.callSid}`);
-    }
   }
 
   async connect() {
@@ -77,9 +73,6 @@ class DeepgramService extends EventEmitter {
 
     this.socket.on("open", () => {
       this.isOpen = true;
-      console.log(
-        `[Deepgram] connection opened callSid=${this.callSid} model=${model} endpointing=${endpointingMs}ms queuedFrames=${this.audioQueue.length}`
-      );
       for (const chunk of this.audioQueue) {
         this.socket.sendMedia(chunk);
       }
@@ -91,17 +84,10 @@ class DeepgramService extends EventEmitter {
     this.socket.on("message", (data) => {
       if (!data) return;
 
-      const msgType = data.type ?? (typeof data === "string" ? "raw-string" : "unknown");
-      // Log non-Results/non-SpeechStarted messages for diagnostics (avoid log spam for every interim)
-      if (msgType !== "Results" && msgType !== "SpeechStarted") {
-        console.log(`[Deepgram] msg type=${msgType} callSid=${this.callSid}`);
-      }
-
       // SpeechStarted is Deepgram's VAD signal: the user has begun speaking.
       // We emit this so InboundCallSession can trigger barge-in ONLY when the
       // user actually speaks, rather than on every silent audio frame.
       if (data.type === "SpeechStarted") {
-        console.log(`[Deepgram] SpeechStarted callSid=${this.callSid}`);
         this.emit("speechStarted");
         return;
       }
@@ -116,14 +102,7 @@ class DeepgramService extends EventEmitter {
         if (!alt || !String(alt.transcript || "").trim()) return;
 
         const transcript = alt.transcript.trim();
-        const isFinal = Boolean(data.is_final);
         const speechFinal = Boolean(data.speech_final);
-
-        if (speechFinal || isFinal) {
-          console.log(
-            `[Deepgram] transcript="${transcript}" is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
-          );
-        }
 
         if (speechFinal) {
           // speech_final=true means the user STOPPED SPEAKING (silence detected).
@@ -139,19 +118,16 @@ class DeepgramService extends EventEmitter {
     });
 
     this.socket.on("error", (err) => {
-      console.error(`[Deepgram] error callSid=${this.callSid}: ${err?.message ?? err}`);
       this.emit("error", err);
     });
 
     this.socket.on("close", () => {
       this.isOpen = false;
-      console.log(`[Deepgram] connection closed callSid=${this.callSid}`);
       this.emit("close");
     });
 
     // v5: must call connect() to actually open the underlying WebSocket.
     this.socket.connect();
-    console.log(`[Deepgram] connecting callSid=${this.callSid}`);
   }
 
   sendAudio(buffer) {
@@ -162,7 +138,7 @@ class DeepgramService extends EventEmitter {
     try {
       this.socket.sendMedia(buffer);
     } catch {
-      console.warn(`[Deepgram] failed to send audio callSid=${this.callSid}`);
+      /* ignore send failures */
     }
   }
 

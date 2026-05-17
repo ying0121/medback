@@ -3,3 +3,4 @@ node_modules
 package-lock.json
 admin-frontend/node_modules
 admin-frontend/dist
+logs/

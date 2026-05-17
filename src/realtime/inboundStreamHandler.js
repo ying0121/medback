@@ -13,6 +13,7 @@
  *      the Deepgram → LLM → ElevenLabs pipeline.
  */
 
+const logger = require("../utils/logger");
 const { WebSocketServer } = require("ws");
 const { InboundCallSession } = require("../services/inboundCallSession");
 const configuredStreamPath = String(process.env.TWILIO_STREAM_PATH || "/api/twilio/voice/stream").trim();
@@ -45,27 +46,27 @@ function attachInboundStreamWS(server) {
   wss.on("connection", (ws) => {
     let session = null;
     let firstFrameLogged = false;
-    console.log("[InboundStream] Media Stream WS connected");
+    logger.info("[InboundStream] Media Stream WS connected");
 
     ws.on("message", async (raw) => {
       try {
         const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
         if (!firstFrameLogged) {
           firstFrameLogged = true;
-          console.log(`[InboundStream] first frame: ${text.slice(0, 200)}`);
+          logger.info(`[InboundStream] first frame: ${text.slice(0, 200)}`);
         }
         let msg;
         try {
           msg = JSON.parse(text);
         } catch {
           // Be tolerant: ignore non-JSON frames instead of closing the stream.
-          console.warn(`[InboundStream] non-JSON frame ignored: ${text.slice(0, 120)}`);
+          logger.warn(`[InboundStream] non-JSON frame ignored: ${text.slice(0, 120)}`);
           return;
         }
 
         switch (msg.event) {
           case "connected":
-            console.log(
+            logger.info(
               `[InboundStream] stream connected event protocol=${msg.protocol || "-"} version=${msg.version || "-"}`
             );
             break;
@@ -78,7 +79,7 @@ function attachInboundStreamWS(server) {
                 "unknown";
               const streamSid = msg.streamSid;
 
-              console.log(
+              logger.info(
                 `[InboundStream] stream started callSid=${callSid} streamSid=${streamSid}`
               );
 
@@ -90,7 +91,7 @@ function attachInboundStreamWS(server) {
               await session.start();
             } catch (err) {
               // Do not force-close the Twilio socket on startup failure; log and keep alive.
-              console.error(`[InboundStream] start handling error: ${err.message}`);
+              logger.error(`[InboundStream] start handling error: ${err.message}`);
             }
             break;
           }
@@ -103,7 +104,7 @@ function attachInboundStreamWS(server) {
           }
 
           case "stop": {
-            console.log(`[InboundStream] stream stopped callSid=${session?.callSid || "-"}`);
+            logger.info(`[InboundStream] stream stopped callSid=${session?.callSid || "-"}`);
             if (session) {
               session.close();
               session = null;
@@ -115,7 +116,7 @@ function attachInboundStreamWS(server) {
             break;
         }
       } catch (err) {
-        console.error(`[InboundStream] message handling error: ${err.message}`);
+        logger.error(`[InboundStream] message handling error: ${err.message}`);
       }
     });
 
@@ -127,15 +128,15 @@ function attachInboundStreamWS(server) {
         session.close();
         session = null;
       }
-      console.log(`[InboundStream] Media Stream WS closed code=${code} reason=${reason || "-"}`);
+      logger.info(`[InboundStream] Media Stream WS closed code=${code} reason=${reason || "-"}`);
     });
 
     ws.on("error", (err) => {
-      console.error(`[InboundStream] WS error: ${err.message}`);
+      logger.error(`[InboundStream] WS error: ${err.message}`);
     });
   });
 
-  console.log(`[InboundStream] Twilio Media Stream WebSocket server attached at ${STREAM_PATH}`);
+  logger.info(`[InboundStream] Twilio Media Stream WebSocket server attached at ${STREAM_PATH}`);
 }
 
 module.exports = { STREAM_PATH, registerPendingInboundSession, attachInboundStreamWS };

@@ -6,6 +6,7 @@ const app = require("./app");
 const { connectDatabase, syncDatabase } = require("./db");
 const { attachChatSocket } = require("./realtime/chatSocketHandler");
 const { STREAM_PATH, attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
+const logger = require("./utils/logger");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ attachChatSocket(io);
 attachInboundStreamWS(server);
 server.on("upgrade", (req) => {
   if (req.url?.startsWith(STREAM_PATH)) {
-    console.log(`[InboundStream] HTTP upgrade request path=${req.url}`);
+    logger.info(`[InboundStream] HTTP upgrade request path=${req.url}`);
   }
 });
 

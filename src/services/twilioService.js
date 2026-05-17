@@ -1,3 +1,4 @@
+const logger = require("../utils/logger");
 const twilio = require("twilio");
 const axios = require("axios");
 const { Clinic } = require("../db");
@@ -174,8 +175,7 @@ async function getCallStatus(callSid, { clinicId = null } = {}) {
   const previousStatus = String(previous?.status || "").toLowerCase();
 
   if (currentStatus && currentStatus !== previousStatus) {
-    // eslint-disable-next-line no-console
-    console.log(
+    logger.info(
       `[Twilio][event:${lifecycle}][poll] callSid=${call.sid} status=${currentStatus} from=${call.from || "-"} to=${call.to || "-"}`
     );
   }

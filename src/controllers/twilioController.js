@@ -11,6 +11,7 @@
  * Outbound (Voice SDK → PSTN) flows remain unchanged.
  */
 
+const logger = require("../utils/logger");
 const twilio = require("twilio");
 const {
   initiateCall,
@@ -112,8 +113,7 @@ module.exports = {
         ? normalizeIdentity(rawIdentity) || createRandomIdentity("patient")
         : createRandomIdentity("patient");
       const jwt = await generateAccessToken(identity, { clinicId });
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][token] issued for identity=${identity}`);
+      logger.info(`[Twilio][token] issued for identity=${identity}`);
       return res.status(200).json({ ok: true, token: jwt, identity });
     } catch (err) {
       return next(err);
@@ -136,12 +136,10 @@ module.exports = {
       ? rawTo
       : String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
 
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][twiml] rawTo=${rawTo || "-"} resolved doctorPhone=${doctorPhoneNumber || "-"}`);
+    logger.info(`[Twilio][twiml] rawTo=${rawTo || "-"} resolved doctorPhone=${doctorPhoneNumber || "-"}`);
 
     if (!doctorPhoneNumber) {
-      // eslint-disable-next-line no-console
-      console.error("[Twilio][twiml] no valid doctor phone number — check EXAMPLE_DOCTOR_PHONE_NUMBER in .env");
+      logger.error("[Twilio][twiml] no valid doctor phone number — check EXAMPLE_DOCTOR_PHONE_NUMBER in .env");
       res.type("text/xml");
       return res.send(buildSafeVoiceResponse("We are sorry, the call could not be connected. Please try again later."));
     }
@@ -153,17 +151,14 @@ module.exports = {
       }
       const clinicTwilio = await getClinicTwilioConfigByClinicId(clinicId);
       const twilioNumber = clinicTwilio.twilioPhoneNumber;
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][twiml] callerId=${twilioNumber || "MISSING"} dialAction=${dialActionUrl}`);
+      logger.info(`[Twilio][twiml] callerId=${twilioNumber || "MISSING"} dialAction=${dialActionUrl}`);
 
       const twiml = await buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl, clinicId });
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][twiml] generated XML: ${twiml}`);
+      logger.info(`[Twilio][twiml] generated XML: ${twiml}`);
       res.type("text/xml");
       return res.send(twiml);
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][twiml] error: ${err.message}`);
+      logger.error(`[Twilio][twiml] error: ${err.message}`);
       res.type("text/xml");
       return res.send(buildSafeVoiceResponse("We are sorry, the call could not be connected. Please try again later."));
     }
@@ -181,13 +176,11 @@ module.exports = {
     const from          = String(req.body?.From             || "").trim() || "-";
     const to            = String(req.body?.To               || "").trim() || "-";
 
-    // eslint-disable-next-line no-console
-    console.log(
+    logger.info(
       `[Twilio][dial:result] callSid=${callSid} dialCallSid=${dialCallSid || "MISSING"} status=${dialStatus || "-"} answeredBy=${answeredBy} duration=${dialDuration}s from=${from} to=${to} errorCode=${errorCode}`
     );
     // Full body for deep debugging — shows every field Twilio sent
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][dial:result][body] ${JSON.stringify(req.body || {})}`);
+    logger.info(`[Twilio][dial:result][body] ${JSON.stringify(req.body || {})}`);
 
     let message = null;
     if (dialStatus === "busy") {
@@ -229,8 +222,7 @@ module.exports = {
           from,
           status: String(req.body?.CallStatus || "in-progress"),
         }).catch((dbErr) => {
-          // eslint-disable-next-line no-console
-          console.error(`[Twilio][inbound] call DB create failed callSid=${callSid}: ${dbErr.message}`);
+          logger.error(`[Twilio][inbound] call DB create failed callSid=${callSid}: ${dbErr.message}`);
           return null;
         });
       }
@@ -242,13 +234,11 @@ module.exports = {
         const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
         inboundClinicId = clinicTwilio.clinicId;
         clinicContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
-        // eslint-disable-next-line no-console
-        console.log(
+        logger.info(
           `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} hasElKey=${!!clinicContext.elApiKey} hasElVoice=${!!clinicContext.elVoiceId}`
         );
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`[Twilio][inbound] clinic lookup failed callSid=${callSid}: ${err.message}`);
+        logger.error(`[Twilio][inbound] clinic lookup failed callSid=${callSid}: ${err.message}`);
       }
 
       greetingText = applyInboundGreetingPlaceholders(greetingText, clinicContext.clinicName);
@@ -284,13 +274,11 @@ module.exports = {
   </Connect>
 </Response>`;
 
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][inbound] returning Media Stream TwiML callSid=${callSid} wsUrl=${wsUrl}`);
+      logger.info(`[Twilio][inbound] returning Media Stream TwiML callSid=${callSid} wsUrl=${wsUrl}`);
       res.type("text/xml");
       return res.send(twiml);
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[Twilio][inbound] failed to build TwiML: ${err.message}`);
+      logger.error(`[Twilio][inbound] failed to build TwiML: ${err.message}`);
       res.type("text/xml");
       return res.send(buildSafeVoiceResponse("We are unable to connect your call right now. Please try again later."));
     }
@@ -307,8 +295,7 @@ module.exports = {
         ? `We received: ${safeIncomingText}`
         : escapeForXml(fallbackReply);
 
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][message:twiml] from=${req.body?.From || "-"} bodyLength=${incomingBody.length}`);
+      logger.info(`[Twilio][message:twiml] from=${req.body?.From || "-"} bodyLength=${incomingBody.length}`);
       res.type("text/xml");
       return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${replyText}</Message></Response>`);
     } catch (err) {
@@ -323,8 +310,7 @@ module.exports = {
     const streamSid = String(req.body?.StreamSid || "").trim() || "-";
     const streamEvent = String(req.body?.StreamEvent || "").trim() || "-";
     const streamError = String(req.body?.StreamError || "").trim() || "-";
-    // eslint-disable-next-line no-console
-    console.log(
+    logger.info(
       `[Twilio][stream-status] callSid=${callSid} streamSid=${streamSid} event=${streamEvent} error=${streamError}`
     );
     return res.sendStatus(200);
@@ -337,8 +323,7 @@ module.exports = {
       const message = String(
         process.env.TWILIO_INBOUND_VOICE_FALLBACK_MESSAGE || "We are unable to connect your call right now. Please try again later."
       );
-      // eslint-disable-next-line no-console
-      console.log(
+      logger.info(
         `[Twilio][inbound:fallback] callSid=${req.body?.CallSid || "-"} from=${req.body?.From || "-"} to=${req.body?.To || "-"} errorCode=${req.body?.ErrorCode || "-"}`
       );
       res.type("text/xml");
@@ -355,8 +340,7 @@ module.exports = {
       const message = String(
         process.env.TWILIO_VOICE_FALLBACK_MESSAGE || "We are unable to connect your call right now. Please try again later."
       );
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][voice:fallback] callSid=${req.body?.CallSid || "-"} from=${req.body?.From || "-"}`);
+      logger.info(`[Twilio][voice:fallback] callSid=${req.body?.CallSid || "-"} from=${req.body?.From || "-"}`);
       res.type("text/xml");
       return res.send(buildSafeVoiceResponse(message));
     } catch (err) {
@@ -371,8 +355,7 @@ module.exports = {
       const message = escapeForXml(
         process.env.TWILIO_MESSAGE_FALLBACK_REPLY || "Sorry, we could not process your message. Please try again shortly."
       );
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][message:fallback] messageSid=${req.body?.MessageSid || "-"} from=${req.body?.From || "-"}`);
+      logger.info(`[Twilio][message:fallback] messageSid=${req.body?.MessageSid || "-"} from=${req.body?.From || "-"}`);
       res.type("text/xml");
       return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${message}</Message></Response>`);
     } catch (err) {
@@ -390,8 +373,7 @@ module.exports = {
       const to = req.body?.To || "-";
       const from = req.body?.From || "-";
 
-      // eslint-disable-next-line no-console
-      console.log(
+      logger.info(
         `[Twilio][message:status] messageSid=${messageSid || "-"} status=${messageStatus} errorCode=${errorCode} from=${from} to=${to}`
       );
       return res.sendStatus(200);
@@ -494,8 +476,7 @@ module.exports = {
           if (finalSeconds !== null) {
             updates.seconds = finalSeconds;
             if (!(Number.isFinite(callDuration) && callDuration > 0)) {
-              // eslint-disable-next-line no-console
-              console.log(
+              logger.info(
                 `[Twilio][call-status] callSid=${callSid} CallDuration absent — estimated ${finalSeconds}s from createdAt`
               );
             }
@@ -505,8 +486,7 @@ module.exports = {
         }
       }
 
-      // eslint-disable-next-line no-console
-      console.log(
+      logger.info(
         `[Twilio][event:${lifecycle}] callSid=${callSid || "-"} status=${String(callStatus || statusCallbackEvent || "-")} duration=${Number.isFinite(callDuration) ? callDuration : "-"} from=${req.body?.From || "-"} to=${req.body?.To || "-"} direction=${req.body?.Direction || "-"} parentCallSid=${req.body?.ParentCallSid || "-"} errorCode=${req.body?.ErrorCode || "-"}`
       );
 
@@ -522,8 +502,7 @@ module.exports = {
       if (!callSid) return res.status(400).json({ error: "callSid required." });
       if (!Number.isFinite(clinicId) || clinicId <= 0) return res.status(400).json({ error: "clinicId required." });
       const ended = await endCall(callSid, { clinicId });
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][stop] callSid=${ended.callSid} status=${ended.status}`);
+      logger.info(`[Twilio][stop] callSid=${ended.callSid} status=${ended.status}`);
       return res.status(200).json({ ok: true, callSid: ended.callSid, status: ended.status });
     } catch (err) {
       return next(err);
@@ -537,8 +516,7 @@ module.exports = {
         return res.status(400).json({ error: "callSid and boolean isMuted required." });
       }
       const session = setCallMuted({ callSid, isMuted });
-      // eslint-disable-next-line no-console
-      console.log(`[Twilio][mute] callSid=${session.callSid} isMuted=${session.isMuted}`);
+      logger.info(`[Twilio][mute] callSid=${session.callSid} isMuted=${session.isMuted}`);
       return res.status(200).json({
         ok: true,
         callSid: session.callSid,

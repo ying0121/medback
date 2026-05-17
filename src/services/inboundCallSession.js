@@ -109,8 +109,8 @@ class InboundCallSession {
     if (this.greetingText) {
       try {
         await this._speakGreeting();
-      } catch (err) {
-        console.error(`[InboundSession] greeting failed callSid=${this.callSid}: ${err.message}`);
+      } catch {
+        /* greeting playback failed — continue without blocking startup */
       }
     }
 
@@ -126,12 +126,10 @@ class InboundCallSession {
     //    while we were awaiting start() were silently dropped (see sendAudio).
     //    From this point on, sendAudio forwards audio to Deepgram in real time.
     this._startupComplete = true;
-    console.log(`[InboundSession] startup complete — audio active callSid=${this.callSid}`);
   }
 
   close() {
     this.stt.close();
-    console.log(`[InboundSession] closed callSid=${this.callSid}`);
   }
 
   setStreamSid(streamSid) {
@@ -164,15 +162,11 @@ class InboundCallSession {
     this.isBotSpeaking = false;
 
     try {
-      console.log(
-        `[InboundSession] greeting start callSid=${this.callSid} streamSid=${this.streamSid}`
-      );
       // Send the ENTIRE greeting as a single TTS call — no sentence splitting.
       // Multiple API calls create audible silence gaps between sentences and
       // introduce more failure points.  A single streaming call is simpler and
       // plays the greeting continuously without gaps.
       await this._streamTTSToTwilio(this.greetingText);
-      console.log(`[InboundSession] greeting done callSid=${this.callSid}`);
 
       if (this.call) {
         saveIncomingMessageRow({
@@ -201,9 +195,6 @@ class InboundCallSession {
       this.partialTranscript = transcript;
 
       if (!this.earlyFlushTriggered && transcript.length >= INTERIM_FLUSH_CHARS) {
-        console.log(
-          `[InboundSession] early flush at ${transcript.length} chars callSid=${this.callSid}`
-        );
         this.earlyFlushTriggered = true;
         this._runPipeline(transcript);
       }
@@ -214,13 +205,9 @@ class InboundCallSession {
       // Same echo issue as interim: speech_final on leaked playback looks like
       // a new user turn and starts a pipeline that cancels the active one.
       if (this.isBotSpeaking) {
-        console.log(
-          `[InboundSession] STT final ignored during bot playback (echo guard) callSid=${this.callSid}`
-        );
         return;
       }
 
-      console.log(`[InboundSession] STT final="${transcript}" callSid=${this.callSid}`);
       if (!transcript?.trim()) return;
 
       this.partialTranscript = "";
@@ -238,9 +225,6 @@ class InboundCallSession {
 
       const text = this.partialTranscript.trim();
       if (text.length >= 12) {
-        console.log(
-          `[InboundSession] utteranceEnd flush text="${text}" callSid=${this.callSid}`
-        );
         this.partialTranscript = "";
         this.earlyFlushTriggered = false;
         this._runPipeline(text);
@@ -254,16 +238,11 @@ class InboundCallSession {
     this.stt.on("speechStarted", () => {
       if (this._greetingActive) return;
       if (this.isBotSpeaking) {
-        console.log(`[InboundSession] barge-in via SpeechStarted callSid=${this.callSid}`);
         this._handleBargeIn();
       }
     });
 
-    this.stt.on("error", (err) => {
-      console.error(
-        `[InboundSession] STT error callSid=${this.callSid}: ${err?.message ?? err}`
-      );
-    });
+    this.stt.on("error", () => {});
   }
 
   // ─── Main LLM → TTS pipeline ───────────────────────────────────────────────
@@ -284,9 +263,6 @@ class InboundCallSession {
 
     // If another _runPipeline was called while we were sleeping, bail out.
     if (myGen !== this._pipelineGen) {
-      console.log(
-        `[InboundSession] pipeline gen-superseded gen=${myGen} current=${this._pipelineGen} callSid=${this.callSid}`
-      );
       return;
     }
 
@@ -307,10 +283,6 @@ class InboundCallSession {
     }
 
     try {
-      console.log(
-        `[InboundSession] pipeline start callSid=${this.callSid} gen=${myGen} text="${userText.slice(0, 60)}"`
-      );
-
       // Run end-call classification in parallel with the LLM (not on the hot path).
       let endTurn = { endCall: false, farewell: "" };
       const endTurnPromise = analyzeInboundEndCallTurn({
@@ -322,14 +294,8 @@ class InboundCallSession {
           endTurn = r;
           return r;
         })
-        .catch((e) => {
-          console.warn(
-            `[InboundSession] end-call classify failed callSid=${this.callSid}: ${e.message}`
-          );
-          return endTurn;
-        });
+        .catch(() => endTurn);
 
-      const t0 = Date.now();
       let fullBotReply = "";
       let segmentIdx = 0;
       let playedAnyTts = false;
@@ -340,29 +306,14 @@ class InboundCallSession {
         }
 
         if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
-          console.log(
-            `[InboundSession] end-call detected during stream callSid=${this.callSid}`
-          );
           if (playedAnyTts) this._clearTwilioAudio();
           break;
         }
 
         segmentIdx++;
-        console.log(
-          `[InboundSession] LLM segment #${segmentIdx} callSid=${this.callSid} gen=${myGen} text="${segment.slice(0, 80)}"`
-        );
 
         if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(
-            `[InboundSession] pipeline cancelled before TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
-          );
           break;
-        }
-
-        if (segmentIdx === 1) {
-          console.log(
-            `[InboundSession] time-to-first-segment: ${Date.now() - t0}ms callSid=${this.callSid}`
-          );
         }
 
         fullBotReply += (fullBotReply ? " " : "") + segment;
@@ -370,9 +321,6 @@ class InboundCallSession {
         playedAnyTts = true;
 
         if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(
-            `[InboundSession] pipeline cancelled after TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
-          );
           break;
         }
       }
@@ -396,10 +344,6 @@ class InboundCallSession {
         if (lastAssistant) lastAssistant.content = farewell;
         else this.llm.history.push({ role: "assistant", content: farewell });
 
-        console.log(
-          `[InboundSession] end-call farewell="${farewell.slice(0, 80)}" callSid=${this.callSid}`
-        );
-
         await this._streamTTSToTwilio(farewell, myGen);
 
         if (this.call) {
@@ -415,22 +359,11 @@ class InboundCallSession {
         if (this.clinicId && this.callSid) {
           try {
             await endCall(this.callSid, { clinicId: this.clinicId });
-            console.log(`[InboundSession] Twilio call ended callSid=${this.callSid}`);
-          } catch (hangErr) {
-            console.error(
-              `[InboundSession] endCall REST failed callSid=${this.callSid}: ${hangErr.message}`
-            );
+          } catch {
+            /* hangup failed */
           }
-        } else {
-          console.warn(
-            `[InboundSession] hangup skipped (missing clinicId) callSid=${this.callSid}`
-          );
         }
         return;
-      }
-
-      if (segmentIdx === 0) {
-        console.warn(`[InboundSession] LLM yielded NO segments callSid=${this.callSid}`);
       }
 
       if (this.call && fullBotReply && playedAnyTts) {
@@ -442,10 +375,8 @@ class InboundCallSession {
           status: "success",
         }).catch(() => {});
       }
-    } catch (err) {
-      console.error(
-        `[InboundSession] pipeline error callSid=${this.callSid}: ${err.message}`
-      );
+    } catch {
+      /* pipeline failed */
     } finally {
       this.isProcessing = false;
       this.isBotSpeaking = false;
@@ -468,37 +399,20 @@ class InboundCallSession {
       this.cancelFlag || (pipelineGen !== null && pipelineGen !== this._pipelineGen);
 
     if (isStale() || !text?.trim()) {
-      console.log(
-        `[InboundSession] TTS skipped callSid=${this.callSid} gen=${pipelineGen} stale=${isStale()} emptyText=${!text?.trim()}`
-      );
       return;
     }
 
-    console.log(
-      `[InboundSession] TTS start callSid=${this.callSid} gen=${pipelineGen} text="${text.slice(0, 60)}"`
-    );
-
     const audioStream = await this.tts.streamAudio(text);
 
-    // Re-check staleness after the ElevenLabs API call (which can take 300ms+)
     if (isStale()) {
-      console.log(
-        `[InboundSession] TTS discarded stale after ElevenLabs call gen=${pipelineGen} currentGen=${this._pipelineGen} cancelFlag=${this.cancelFlag} callSid=${this.callSid}`
-      );
       return;
     }
 
     if (!audioStream) {
-      console.warn(`[InboundSession] TTS returned null stream callSid=${this.callSid}`);
       return;
     }
 
     this.isBotSpeaking = true;
-    let chunkCount = 0;
-
-    console.log(
-      `[InboundSession] TTS streaming start streamSid=${this.streamSid} wsState=${this.ws.readyState} callSid=${this.callSid}`
-    );
 
     try {
       // Path A: web ReadableStream (from ElevenLabs native fetch on Node 18+).
@@ -511,13 +425,9 @@ class InboundCallSession {
             if (done) break;
             if (isStale()) break;
             if (this.ws.readyState !== 1 /* OPEN */) {
-              console.warn(`[InboundSession] WS not open (state=${this.ws.readyState}) while streaming TTS callSid=${this.callSid}`);
               break;
             }
             if (!value || !value.length) continue;
-            if (chunkCount === 0) {
-              console.log(`[InboundSession] TTS first chunk received gen=${pipelineGen} streamSid=${this.streamSid} callSid=${this.callSid}`);
-            }
             const buf = Buffer.from(value);
             this.ws.send(
               JSON.stringify({
@@ -526,14 +436,10 @@ class InboundCallSession {
                 media: { payload: buf.toString("base64") },
               })
             );
-            chunkCount++;
           }
         } finally {
           try { reader.releaseLock(); } catch { /* ignore */ }
         }
-        console.log(
-          `[InboundSession] TTS done (getReader) chunks=${chunkCount} callSid=${this.callSid}`
-        );
         return;
       }
 
@@ -551,11 +457,7 @@ class InboundCallSession {
               media: { payload: buf.toString("base64") },
             })
           );
-          chunkCount++;
         }
-        console.log(
-          `[InboundSession] TTS done (asyncIterator) chunks=${chunkCount} callSid=${this.callSid}`
-        );
         return;
       }
 
@@ -577,20 +479,13 @@ class InboundCallSession {
                   media: { payload: buf.toString("base64") },
                 })
               );
-              chunkCount++;
             }
           }
         });
         audioStream.on("end", () => {
-          console.log(
-            `[InboundSession] TTS done (on-data) chunks=${chunkCount} callSid=${this.callSid}`
-          );
           resolve();
         });
-        audioStream.on("error", (err) => {
-          console.warn(
-            `[InboundSession] TTS stream error callSid=${this.callSid}: ${err.message}`
-          );
+        audioStream.on("error", () => {
           resolve();
         });
       });
@@ -603,15 +498,11 @@ class InboundCallSession {
 
   _handleBargeIn() {
     if (!this.isBotSpeaking || this._greetingActive) return;
-    console.log(`[InboundSession] barge-in detected callSid=${this.callSid}`);
     this._cancelPipeline();
     this._clearTwilioAudio();
   }
 
   _cancelPipeline() {
-    console.log(
-      `[InboundSession] _cancelPipeline oldGen=${this._pipelineGen} callSid=${this.callSid}`
-    );
     this.cancelFlag = true;
     this.isBotSpeaking = false;
     this._pipelineGen++; // invalidates all in-flight _streamTTSToTwilio calls
