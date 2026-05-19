@@ -3,6 +3,12 @@ const { Op } = require("sequelize");
 const { Conversation, Message, User, Clinic, Call, IncomingMessage } = require("../db");
 const { listVoices, textToSpeechMp3 } = require("../services/elevenlabsService");
 const { detectAudioMimeFromBase64 } = require("../utils/audioMime");
+const {
+  GREETING_PLACEHOLDERS,
+  getDefaultGreetingTemplate,
+  previewGreetingTemplate,
+  resolveInboundGreeting
+} = require("../services/greetingService");
 
 function normalizeAudioPayload(rawAudio) {
   if (!rawAudio) return { audioUrl: undefined, audioMimeType: undefined };
@@ -77,7 +83,8 @@ async function listClinics(req, res, next) {
       ),
       elevenLabsConfigured: Boolean(row.elevenlabsApiKey),
       elevenLabsVoiceConfigured: Boolean(row.elevenlabsVoiceId),
-      elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null
+      elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null,
+      greetingConfigured: Boolean(String(row.inboundGreeting || "").trim())
     }));
 
     // Backward-compat fallback for existing conversation-only data.
@@ -596,6 +603,92 @@ async function listIncomingCalls(req, res, next) {
   }
 }
 
+async function getClinicGreeting(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    const greeting = String(clinic.inboundGreeting || "").trim();
+    const defaultGreeting = getDefaultGreetingTemplate();
+
+    return res.status(200).json({
+      greeting,
+      defaultGreeting,
+      placeholders: GREETING_PLACEHOLDERS,
+      resolvedPreview: resolveInboundGreeting(clinic),
+      usesCustomGreeting: Boolean(greeting)
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function updateClinicGreeting(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(req.body || {}, "greeting")) {
+      return res.status(400).json({ error: "greeting field is required." });
+    }
+
+    const raw = req.body.greeting;
+    const greeting =
+      raw === null || raw === undefined ? null : String(raw).trim();
+
+    if (greeting && greeting.length > 2000) {
+      return res.status(400).json({ error: "Greeting must be 2000 characters or fewer." });
+    }
+
+    await clinic.update({ inboundGreeting: greeting || null });
+    await clinic.reload();
+
+    return res.status(200).json({
+      success: true,
+      greeting: greeting || "",
+      resolvedPreview: resolveInboundGreeting(clinic),
+      usesCustomGreeting: Boolean(greeting)
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function previewClinicGreeting(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    const draft = String(req.body?.greeting ?? "").trim();
+    const resolvedPreview = previewGreetingTemplate(draft || getDefaultGreetingTemplate(), clinic);
+
+    return res.status(200).json({ resolvedPreview });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function deleteIncomingCall(req, res, next) {
   try {
     const callId = Number(req.params.callId);
@@ -681,5 +774,8 @@ module.exports = {
   listIncomingCalls,
   listIncomingCallMessages,
   deleteIncomingCall,
-  deleteAllIncomingCalls
+  deleteAllIncomingCalls,
+  getClinicGreeting,
+  updateClinicGreeting,
+  previewClinicGreeting
 };

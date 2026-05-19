@@ -31,29 +31,8 @@ const {
 } = require("../services/callPersistenceService");
 const { getTtsPlaybackBuffer } = require("../services/ttsPlaybackCache");
 const { STREAM_PATH, registerPendingInboundSession } = require("../realtime/inboundStreamHandler");
-
-function normalizeInboundPromptText(rawText, fallbackText) {
-  const base = String(rawText || "").trim() || fallbackText;
-  return base.replace(/after the tone[:,]?\s*/gi, "");
-}
-
-/** Placeholder in TWILIO_INBOUND_VOICE_GREETING — replaced with DB clinic name (see applyInboundGreetingPlaceholders). */
-const CLINIC_NAME_PLACEHOLDER = /\$clinic_name\$/gi;
-
-/**
- * Replace `$clinic_name$` in the inbound greeting with the resolved clinic name.
- * @param {string} text
- * @param {string} [clinicName] from DB (`clinics.name`, else acronym)
- */
-function applyInboundGreetingPlaceholders(text, clinicName) {
-  const raw = String(text || "");
-  const trimmed = String(clinicName || "").trim();
-  const resolved =
-    trimmed ||
-    String(process.env.TWILIO_INBOUND_GREETING_CLINIC_FALLBACK || "").trim() ||
-    "our clinic";
-  return raw.replace(CLINIC_NAME_PLACEHOLDER, resolved);
-}
+const { Clinic } = require("../db");
+const { resolveInboundGreeting } = require("../services/greetingService");
 
 function normalizeIdentity(value) {
   const identity = String(value || "")
@@ -217,10 +196,8 @@ module.exports = {
       const from    = String(req.body?.From    || "").trim();
       const to      = String(req.body?.To      || "").trim();
 
-      let greetingText = normalizeInboundPromptText(
-        process.env.TWILIO_INBOUND_VOICE_GREETING,
-        "Hello. This is our automated assistant. How can I help you today?"
-      );
+      let greetingText = "";
+      let clinicRow = null;
 
       // 1. Create call record — must happen even if clinic lookup fails.
       let call = null;
@@ -243,16 +220,20 @@ module.exports = {
         const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
         inboundClinicId = clinicTwilio.clinicId;
         clinicContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
+        clinicRow = await Clinic.findByPk(clinicTwilio.clinicId);
+        greetingText = resolveInboundGreeting(clinicRow || { name: clinicContext.clinicName });
         // eslint-disable-next-line no-console
         console.log(
-          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} hasElKey=${!!clinicContext.elApiKey} hasElVoice=${!!clinicContext.elVoiceId}`
+          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} hasElKey=${!!clinicContext.elApiKey} hasElVoice=${!!clinicContext.elVoiceId} customGreeting=${!!clinicRow?.inboundGreeting}`
         );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error(`[Twilio][inbound] clinic lookup failed callSid=${callSid}: ${err.message}`);
       }
 
-      greetingText = applyInboundGreetingPlaceholders(greetingText, clinicContext.clinicName);
+      if (!greetingText) {
+        greetingText = resolveInboundGreeting(null);
+      }
 
       // 3. Register context so the WebSocket handler can retrieve it when Twilio connects.
       if (callSid) {

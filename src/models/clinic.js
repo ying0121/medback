@@ -98,6 +98,11 @@ const Clinic = sequelize.define(
       type: DataTypes.STRING(128),
       allowNull: true,
       field: "twilio_twiml_app_sid"
+    },
+    inboundGreeting: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "inbound_greeting"
     }
   },
   {

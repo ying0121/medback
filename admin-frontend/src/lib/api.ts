@@ -23,6 +23,22 @@ export interface Clinic {
   elevenLabsVoiceConfigured?: boolean;
   /** Saved ElevenLabs voice_id for inbound TTS (not secret). */
   elevenLabsVoiceId?: string | null;
+  /** Per-clinic inbound phone greeting (may use placeholders). */
+  greetingConfigured?: boolean;
+}
+
+export interface GreetingPlaceholder {
+  token: string;
+  label: string;
+  description: string;
+}
+
+export interface ClinicGreetingConfig {
+  greeting: string;
+  defaultGreeting: string;
+  placeholders: GreetingPlaceholder[];
+  resolvedPreview: string;
+  usesCustomGreeting: boolean;
 }
 
 export interface ElevenLabsVoice {
@@ -197,6 +213,33 @@ export async function updateClinicTwilioConfig(clinicId: string, payload: Clinic
 
 export async function getClinicTwilioConfig(clinicId: string): Promise<ClinicTwilioConfigInput> {
   return request<ClinicTwilioConfigInput>(`/api/admin/dashboard/clinics/${clinicId}/twilio`);
+}
+
+export async function getClinicGreeting(clinicId: string): Promise<ClinicGreetingConfig> {
+  return request<ClinicGreetingConfig>(`/api/admin/dashboard/clinics/${clinicId}/greeting`);
+}
+
+export async function updateClinicGreeting(clinicId: string, greeting: string) {
+  return request<{
+    success: boolean;
+    greeting: string;
+    resolvedPreview: string;
+    usesCustomGreeting: boolean;
+  }>(`/api/admin/dashboard/clinics/${clinicId}/greeting`, {
+    method: "PATCH",
+    body: JSON.stringify({ greeting })
+  });
+}
+
+export async function previewClinicGreeting(clinicId: string, greeting: string) {
+  const data = await request<{ resolvedPreview: string }>(
+    `/api/admin/dashboard/clinics/${clinicId}/greeting/preview`,
+    {
+      method: "POST",
+      body: JSON.stringify({ greeting })
+    }
+  );
+  return data.resolvedPreview;
 }
 
 export async function listClinicElevenLabsVoices(clinicId: string): Promise<ElevenLabsVoice[]> {

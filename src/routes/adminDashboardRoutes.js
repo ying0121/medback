@@ -15,7 +15,10 @@ const {
   listIncomingCalls,
   listIncomingCallMessages,
   deleteIncomingCall,
-  deleteAllIncomingCalls
+  deleteAllIncomingCalls,
+  getClinicGreeting,
+  updateClinicGreeting,
+  previewClinicGreeting
 } = require("../controllers/adminDashboardController");
 
 const router = express.Router();
@@ -29,6 +32,9 @@ router.get("/clinics/:id/elevenlabs", getClinicElevenLabsConfig);
 router.patch("/clinics/:id/elevenlabs", updateClinicElevenLabsApiKey);
 router.get("/clinics/:id/twilio", getClinicTwilioConfig);
 router.patch("/clinics/:id/twilio", updateClinicTwilioConfig);
+router.get("/clinics/:id/greeting", getClinicGreeting);
+router.patch("/clinics/:id/greeting", updateClinicGreeting);
+router.post("/clinics/:id/greeting/preview", previewClinicGreeting);
 router.post("/clinics/sync-external", syncClinicsFromExternalApi);
 router.get("/clinics/:clinicId/conversations", listConversationsByClinic);
 router.get("/conversations/:conversationId/messages", listConversationMessages);

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff } from "lucide-react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff, MessageSquareText } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -27,9 +28,13 @@ import {
   fetchClinicElevenLabsPreviewBlob,
   fetchClinicElevenLabsPreviewSourceBlob,
   updateClinicElevenLabsVoice,
+  getClinicGreeting,
+  updateClinicGreeting,
+  previewClinicGreeting,
   type Clinic,
   type ElevenLabsVoice,
   type ClinicTwilioConfigInput,
+  type GreetingPlaceholder,
 } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
@@ -96,6 +101,16 @@ export default function Clinics() {
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastBlobUrlRef = useRef<string | null>(null);
 
+  const [greetingClinic, setGreetingClinic] = useState<Clinic | null>(null);
+  const [greetingDraft, setGreetingDraft] = useState("");
+  const [greetingDefault, setGreetingDefault] = useState("");
+  const [greetingPlaceholders, setGreetingPlaceholders] = useState<GreetingPlaceholder[]>([]);
+  const [greetingPreview, setGreetingPreview] = useState("");
+  const [greetingUsesCustom, setGreetingUsesCustom] = useState(false);
+  const [loadingGreeting, setLoadingGreeting] = useState(false);
+  const [savingGreeting, setSavingGreeting] = useState(false);
+  const greetingPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const stopVoicePreview = () => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
@@ -107,6 +122,21 @@ export default function Clinics() {
     }
     setPreviewingVoiceId(null);
   };
+
+  useEffect(() => {
+    if (!greetingClinic) return;
+    if (greetingPreviewTimerRef.current) clearTimeout(greetingPreviewTimerRef.current);
+    greetingPreviewTimerRef.current = setTimeout(() => {
+      previewClinicGreeting(greetingClinic.id, greetingDraft)
+        .then(setGreetingPreview)
+        .catch(() => {
+          /* keep last preview */
+        });
+    }, 350);
+    return () => {
+      if (greetingPreviewTimerRef.current) clearTimeout(greetingPreviewTimerRef.current);
+    };
+  }, [greetingClinic, greetingDraft]);
 
   useEffect(() => {
     if (!voiceModalClinic) {
@@ -178,6 +208,58 @@ export default function Clinics() {
       toast.error(msg);
     } finally {
       setLoadingElevenLabs(false);
+    }
+  };
+
+  const openGreeting = async (c: Clinic) => {
+    setGreetingClinic(c);
+    setGreetingDraft("");
+    setGreetingPreview("");
+    setGreetingPlaceholders([]);
+    try {
+      setLoadingGreeting(true);
+      const data = await getClinicGreeting(c.id);
+      setGreetingDraft(data.greeting);
+      setGreetingDefault(data.defaultGreeting);
+      setGreetingPlaceholders(data.placeholders);
+      setGreetingPreview(data.resolvedPreview);
+      setGreetingUsesCustom(data.usesCustomGreeting);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load greeting";
+      toast.error(msg);
+      setGreetingClinic(null);
+    } finally {
+      setLoadingGreeting(false);
+    }
+  };
+
+  const insertGreetingToken = (token: string) => {
+    setGreetingDraft((prev) => {
+      const trimmed = prev.trimEnd();
+      return trimmed ? `${trimmed} ${token}` : token;
+    });
+  };
+
+  const resetGreetingToDefault = () => {
+    setGreetingDraft("");
+    toast.message("Cleared custom greeting — system default will be used on save.");
+  };
+
+  const saveGreeting = async () => {
+    if (!greetingClinic) return;
+    try {
+      setSavingGreeting(true);
+      const result = await updateClinicGreeting(greetingClinic.id, greetingDraft.trim());
+      setGreetingPreview(result.resolvedPreview);
+      setGreetingUsesCustom(result.usesCustomGreeting);
+      toast.success(result.usesCustomGreeting ? "Custom greeting saved" : "Using system default greeting");
+      setGreetingClinic(null);
+      refresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to save greeting";
+      toast.error(msg);
+    } finally {
+      setSavingGreeting(false);
     }
   };
 
@@ -348,8 +430,22 @@ export default function Clinics() {
     { key: "web", header: "Web", searchable: (r) => r.web ?? "", render: (r) => r.web ? (
       <a href={r.web} target="_blank" rel="noreferrer" className="text-primary hover:underline text-sm truncate inline-block max-w-[180px]">{r.web}</a>
     ) : <span className="text-muted-foreground text-sm">—</span> },
-    { key: "actions", header: "", className: "w-56 text-right", searchable: () => "", render: (r) => (
+    { key: "actions", header: "", className: "w-64 text-right", searchable: () => "", render: (r) => (
       <div className="flex items-center justify-end gap-1">
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => openGreeting(r)}
+          title={
+            r.greetingConfigured
+              ? "Inbound greeting — custom"
+              : "Inbound greeting — using default"
+          }
+        >
+          <MessageSquareText
+            className={`h-4 w-4 ${r.greetingConfigured ? "text-sky-600" : "text-muted-foreground"}`}
+          />
+        </Button>
         <Button
           size="icon"
           variant="ghost"
@@ -680,6 +776,105 @@ export default function Clinics() {
             </Button>
             <Button onClick={saveElevenLabs} disabled={savingElevenLabs || loadingElevenLabs} className="bg-gradient-primary text-primary-foreground">
               {loadingElevenLabs ? "Loading..." : savingElevenLabs ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!greetingClinic}
+        onOpenChange={(o) => {
+          if (!o) setGreetingClinic(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Inbound voice greeting</DialogTitle>
+            <DialogDescription>
+              {greetingClinic ? (
+                <>
+                  Greeting spoken when callers reach <strong>{greetingClinic.name}</strong>.
+                  Leave empty to use the system default. Insert placeholders to personalize text.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">
+            <div className="space-y-4 py-2 pr-2">
+              <div>
+                <Label className="text-xs text-muted-foreground mb-2 block">Placeholders — click to insert</Label>
+                <div className="flex flex-wrap gap-2">
+                  {greetingPlaceholders.map((p) => (
+                    <Button
+                      key={p.token}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 font-mono text-xs"
+                      onClick={() => insertGreetingToken(p.token)}
+                      title={p.description}
+                    >
+                      {p.token}
+                    </Button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {greetingPlaceholders.map((p) => (
+                    <span key={p.token} className="block">
+                      <strong className="font-mono">{p.token}</strong> — {p.description}
+                    </span>
+                  ))}
+                </p>
+              </div>
+              <Field label="Greeting script">
+                <Textarea
+                  rows={5}
+                  value={greetingDraft}
+                  onChange={(e) => setGreetingDraft(e.target.value)}
+                  placeholder={greetingDefault || "Hello from $clinic_name$. How can I help you today?"}
+                  disabled={loadingGreeting}
+                  className="resize-y min-h-[120px]"
+                />
+              </Field>
+              <div className="rounded-xl border bg-muted/40 p-4 space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Caller will hear
+                </div>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {loadingGreeting ? "Loading preview…" : greetingPreview || "—"}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  {greetingUsesCustom || greetingDraft.trim()
+                    ? "Custom greeting for this clinic"
+                    : "System default (from server env or built-in fallback)"}
+                </p>
+              </div>
+              {greetingDefault && (
+                <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">System default: </span>
+                  {greetingDefault}
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={resetGreetingToDefault}
+              disabled={loadingGreeting || savingGreeting}
+            >
+              Use system default
+            </Button>
+            <Button variant="outline" onClick={() => setGreetingClinic(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={saveGreeting}
+              disabled={loadingGreeting || savingGreeting}
+              className="bg-gradient-primary text-primary-foreground"
+            >
+              {savingGreeting ? "Saving…" : "Save greeting"}
             </Button>
           </DialogFooter>
         </DialogContent>

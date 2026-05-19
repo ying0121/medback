@@ -51,6 +51,15 @@ async function ensureClinicElevenlabsVoiceColumn() {
   }
 }
 
+async function ensureClinicInboundGreetingColumn() {
+  try {
+    await sequelize.query("ALTER TABLE clinics ADD COLUMN inbound_greeting TEXT NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
+}
+
 async function ensureClinicTwilioColumns() {
   const statements = [
     "ALTER TABLE clinics ADD COLUMN twilio_phone_number VARCHAR(64) NULL",
@@ -76,6 +85,7 @@ async function syncDatabase() {
   await ensureClinicElevenlabsColumn();
   await ensureClinicElevenlabsVoiceColumn();
   await ensureClinicTwilioColumns();
+  await ensureClinicInboundGreetingColumn();
 }
 
 async function initializeDatabase() {

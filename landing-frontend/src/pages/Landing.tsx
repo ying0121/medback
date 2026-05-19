@@ -104,13 +104,13 @@ export default function Landing() {
             <a href="#features" className="transition-colors hover:text-ink">Features</a>
             <a href="#how" className="transition-colors hover:text-ink">How it works</a>
           </nav>
-          <Link
-            to="/admin/login"
+          <a
+            href="/admin/login"
             className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo/20 transition hover:bg-indigo hover:shadow-teal/30"
           >
             Admin login
             <ArrowRight className="h-4 w-4" />
-          </Link>
+          </a>
         </div>
       </header>
 
@@ -164,12 +164,12 @@ export default function Landing() {
                 Explore features
                 <ArrowRight className="h-4 w-4" />
               </a>
-              <Link
-                to="/admin/login"
+              <a
+                href="/admin/login"
                 className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-7 py-3.5 text-sm font-semibold text-ink transition hover:border-teal/40 hover:bg-teal/5"
               >
                 Open admin console
-              </Link>
+              </a>
             </motion.div>
           </div>
 
@@ -278,13 +278,13 @@ export default function Landing() {
           <p className="relative mx-auto mt-4 max-w-lg text-white/80">
             Sign in to configure clinics, train assistants, and review every conversation.
           </p>
-          <Link
-            to="/admin/login"
+          <a
+            href="/admin/login"
             className="relative mt-8 inline-flex items-center gap-2 rounded-full bg-white px-8 py-3.5 text-sm font-bold text-indigo shadow-xl transition hover:scale-[1.03]"
           >
             Go to admin console
             <ArrowRight className="h-4 w-4" />
-          </Link>
+          </a>
         </motion.div>
       </RevealSection>
 
