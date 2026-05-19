@@ -1,4 +1,4 @@
-# MediBack
+# Healthcare Chat Bot 
 
 Backend platform for clinic-facing AI assistants: REST and WebSocket chat, Twilio voice/SMS, an admin dashboard, and a low-latency inbound phone bot powered by streaming speech and TTS.
 
@@ -23,7 +23,7 @@ flowchart TB
     Phone[Inbound PSTN caller]
   end
 
-  subgraph mediback [MediBack — Express + HTTP server]
+  subgraph Healthcare Chat Bot  [Healthcare Chat Bot  — Express + HTTP server]
   API[REST /api/*]
   SIO[Socket.IO /ws/chat]
   WS[WebSocket /api/twilio/voice/stream]
@@ -130,7 +130,7 @@ Other scripts:
 ## Project structure
 
 ```
-mediback/
+Healthcare Chat Bot /
 ├── src/
 │   ├── server.js          # HTTP server, Socket.IO, inbound WS bootstrap
 │   ├── app.js             # Express app, routes, admin static hosting

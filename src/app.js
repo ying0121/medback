@@ -74,10 +74,34 @@ app.use("/api/admin/dashboard", adminDashboardRoutes);
 app.use("/api/admin/knowledge", adminKnowledgeRoutes);
 app.use("/api/twilio", twilioRoutes);
 
+const landingDistPath = path.resolve(__dirname, "../landing-frontend/dist");
+const landingIndexPath = path.join(landingDistPath, "index.html");
+const hasLandingBuild = fs.existsSync(landingIndexPath);
+
 const adminDistPath = path.resolve(__dirname, "../admin-frontend/dist");
 const adminIndexPath = path.join(adminDistPath, "index.html");
 const hasAdminBuild = fs.existsSync(adminIndexPath);
 const adminRouteMatcher = /^\/admin(?:\/.*)?$/;
+
+if (hasLandingBuild) {
+  app.use(express.static(landingDistPath, { index: false }));
+
+  app.get("/", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.sendFile(landingIndexPath);
+  });
+
+  app.get("/404", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.sendFile(landingIndexPath);
+  });
+} else {
+  app.get("/", (req, res) => {
+    res.status(503).json({
+      error: "Landing page build not found. Run npm run landing:build first."
+    });
+  });
+}
 
 if (hasAdminBuild) {
   const faviconPath = path.join(adminDistPath, "favicon.svg");
@@ -104,11 +128,14 @@ if (hasAdminBuild) {
   });
 }
 
-// For browser navigation, route unknown non-API paths to the SPA 404 page.
+// For browser navigation, route unknown non-API paths to the global 404 page.
 // API routes should keep returning JSON 404 responses instead of HTML redirects.
 app.get("/{*path}", (req, res, next) => {
-  if (String(req.path || "").startsWith("/api/")) return next();
-  return res.redirect("/admin/not-found");
+  const p = String(req.path || "");
+  if (p.startsWith("/api/")) return next();
+  if (p === "/" || p === "/404") return next();
+  if (p.startsWith("/admin")) return next();
+  return res.redirect("/404");
 });
 
 app.use(errorHandler);

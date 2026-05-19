@@ -1,11 +1,13 @@
 {
-  "name": "mediback",
+  "name": "Healthcare Chat Bot ",
   "version": "1.0.0",
   "private": true,
   "main": "src/server.js",
   "scripts": {
-    "start": "npm run admin:build && nodemon src/server.js",
+    "start": "npm run landing:build && npm run admin:build && nodemon src/server.js",
     "db:sync": "node src/db/sync.js",
+    "landing:build": "vite build --config landing-frontend/vite.config.js",
+    "landing:dev": "vite --config landing-frontend/vite.config.js",
     "admin:build": "vite build --config admin-frontend/vite.config.js",
     "admin:dev": "vite --config admin-frontend/vite.config.js",
     "admin:preview": "vite preview --config admin-frontend/vite.config.js"
@@ -55,6 +57,7 @@
     "elevenlabs": "^1.59.0",
     "embla-carousel-react": "^8.6.0",
     "express": "^5.2.1",
+    "framer-motion": "^12.23.12",
     "helmet": "^8.1.0",
     "input-otp": "^1.4.2",
     "joi": "^18.1.2",

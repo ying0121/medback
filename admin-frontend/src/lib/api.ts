@@ -368,6 +368,20 @@ export async function listIncomingCallMessages(callId: string) {
   return data;
 }
 
+export async function deleteIncomingCall(callId: string) {
+  return request<{ success: boolean; deletedCallId: string }>(
+    `/api/admin/dashboard/calls/${encodeURIComponent(callId)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function deleteAllIncomingCalls() {
+  return request<{ success: boolean; deletedCount: number }>(
+    "/api/admin/dashboard/calls",
+    { method: "DELETE" }
+  );
+}
+
 // ---------- Stats ----------
 export const getStats = async (allowedClinicIds?: string[]) => {
   try {

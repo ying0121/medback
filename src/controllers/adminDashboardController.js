@@ -596,6 +596,33 @@ async function listIncomingCalls(req, res, next) {
   }
 }
 
+async function deleteIncomingCall(req, res, next) {
+  try {
+    const callId = Number(req.params.callId);
+    if (!callId) return res.status(400).json({ error: "Invalid call id." });
+
+    const call = await Call.findByPk(callId);
+    if (!call) return res.status(404).json({ error: "Call not found." });
+
+    await IncomingMessage.destroy({ where: { callId } });
+    await call.destroy();
+
+    return res.status(200).json({ success: true, deletedCallId: String(callId) });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function deleteAllIncomingCalls(req, res, next) {
+  try {
+    await IncomingMessage.destroy({ where: {} });
+    const deleted = await Call.destroy({ where: {} });
+    return res.status(200).json({ success: true, deletedCount: deleted });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function listIncomingCallMessages(req, res, next) {
   try {
     const callId = Number(req.params.callId);
@@ -652,5 +679,7 @@ module.exports = {
   getStats,
   syncClinicsFromExternalApi,
   listIncomingCalls,
-  listIncomingCallMessages
+  listIncomingCallMessages,
+  deleteIncomingCall,
+  deleteAllIncomingCalls
 };

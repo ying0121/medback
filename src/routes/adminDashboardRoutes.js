@@ -13,7 +13,9 @@ const {
   getStats,
   syncClinicsFromExternalApi,
   listIncomingCalls,
-  listIncomingCallMessages
+  listIncomingCallMessages,
+  deleteIncomingCall,
+  deleteAllIncomingCalls
 } = require("../controllers/adminDashboardController");
 
 const router = express.Router();
@@ -31,6 +33,8 @@ router.post("/clinics/sync-external", syncClinicsFromExternalApi);
 router.get("/clinics/:clinicId/conversations", listConversationsByClinic);
 router.get("/conversations/:conversationId/messages", listConversationMessages);
 router.get("/calls", listIncomingCalls);
+router.delete("/calls", deleteAllIncomingCalls);
 router.get("/calls/:callId/messages", listIncomingCallMessages);
+router.delete("/calls/:callId", deleteIncomingCall);
 
 module.exports = router;
