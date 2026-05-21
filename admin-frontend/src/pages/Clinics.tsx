@@ -49,6 +49,7 @@ const EMPTY: ClinicForm = {
 
 const EMPTY_TWILIO_FORM: ClinicTwilioConfigInput = {
   twilioPhoneNumber: "",
+  twilioCallerId: "",
   twilioAccountSid: "",
   twilioAuthToken: "",
   twilioApiKeySid: "",
@@ -272,7 +273,8 @@ export default function Clinics() {
       const data = await getClinicTwilioConfig(c.id);
       setTwilioForm({
         ...data,
-        twilioPhoneNumber: normalizeUsPhoneForSave(data.twilioPhoneNumber) || data.twilioPhoneNumber
+        twilioPhoneNumber: normalizeUsPhoneForSave(data.twilioPhoneNumber) || data.twilioPhoneNumber,
+        twilioCallerId: String(data.twilioCallerId || "")
       });
       setTwilioPhoneDisplay(formatUsPhoneForDisplay(data.twilioPhoneNumber || ""));
     } catch (err: unknown) {
@@ -366,6 +368,7 @@ export default function Clinics() {
     if (!twilioClinic) return;
     const payload: ClinicTwilioConfigInput = {
       twilioPhoneNumber: twilioForm.twilioPhoneNumber.trim(),
+      twilioCallerId: twilioForm.twilioCallerId.trim(),
       twilioAccountSid: twilioForm.twilioAccountSid.trim(),
       twilioAuthToken: twilioForm.twilioAuthToken.trim(),
       twilioApiKeySid: twilioForm.twilioApiKeySid.trim(),
@@ -663,7 +666,7 @@ export default function Clinics() {
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4 py-1">
             <Field label="Twilio phone number *">
-              <SecretInput
+              <Input
                 autoComplete="off"
                 placeholder="+1 (555) 123-4567"
                 value={twilioPhoneDisplay}
@@ -673,6 +676,19 @@ export default function Clinics() {
                   setTwilioForm({
                     ...twilioForm,
                     twilioPhoneNumber: normalizeUsPhoneForSave(raw)
+                  });
+                }}
+              />
+            </Field>
+            <Field label="Caller ID (shown to doctor) *">
+              <Input
+                autoComplete="off"
+                placeholder="Clinic, phone number, or text"
+                value={twilioForm.twilioCallerId}
+                onChange={(e) => {
+                  setTwilioForm({
+                    ...twilioForm,
+                    twilioCallerId: e.target.value
                   });
                 }}
               />

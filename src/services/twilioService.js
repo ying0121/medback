@@ -42,6 +42,7 @@ async function getClinicTwilioConfigByClinicId(clinicId) {
     attributes: [
       "id",
       "twilioPhoneNumber",
+      "twilioCallerId",
       "twilioAccountSid",
       "twilioAuthToken",
       "twilioApiKeySid",
@@ -54,6 +55,7 @@ async function getClinicTwilioConfigByClinicId(clinicId) {
   const cfg = {
     clinicId: Number(clinic.id),
     twilioPhoneNumber: normalizePhone(clinic.twilioPhoneNumber),
+    twilioCallerId: String(clinic.twilioCallerId || "").trim(),
     twilioAccountSid: String(clinic.twilioAccountSid || "").trim(),
     twilioAuthToken: String(clinic.twilioAuthToken || "").trim(),
     twilioApiKeySid: String(clinic.twilioApiKeySid || "").trim(),
@@ -61,8 +63,8 @@ async function getClinicTwilioConfigByClinicId(clinicId) {
     twilioTwimlAppSid: String(clinic.twilioTwimlAppSid || "").trim()
   };
 
-  if (!cfg.twilioAccountSid || !cfg.twilioAuthToken || !cfg.twilioPhoneNumber) {
-    throw new Error("Clinic Twilio account SID, auth token and phone number are required.");
+  if (!cfg.twilioAccountSid || !cfg.twilioAuthToken || !cfg.twilioPhoneNumber || !cfg.twilioCallerId) {
+    throw new Error("Clinic Twilio account SID, auth token, phone number and caller ID are required.");
   }
   return cfg;
 }
@@ -74,6 +76,7 @@ async function getClinicTwilioConfigByPhoneNumber(phoneNumber) {
     attributes: [
       "id",
       "twilioPhoneNumber",
+      "twilioCallerId",
       "twilioAccountSid",
       "twilioAuthToken",
       "twilioApiKeySid",
@@ -126,12 +129,12 @@ async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl, cl
 
   const twiml = new twilio.twiml.VoiceResponse();
   // Strict bridge mode: no auto speech, only doctor <-> patient connection.
-  const dial = twiml.dial({ answerOnBridge: true, callerId: cfg.twilioPhoneNumber });
+  const dial = twiml.dial({ answerOnBridge: true, callerId: cfg.twilioCallerId });
   dial.number(patientPhoneNumber);
 
   const options = {
     to: toPhoneNumber,
-    from: cfg.twilioPhoneNumber,
+    from: cfg.twilioCallerId,
     twiml: twiml.toString()
   };
   if (callbackUrl) {
@@ -279,7 +282,7 @@ async function buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl = null,
   if (!target) throw new Error("Doctor phone number is required.");
   const twiml = new twilio.twiml.VoiceResponse();
   const dialOptions = {
-    callerId: cfg.twilioPhoneNumber || undefined,
+    callerId: cfg.twilioCallerId || undefined,
     answerOnBridge: true,
     timeout: 30
   };

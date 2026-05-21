@@ -63,6 +63,7 @@ async function ensureClinicInboundGreetingColumn() {
 async function ensureClinicTwilioColumns() {
   const statements = [
     "ALTER TABLE clinics ADD COLUMN twilio_phone_number VARCHAR(64) NULL",
+    "ALTER TABLE clinics ADD COLUMN twilio_caller_id VARCHAR(64) NULL",
     "ALTER TABLE clinics ADD COLUMN twilio_account_sid VARCHAR(128) NULL",
     "ALTER TABLE clinics ADD COLUMN twilio_auth_token TEXT NULL",
     "ALTER TABLE clinics ADD COLUMN twilio_api_key_sid VARCHAR(128) NULL",

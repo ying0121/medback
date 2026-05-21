@@ -75,6 +75,7 @@ async function listClinics(req, res, next) {
       portal: row.portal || "",
       twilioConfigured: Boolean(
         row.twilioPhoneNumber &&
+          row.twilioCallerId &&
           row.twilioAccountSid &&
           row.twilioAuthToken &&
           row.twilioApiKeySid &&
@@ -315,6 +316,7 @@ async function updateClinicTwilioConfig(req, res, next) {
 
     const twilioPhoneNumberRaw = String(req.body?.twilioPhoneNumber || "").trim();
     const twilioPhoneNumber = normalizeTwilioUsPhoneNumber(twilioPhoneNumberRaw);
+    const twilioCallerId = String(req.body?.twilioCallerId || "").trim();
     const twilioAccountSid = String(req.body?.twilioAccountSid || "").trim();
     const twilioAuthToken = String(req.body?.twilioAuthToken || "").trim();
     const twilioApiKeySid = String(req.body?.twilioApiKeySid || "").trim();
@@ -323,6 +325,7 @@ async function updateClinicTwilioConfig(req, res, next) {
 
     if (
       !twilioPhoneNumber ||
+      !twilioCallerId ||
       !twilioAccountSid ||
       !twilioAuthToken ||
       !twilioApiKeySid ||
@@ -331,7 +334,7 @@ async function updateClinicTwilioConfig(req, res, next) {
     ) {
       return res.status(400).json({
         error:
-          "twilioPhoneNumber, twilioAccountSid, twilioAuthToken, twilioApiKeySid, twilioApiKeySecret and twilioTwimlAppSid are required."
+          "twilioPhoneNumber, twilioCallerId, twilioAccountSid, twilioAuthToken, twilioApiKeySid, twilioApiKeySecret and twilioTwimlAppSid are required."
       });
     }
     if (!/^\+1\d{10}$/.test(twilioPhoneNumber)) {
@@ -339,7 +342,6 @@ async function updateClinicTwilioConfig(req, res, next) {
         error: "twilioPhoneNumber must be a US number in +1XXXXXXXXXX format."
       });
     }
-
     const clinic = await Clinic.findByPk(id);
     if (!clinic) {
       return res.status(404).json({ error: "Clinic not found." });
@@ -347,6 +349,7 @@ async function updateClinicTwilioConfig(req, res, next) {
 
     await clinic.update({
       twilioPhoneNumber,
+      twilioCallerId,
       twilioAccountSid,
       twilioAuthToken,
       twilioApiKeySid,
@@ -371,6 +374,7 @@ async function getClinicTwilioConfig(req, res, next) {
       attributes: [
         "id",
         "twilioPhoneNumber",
+        "twilioCallerId",
         "twilioAccountSid",
         "twilioAuthToken",
         "twilioApiKeySid",
@@ -384,6 +388,7 @@ async function getClinicTwilioConfig(req, res, next) {
 
     return res.status(200).json({
       twilioPhoneNumber: clinic.twilioPhoneNumber ? String(clinic.twilioPhoneNumber) : "",
+      twilioCallerId: clinic.twilioCallerId ? String(clinic.twilioCallerId) : "",
       twilioAccountSid: clinic.twilioAccountSid ? String(clinic.twilioAccountSid) : "",
       twilioAuthToken: clinic.twilioAuthToken ? String(clinic.twilioAuthToken) : "",
       twilioApiKeySid: clinic.twilioApiKeySid ? String(clinic.twilioApiKeySid) : "",

@@ -74,6 +74,11 @@ const Clinic = sequelize.define(
       allowNull: true,
       field: "twilio_phone_number"
     },
+    twilioCallerId: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      field: "twilio_caller_id"
+    },
     twilioAccountSid: {
       type: DataTypes.STRING(128),
       allowNull: true,

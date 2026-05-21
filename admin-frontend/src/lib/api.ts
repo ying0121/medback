@@ -197,6 +197,7 @@ export async function updateClinicElevenLabsVoice(clinicId: string, voiceId: str
 
 export interface ClinicTwilioConfigInput {
   twilioPhoneNumber: string;
+  twilioCallerId: string;
   twilioAccountSid: string;
   twilioAuthToken: string;
   twilioApiKeySid: string;
