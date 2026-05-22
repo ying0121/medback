@@ -77,6 +77,19 @@ function resolveInboundGreeting(clinic) {
 }
 
 /**
+ * Display fields for chat Socket.IO connect (and similar UIs).
+ * Name/acronym use the same fallbacks as greeting placeholders.
+ */
+function getClinicConnectFields(clinic) {
+  const ctx = buildPlaceholderContext(clinic);
+  return {
+    clinicName: ctx.clinicName,
+    clinicAcronym: ctx.clinicAcronym,
+    greeting: resolveInboundGreeting(clinic)
+  };
+}
+
+/**
  * Preview arbitrary draft text (e.g. from admin UI) before save.
  */
 function previewGreetingTemplate(template, clinic) {
@@ -92,5 +105,6 @@ module.exports = {
   getDefaultGreetingTemplate,
   getGreetingTemplateForClinic,
   resolveInboundGreeting,
-  previewGreetingTemplate
+  previewGreetingTemplate,
+  getClinicConnectFields
 };

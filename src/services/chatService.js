@@ -20,6 +20,7 @@ const {
 const { getCallStatus, endCall } = require("./twilioService");
 const { textToSpeechMp3 } = require("./elevenlabsService");
 const { buildClinicContextByBusinessClinicId } = require("./contextPromptService");
+const { getClinicConnectFields } = require("./greetingService");
 
 async function createConversation({ clinicId, userInfo }) {
   const created = await Conversation.create({
@@ -46,6 +47,20 @@ async function ensureConversationExists(conversationId, { clinicId = null, userI
   }
 
   return existing;
+}
+
+async function getClinicConnectInfoByBusinessClinicId(businessClinicId) {
+  const id = Number(businessClinicId);
+  if (!Number.isFinite(id) || id <= 0) {
+    return getClinicConnectFields(null);
+  }
+
+  const clinic = await Clinic.findOne({
+    where: { clinicId: id },
+    attributes: ["name", "acronym", "city", "inboundGreeting"]
+  });
+
+  return getClinicConnectFields(clinic);
 }
 
 async function resolveConversationOnConnect({ conversationId, clinicId, userInfo }) {
@@ -345,6 +360,7 @@ module.exports = {
   listMessages,
   ensureConversationExists,
   resolveConversationOnConnect,
+  getClinicConnectInfoByBusinessClinicId,
   getTwilioCallStatus,
   endTwilioCall
 };

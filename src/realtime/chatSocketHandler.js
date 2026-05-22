@@ -2,7 +2,8 @@
  * Socket.IO handler for the user-facing chat channel.
  *
  * The wire protocol is a single `message` event carrying a typed JSON object:
- *   - `connect`  : establish/restore a Conversation row, returns conversationId
+ *   - `connect`  : establish/restore a Conversation row; returns conversationId,
+ *                  clinicName, clinicAcronym, and greeting
  *   - `chat`     : a text turn, returns assistant reply
  *   - `voice`    : an audio turn, returns transcript + assistant reply + TTS
  *   - `pong`     : keepalive (silently ignored)
@@ -15,7 +16,12 @@
  * tied to the HTTP server bootstrap.
  */
 
-const { processIncomingMessage, resolveConversationOnConnect } = require("../services/chatService");
+const {
+  processIncomingMessage,
+  resolveConversationOnConnect,
+  getClinicConnectInfoByBusinessClinicId
+} = require("../services/chatService");
+const { Conversation } = require("../db");
 const { logOk, logInfo, logErr, logDbg } = require("./socketLogger");
 
 /** Allowed top-level message types from clients. `pong` is keepalive only. */
@@ -37,6 +43,9 @@ function makePayload(fields) {
     audio:          fields.audio          ?? null,
     audioMimeType:  fields.audioMimeType  ?? null,
     conversationId: fields.conversationId ?? null,
+    clinicName:     fields.clinicName     ?? null,
+    clinicAcronym:  fields.clinicAcronym  ?? null,
+    greeting:       fields.greeting       ?? null,
     callSid:        fields.callSid        ?? null,
     duration:       fields.duration       ?? null
   };
@@ -74,8 +83,29 @@ async function handleConnect(socket, parsed) {
     userInfo
   });
   socket.conversationId = conversationId;
-  logOk(`[SOCKET.IO] session ready #${socket.wsId} conversationId=${conversationId}`);
-  return send(socket, makePayload({ type: "connect", status: "success", conversationId }));
+
+  let businessClinicId = clinicId;
+  if (!businessClinicId) {
+    const conversation = await Conversation.findByPk(conversationId, {
+      attributes: ["clinicId"]
+    });
+    businessClinicId = conversation?.clinicId || null;
+  }
+
+  const { clinicName, clinicAcronym, greeting } =
+    await getClinicConnectInfoByBusinessClinicId(businessClinicId);
+
+  logOk(
+    `[SOCKET.IO] session ready #${socket.wsId} conversationId=${conversationId} clinic=${clinicName || "-"}`
+  );
+  return send(socket, makePayload({
+    type: "connect",
+    status: "success",
+    conversationId,
+    clinicName,
+    clinicAcronym,
+    greeting
+  }));
 }
 
 /**
