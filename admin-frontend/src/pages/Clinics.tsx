@@ -35,7 +35,16 @@ import {
   type ElevenLabsVoice,
   type ClinicTwilioConfigInput,
   type GreetingPlaceholder,
+  DEFAULT_CLINIC_THEME_COLOR,
+  type ClinicThemeColor,
 } from "@/lib/api";
+import {
+  CLINIC_THEME_COLORS,
+  getThemeColorOption,
+  normalizeClinicThemeColor,
+  themeGradient,
+} from "@/lib/themeColors";
+import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
 
@@ -45,6 +54,7 @@ const EMPTY: ClinicForm = {
   clinicId: "",
   name: "", acronym: "", address1: "", address2: "", state: "", city: "", zip: "",
   tel: "", web: "", portal: "",
+  themeColor: DEFAULT_CLINIC_THEME_COLOR,
 };
 
 const EMPTY_TWILIO_FORM: ClinicTwilioConfigInput = {
@@ -172,7 +182,11 @@ export default function Clinics() {
   const openEdit = (c: Clinic) => {
     setEditing(c);
     const { id, ...rest } = c;
-    setForm({ ...EMPTY, ...rest });
+    setForm({
+      ...EMPTY,
+      ...rest,
+      themeColor: normalizeClinicThemeColor(rest.themeColor)
+    });
     setOpen(true);
   };
 
@@ -512,39 +526,97 @@ export default function Clinics() {
       />
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] min-h-0 overflow-hidden flex flex-col">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90vh] min-h-0 max-w-2xl flex-col gap-0 overflow-hidden p-6 sm:max-w-2xl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{editing ? "Edit clinic" : "Add new clinic"}</DialogTitle>
             <DialogDescription>
               Set clinic information including editable clinic ID.
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">
-          <div className="grid grid-cols-2 gap-4 py-2 pr-2">
-            <Field label="Clinic ID">
-              <Input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                step={1}
-                value={form.clinicId}
-                onChange={(e) => setForm({ ...form, clinicId: e.target.value.replace(/[^\d]/g, "") })}
-                placeholder="e.g. 1001"
-              />
-            </Field>
-            <Field label="Name *"><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-            <Field label="Acronym"><Input value={form.acronym} onChange={(e) => setForm({ ...form, acronym: e.target.value })} /></Field>
-            <Field label="Address 1" className="col-span-2"><Input value={form.address1} onChange={(e) => setForm({ ...form, address1: e.target.value })} /></Field>
-            <Field label="Address 2" className="col-span-2"><Input value={form.address2 ?? ""} onChange={(e) => setForm({ ...form, address2: e.target.value })} /></Field>
-            <Field label="City"><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
-            <Field label="State"><Input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></Field>
-            <Field label="ZIP"><Input value={form.zip} onChange={(e) => setForm({ ...form, zip: e.target.value })} /></Field>
-            <Field label="Tel"><Input value={form.tel} onChange={(e) => setForm({ ...form, tel: e.target.value })} /></Field>
-            <Field label="Web"><Input value={form.web ?? ""} onChange={(e) => setForm({ ...form, web: e.target.value })} /></Field>
-            <Field label="Portal" className="col-span-2"><Input value={form.portal ?? ""} onChange={(e) => setForm({ ...form, portal: e.target.value })} /></Field>
+          <div
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-6 px-6 [scrollbar-gutter:stable]"
+            role="region"
+            aria-label="Clinic form"
+          >
+            <div className="grid grid-cols-2 gap-4 py-2 pr-2 pb-4">
+              <Field label="Clinic ID">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  value={form.clinicId}
+                  onChange={(e) => setForm({ ...form, clinicId: e.target.value.replace(/[^\d]/g, "") })}
+                  placeholder="e.g. 1001"
+                />
+              </Field>
+              <Field label="Name *"><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+              <Field label="Acronym"><Input value={form.acronym} onChange={(e) => setForm({ ...form, acronym: e.target.value })} /></Field>
+              <Field label="Address 1" className="col-span-2"><Input value={form.address1} onChange={(e) => setForm({ ...form, address1: e.target.value })} /></Field>
+              <Field label="Address 2" className="col-span-2"><Input value={form.address2 ?? ""} onChange={(e) => setForm({ ...form, address2: e.target.value })} /></Field>
+              <Field label="City"><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
+              <Field label="State"><Input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></Field>
+              <Field label="ZIP"><Input value={form.zip} onChange={(e) => setForm({ ...form, zip: e.target.value })} /></Field>
+              <Field label="Tel"><Input value={form.tel} onChange={(e) => setForm({ ...form, tel: e.target.value })} /></Field>
+              <Field label="Web"><Input value={form.web ?? ""} onChange={(e) => setForm({ ...form, web: e.target.value })} /></Field>
+              <Field label="Portal" className="col-span-2"><Input value={form.portal ?? ""} onChange={(e) => setForm({ ...form, portal: e.target.value })} /></Field>
+              <Field label="Theme color" className="col-span-2">
+                <div className="flex items-center gap-3 mb-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                  <div
+                    className="h-9 w-14 shrink-0 rounded-md shadow-sm"
+                    style={{
+                      background: themeGradient(
+                        getThemeColorOption(form.themeColor).from,
+                        getThemeColorOption(form.themeColor).to
+                      )
+                    }}
+                    aria-hidden
+                  />
+                  <div className="min-w-0 text-sm">
+                    <span className="font-medium">{getThemeColorOption(form.themeColor).label}</span>
+                    <span className="text-muted-foreground ml-2 font-mono text-xs">
+                      {form.themeColor || DEFAULT_CLINIC_THEME_COLOR}
+                    </span>
+                  </div>
+                </div>
+                <div
+                  className="grid grid-cols-4 sm:grid-cols-8 gap-2"
+                  role="radiogroup"
+                  aria-label="Theme color"
+                >
+                  {CLINIC_THEME_COLORS.map((opt) => {
+                    const selected = (form.themeColor || DEFAULT_CLINIC_THEME_COLOR) === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        title={`${opt.label} (${opt.from} → ${opt.to})`}
+                        onClick={() => setForm({ ...form, themeColor: opt.value as ClinicThemeColor })}
+                        className={cn(
+                          "rounded-lg border-2 p-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          selected ? "border-primary shadow-sm" : "border-transparent hover:border-border"
+                        )}
+                      >
+                        <div
+                          className="h-7 w-full rounded-md"
+                          style={{ background: themeGradient(opt.from, opt.to) }}
+                        />
+                        <span className="mt-1 block truncate text-[10px] leading-tight text-muted-foreground">
+                          {opt.value}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Sent to the chat app on connect as <code className="text-xs">themeColor</code> (one of 16 palette ids).
+                </p>
+              </Field>
+            </div>
           </div>
-          </ScrollArea>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border/60 pt-4 sm:justify-end">
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={save} className="bg-gradient-primary text-primary-foreground">{editing ? "Save changes" : "Create clinic"}</Button>
           </DialogFooter>

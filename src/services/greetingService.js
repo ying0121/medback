@@ -7,6 +7,8 @@
  *   $clinic_city$    — clinics.city
  */
 
+const { normalizeThemeColor } = require("../constants/themeColors");
+
 const CLINIC_NAME_RE = /\$clinic_name\$/gi;
 const CLINIC_ACRONYM_RE = /\$clinic_acronym\$/gi;
 const CLINIC_CITY_RE = /\$clinic_city\$/gi;
@@ -85,7 +87,8 @@ function getClinicConnectFields(clinic) {
   return {
     clinicName: ctx.clinicName,
     clinicAcronym: ctx.clinicAcronym,
-    greeting: resolveInboundGreeting(clinic)
+    greeting: resolveInboundGreeting(clinic),
+    themeColor: normalizeThemeColor(clinic?.themeColor)
   };
 }
 

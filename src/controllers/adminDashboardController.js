@@ -9,6 +9,7 @@ const {
   previewGreetingTemplate,
   resolveInboundGreeting
 } = require("../services/greetingService");
+const { normalizeThemeColor } = require("../constants/themeColors");
 
 function normalizeAudioPayload(rawAudio) {
   if (!rawAudio) return { audioUrl: undefined, audioMimeType: undefined };
@@ -41,6 +42,60 @@ function makeClinicSummary(clinicId) {
   };
 }
 
+function mapClinicRowToApi(row) {
+  return {
+    id: String(row.id),
+    clinicId: row.clinicId ? String(row.clinicId) : `CL-${String(row.id).padStart(4, "0")}`,
+    name: row.name || `Clinic ${row.id}`,
+    acronym: row.acronym || `C${row.id}`,
+    city: row.city || "",
+    address1: row.address1 || "",
+    address2: row.address2 || "",
+    state: row.state || "",
+    zip: row.zip || "",
+    tel: row.phone || "",
+    web: row.web || "",
+    portal: row.portal || "",
+    themeColor: normalizeThemeColor(row.themeColor),
+    twilioConfigured: Boolean(
+      row.twilioPhoneNumber &&
+        row.twilioCallerId &&
+        row.twilioAccountSid &&
+        row.twilioAuthToken &&
+        row.twilioApiKeySid &&
+        row.twilioApiKeySecret &&
+        row.twilioTwimlAppSid
+    ),
+    elevenLabsConfigured: Boolean(row.elevenlabsApiKey),
+    elevenLabsVoiceConfigured: Boolean(row.elevenlabsVoiceId),
+    elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null,
+    greetingConfigured: Boolean(String(row.inboundGreeting || "").trim())
+  };
+}
+
+function clinicPayloadFromBody(body) {
+  const rawClinicId = body?.clinicId;
+  const clinicId =
+    rawClinicId === "" || rawClinicId === undefined || rawClinicId === null
+      ? null
+      : Number(rawClinicId);
+
+  return {
+    clinicId: Number.isFinite(clinicId) && clinicId > 0 ? clinicId : null,
+    name: sanitizeText(body?.name),
+    acronym: sanitizeText(body?.acronym),
+    address1: sanitizeText(body?.address1),
+    address2: sanitizeText(body?.address2),
+    city: sanitizeText(body?.city),
+    state: sanitizeText(body?.state),
+    zip: sanitizeText(body?.zip),
+    phone: sanitizeText(body?.tel || body?.phone),
+    web: sanitizeText(body?.web),
+    portal: sanitizeText(body?.portal),
+    themeColor: normalizeThemeColor(body?.themeColor)
+  };
+}
+
 function parseConversationUserInfo(rawUserInfo) {
   if (!rawUserInfo) return { name: "", email: "" };
   try {
@@ -60,33 +115,7 @@ async function listClinics(req, res, next) {
       order: [["id", "ASC"]]
     });
 
-    let clinics = clinicRows.map((row) => ({
-      id: String(row.id),
-      clinicId: row.clinicId ? String(row.clinicId) : `CL-${String(row.id).padStart(4, "0")}`,
-      name: row.name || `Clinic ${row.id}`,
-      acronym: row.acronym || `C${row.id}`,
-      city: row.city || "",
-      address1: row.address1 || "",
-      address2: row.address2 || "",
-      state: row.state || "",
-      zip: row.zip || "",
-      tel: row.phone || "",
-      web: row.web || "",
-      portal: row.portal || "",
-      twilioConfigured: Boolean(
-        row.twilioPhoneNumber &&
-          row.twilioCallerId &&
-          row.twilioAccountSid &&
-          row.twilioAuthToken &&
-          row.twilioApiKeySid &&
-          row.twilioApiKeySecret &&
-          row.twilioTwimlAppSid
-      ),
-      elevenLabsConfigured: Boolean(row.elevenlabsApiKey),
-      elevenLabsVoiceConfigured: Boolean(row.elevenlabsVoiceId),
-      elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null,
-      greetingConfigured: Boolean(String(row.inboundGreeting || "").trim())
-    }));
+    let clinics = clinicRows.map((row) => mapClinicRowToApi(row));
 
     // Backward-compat fallback for existing conversation-only data.
     if (clinics.length === 0) {
@@ -99,6 +128,45 @@ async function listClinics(req, res, next) {
     }
 
     return res.status(200).json({ clinics });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function createClinic(req, res, next) {
+  try {
+    const payload = clinicPayloadFromBody(req.body);
+    if (!payload.name) {
+      return res.status(400).json({ error: "name is required." });
+    }
+
+    const created = await Clinic.create(payload);
+    return res.status(201).json({ clinic: mapClinicRowToApi(created) });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function updateClinic(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    const payload = clinicPayloadFromBody(req.body);
+    if (!payload.name) {
+      return res.status(400).json({ error: "name is required." });
+    }
+
+    await clinic.update(payload);
+    await clinic.reload();
+    return res.status(200).json({ clinic: mapClinicRowToApi(clinic) });
   } catch (err) {
     return next(err);
   }
@@ -765,6 +833,8 @@ async function listIncomingCallMessages(req, res, next) {
 
 module.exports = {
   listClinics,
+  createClinic,
+  updateClinic,
   updateClinicElevenLabsApiKey,
   getClinicElevenLabsConfig,
   updateClinicTwilioConfig,

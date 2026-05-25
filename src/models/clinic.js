@@ -108,6 +108,12 @@ const Clinic = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
       field: "inbound_greeting"
+    },
+    themeColor: {
+      type: DataTypes.STRING(32),
+      allowNull: false,
+      defaultValue: "azure",
+      field: "theme_color"
     }
   },
   {

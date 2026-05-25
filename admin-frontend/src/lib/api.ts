@@ -2,6 +2,16 @@
 // All functions return promises so the swap is drop-in.
 export type Role = "Admin" | "Clinic Staff";
 
+import {
+  CLINIC_THEME_COLORS,
+  DEFAULT_CLINIC_THEME_COLOR,
+  THEME_COLOR_OPTIONS,
+  type ClinicThemeColor
+} from "./themeColors";
+
+export type { ClinicThemeColor };
+export { CLINIC_THEME_COLORS, DEFAULT_CLINIC_THEME_COLOR, THEME_COLOR_OPTIONS };
+
 export interface Clinic {
   id: string;
   clinicId: string;
@@ -25,6 +35,8 @@ export interface Clinic {
   elevenLabsVoiceId?: string | null;
   /** Per-clinic inbound phone greeting (may use placeholders). */
   greetingConfigured?: boolean;
+  /** Chat frontend theme token (Socket.IO connect). */
+  themeColor?: ClinicThemeColor;
 }
 
 export interface GreetingPlaceholder {
@@ -280,16 +292,59 @@ export async function fetchClinicElevenLabsPreviewSourceBlob(
   }
   return res.blob();
 }
-export const createClinic = (c: Omit<Clinic, "id">) => {
-  const id = `clinic-${Date.now()}`;
-  const created: Clinic = { ...c, id, clinicId: c.clinicId || `CL-${1000 + clinics.length}` };
-  clinics = [created, ...clinics];
-  return delay(created);
-};
-export const updateClinic = (id: string, patch: Partial<Clinic>) => {
-  clinics = clinics.map((c) => (c.id === id ? { ...c, ...patch, id: c.id } : c));
-  return delay(clinics.find((c) => c.id === id)!);
-};
+function clinicBodyFromForm(c: Omit<Clinic, "id"> | Partial<Clinic>) {
+  return {
+    clinicId: c.clinicId ?? "",
+    name: c.name ?? "",
+    acronym: c.acronym ?? "",
+    address1: c.address1 ?? "",
+    address2: c.address2 ?? "",
+    city: c.city ?? "",
+    state: c.state ?? "",
+    zip: c.zip ?? "",
+    tel: c.tel ?? "",
+    web: c.web ?? "",
+    portal: c.portal ?? "",
+    themeColor: c.themeColor ?? DEFAULT_CLINIC_THEME_COLOR
+  };
+}
+
+export async function createClinic(c: Omit<Clinic, "id">) {
+  try {
+    const data = await request<{ clinic: Clinic }>("/api/admin/dashboard/clinics", {
+      method: "POST",
+      body: JSON.stringify(clinicBodyFromForm(c))
+    });
+    return data.clinic;
+  } catch {
+    const id = `clinic-${Date.now()}`;
+    const created: Clinic = {
+      ...c,
+      id,
+      clinicId: c.clinicId || `CL-${1000 + clinics.length}`,
+      themeColor: c.themeColor || DEFAULT_CLINIC_THEME_COLOR
+    };
+    clinics = [created, ...clinics];
+    return delay(created);
+  }
+}
+
+export async function updateClinic(id: string, patch: Partial<Clinic>) {
+  try {
+    const data = await request<{ clinic: Clinic }>(`/api/admin/dashboard/clinics/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(clinicBodyFromForm(patch))
+    });
+    return data.clinic;
+  } catch {
+    clinics = clinics.map((c) =>
+      c.id === id
+        ? { ...c, ...patch, id: c.id, themeColor: patch.themeColor ?? c.themeColor ?? DEFAULT_CLINIC_THEME_COLOR }
+        : c
+    );
+    return delay(clinics.find((c) => c.id === id)!);
+  }
+}
 export const deleteClinic = (id: string) => {
   clinics = clinics.filter((c) => c.id !== id);
   return delay(true);

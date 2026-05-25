@@ -1,6 +1,8 @@
 const express = require("express");
 const {
   listClinics,
+  createClinic,
+  updateClinic,
   getClinicElevenLabsConfig,
   updateClinicElevenLabsApiKey,
   getClinicTwilioConfig,
@@ -25,6 +27,8 @@ const router = express.Router();
 
 router.get("/stats", getStats);
 router.get("/clinics", listClinics);
+router.post("/clinics", createClinic);
+router.patch("/clinics/:id", updateClinic);
 router.get("/clinics/:id/elevenlabs/voices", listClinicElevenLabsVoices);
 router.get("/clinics/:id/elevenlabs/preview", previewClinicElevenLabsVoice);
 router.get("/clinics/:id/elevenlabs/preview-source", streamElevenLabsPreviewSource);

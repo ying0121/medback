@@ -57,7 +57,7 @@ async function getClinicConnectInfoByBusinessClinicId(businessClinicId) {
 
   const clinic = await Clinic.findOne({
     where: { clinicId: id },
-    attributes: ["name", "acronym", "city", "inboundGreeting"]
+    attributes: ["name", "acronym", "city", "inboundGreeting", "themeColor"]
   });
 
   return getClinicConnectFields(clinic);

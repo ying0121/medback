@@ -3,7 +3,7 @@
  *
  * The wire protocol is a single `message` event carrying a typed JSON object:
  *   - `connect`  : establish/restore a Conversation row; returns conversationId,
- *                  clinicName, clinicAcronym, and greeting
+ *                  clinicName, clinicAcronym, greeting, and themeColor
  *   - `chat`     : a text turn, returns assistant reply
  *   - `voice`    : an audio turn, returns transcript + assistant reply + TTS
  *   - `pong`     : keepalive (silently ignored)
@@ -46,6 +46,7 @@ function makePayload(fields) {
     clinicName:     fields.clinicName     ?? null,
     clinicAcronym:  fields.clinicAcronym  ?? null,
     greeting:       fields.greeting       ?? null,
+    themeColor:     fields.themeColor     ?? null,
     callSid:        fields.callSid        ?? null,
     duration:       fields.duration       ?? null
   };
@@ -92,11 +93,11 @@ async function handleConnect(socket, parsed) {
     businessClinicId = conversation?.clinicId || null;
   }
 
-  const { clinicName, clinicAcronym, greeting } =
+  const { clinicName, clinicAcronym, greeting, themeColor } =
     await getClinicConnectInfoByBusinessClinicId(businessClinicId);
 
   logOk(
-    `[SOCKET.IO] session ready #${socket.wsId} conversationId=${conversationId} clinic=${clinicName || "-"}`
+    `[SOCKET.IO] session ready #${socket.wsId} conversationId=${conversationId} clinic=${clinicName || "-"} theme=${themeColor || "-"}`
   );
   return send(socket, makePayload({
     type: "connect",
@@ -104,7 +105,8 @@ async function handleConnect(socket, parsed) {
     conversationId,
     clinicName,
     clinicAcronym,
-    greeting
+    greeting,
+    themeColor
   }));
 }
 

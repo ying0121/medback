@@ -60,6 +60,17 @@ async function ensureClinicInboundGreetingColumn() {
   }
 }
 
+async function ensureClinicThemeColorColumn() {
+  try {
+    await sequelize.query(
+      "ALTER TABLE clinics ADD COLUMN theme_color VARCHAR(32) NOT NULL DEFAULT 'azure'"
+    );
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
+}
+
 async function ensureClinicTwilioColumns() {
   const statements = [
     "ALTER TABLE clinics ADD COLUMN twilio_phone_number VARCHAR(64) NULL",
@@ -87,6 +98,19 @@ async function syncDatabase() {
   await ensureClinicElevenlabsVoiceColumn();
   await ensureClinicTwilioColumns();
   await ensureClinicInboundGreetingColumn();
+  await ensureClinicThemeColorColumn();
+  await migrateThemeColorLegacyIds();
+}
+
+async function migrateThemeColorLegacyIds() {
+  try {
+    await sequelize.query(
+      "UPDATE clinics SET theme_color = 'azure' WHERE theme_color IN ('dark-blue', 'dark-mode')"
+    );
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/unknown column/i.test(msg)) throw err;
+  }
 }
 
 async function initializeDatabase() {
