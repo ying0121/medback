@@ -47,6 +47,7 @@ function makePayload(fields) {
     clinicAcronym:  fields.clinicAcronym  ?? null,
     greeting:       fields.greeting       ?? null,
     themeColor:     fields.themeColor     ?? null,
+    avatar:         fields.avatar         ?? null,
     callSid:        fields.callSid        ?? null,
     duration:       fields.duration       ?? null
   };
@@ -93,7 +94,7 @@ async function handleConnect(socket, parsed) {
     businessClinicId = conversation?.clinicId || null;
   }
 
-  const { clinicName, clinicAcronym, greeting, themeColor } =
+  const { clinicName, clinicAcronym, greeting, themeColor, avatar } =
     await getClinicConnectInfoByBusinessClinicId(businessClinicId);
 
   logOk(
@@ -106,7 +107,8 @@ async function handleConnect(socket, parsed) {
     clinicName,
     clinicAcronym,
     greeting,
-    themeColor
+    themeColor,
+    avatar
   }));
 }
 

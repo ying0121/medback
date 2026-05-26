@@ -16,6 +16,8 @@ export interface Clinic {
   id: string;
   clinicId: string;
   logo?: string;
+  /** Data URL image, max 250×250 (also exposed to chat on connect). */
+  avatar?: string | null;
   name: string;
   acronym: string;
   address1: string;
@@ -305,7 +307,8 @@ function clinicBodyFromForm(c: Omit<Clinic, "id"> | Partial<Clinic>) {
     tel: c.tel ?? "",
     web: c.web ?? "",
     portal: c.portal ?? "",
-    themeColor: c.themeColor ?? DEFAULT_CLINIC_THEME_COLOR
+    themeColor: c.themeColor ?? DEFAULT_CLINIC_THEME_COLOR,
+    avatar: c.avatar ?? null
   };
 }
 
@@ -322,7 +325,8 @@ export async function createClinic(c: Omit<Clinic, "id">) {
       ...c,
       id,
       clinicId: c.clinicId || `CL-${1000 + clinics.length}`,
-      themeColor: c.themeColor || DEFAULT_CLINIC_THEME_COLOR
+      themeColor: c.themeColor || DEFAULT_CLINIC_THEME_COLOR,
+      avatar: c.avatar ?? null
     };
     clinics = [created, ...clinics];
     return delay(created);

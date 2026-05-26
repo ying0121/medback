@@ -88,7 +88,8 @@ function getClinicConnectFields(clinic) {
     clinicName: ctx.clinicName,
     clinicAcronym: ctx.clinicAcronym,
     greeting: resolveInboundGreeting(clinic),
-    themeColor: normalizeThemeColor(clinic?.themeColor)
+    themeColor: normalizeThemeColor(clinic?.themeColor),
+    avatar: clinic?.avatar ? String(clinic.avatar) : null
   };
 }
 

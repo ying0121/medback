@@ -114,6 +114,10 @@ const Clinic = sequelize.define(
       allowNull: false,
       defaultValue: "azure",
       field: "theme_color"
+    },
+    avatar: {
+      type: DataTypes.TEXT("long"),
+      allowNull: true
     }
   },
   {

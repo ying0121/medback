@@ -99,7 +99,17 @@ async function syncDatabase() {
   await ensureClinicTwilioColumns();
   await ensureClinicInboundGreetingColumn();
   await ensureClinicThemeColorColumn();
+  await ensureClinicAvatarColumn();
   await migrateThemeColorLegacyIds();
+}
+
+async function ensureClinicAvatarColumn() {
+  try {
+    await sequelize.query("ALTER TABLE clinics ADD COLUMN avatar LONGTEXT NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
 }
 
 async function migrateThemeColorLegacyIds() {

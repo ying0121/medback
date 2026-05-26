@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff, MessageSquareText } from "lucide-react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff, MessageSquareText, Upload, X } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,11 @@ import {
 } from "@/lib/themeColors";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  processClinicAvatarFile,
+  CLINIC_AVATAR_MAX_PX,
+  CLINIC_AVATAR_MAX_UPLOAD_PX,
+} from "@/lib/clinicAvatar";
 import { toast } from "sonner";
 
 type ClinicForm = Omit<Clinic, "id">;
@@ -55,6 +60,7 @@ const EMPTY: ClinicForm = {
   name: "", acronym: "", address1: "", address2: "", state: "", city: "", zip: "",
   tel: "", web: "", portal: "",
   themeColor: DEFAULT_CLINIC_THEME_COLOR,
+  avatar: null,
 };
 
 const EMPTY_TWILIO_FORM: ClinicTwilioConfigInput = {
@@ -121,6 +127,8 @@ export default function Clinics() {
   const [loadingGreeting, setLoadingGreeting] = useState(false);
   const [savingGreeting, setSavingGreeting] = useState(false);
   const greetingPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const stopVoicePreview = () => {
     if (previewAudioRef.current) {
@@ -178,7 +186,33 @@ export default function Clinics() {
   const refresh = () => listClinics().then(setData);
   useEffect(() => { refresh(); }, []);
 
-  const openCreate = () => { setEditing(null); setForm(EMPTY); setOpen(true); };
+  const openCreate = () => {
+    setEditing(null);
+    setForm(EMPTY);
+    setOpen(true);
+  };
+
+  const onAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      setAvatarUploading(true);
+      const dataUrl = await processClinicAvatarFile(file);
+      setForm((prev) => ({ ...prev, avatar: dataUrl }));
+      toast.success("Avatar loaded");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not load image";
+      toast.error(msg);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const clearAvatar = () => {
+    setForm((prev) => ({ ...prev, avatar: null }));
+    toast.message("Avatar cleared");
+  };
   const openEdit = (c: Clinic) => {
     setEditing(c);
     const { id, ...rest } = c;
@@ -424,17 +458,23 @@ export default function Clinics() {
 
   const columns: Column<Clinic>[] = [
     {
-      key: "name", header: "Clinic", searchable: (r) => `${r.name} ${r.acronym} ${r.clinicId}`,
+      key: "name",
+      header: "Clinic",
+      searchable: (r) => `${r.name} ${r.acronym} ${r.clinicId}`,
       render: (r) => (
-        <div className="flex items-center gap-3 min-w-[220px]">
-          <div className="h-10 w-10 rounded-lg bg-gradient-primary flex items-center justify-center text-primary-foreground shrink-0">
-            <Building2 className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
-            <div className="font-medium truncate">{r.name}</div>
-            <div className="text-xs text-muted-foreground">{r.acronym} · {r.clinicId}</div>
-          </div>
+        <div className="min-w-[180px]">
+          <div className="font-medium truncate">{r.name}</div>
+          <div className="text-xs text-muted-foreground">{r.acronym} · {r.clinicId}</div>
         </div>
+      ),
+    },
+    {
+      key: "avatar",
+      header: "Avatar",
+      className: "w-[88px]",
+      searchable: () => "",
+      render: (r) => (
+        <ClinicAvatarThumb avatar={r.avatar} name={r.name} size="sm" />
       ),
     },
     { key: "address", header: "Address", searchable: (r) => `${r.address1} ${r.city} ${r.state}`, render: (r) => (
@@ -538,8 +578,8 @@ export default function Clinics() {
             role="region"
             aria-label="Clinic form"
           >
-            <div className="grid grid-cols-2 gap-4 py-2 pr-2 pb-4">
-              <Field label="Clinic ID">
+            <div className="grid grid-cols-12 gap-x-4 gap-y-4 py-2 pr-2 pb-4">
+              <Field label="Clinic ID" className="col-span-12 sm:col-span-3">
                 <Input
                   type="number"
                   inputMode="numeric"
@@ -550,17 +590,75 @@ export default function Clinics() {
                   placeholder="e.g. 1001"
                 />
               </Field>
-              <Field label="Name *"><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-              <Field label="Acronym"><Input value={form.acronym} onChange={(e) => setForm({ ...form, acronym: e.target.value })} /></Field>
-              <Field label="Address 1" className="col-span-2"><Input value={form.address1} onChange={(e) => setForm({ ...form, address1: e.target.value })} /></Field>
-              <Field label="Address 2" className="col-span-2"><Input value={form.address2 ?? ""} onChange={(e) => setForm({ ...form, address2: e.target.value })} /></Field>
-              <Field label="City"><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></Field>
-              <Field label="State"><Input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} /></Field>
-              <Field label="ZIP"><Input value={form.zip} onChange={(e) => setForm({ ...form, zip: e.target.value })} /></Field>
-              <Field label="Tel"><Input value={form.tel} onChange={(e) => setForm({ ...form, tel: e.target.value })} /></Field>
-              <Field label="Web"><Input value={form.web ?? ""} onChange={(e) => setForm({ ...form, web: e.target.value })} /></Field>
-              <Field label="Portal" className="col-span-2"><Input value={form.portal ?? ""} onChange={(e) => setForm({ ...form, portal: e.target.value })} /></Field>
-              <Field label="Theme color" className="col-span-2">
+              <Field label="Name *" className="col-span-12 sm:col-span-6">
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              </Field>
+              <Field label="Acronym" className="col-span-12 sm:col-span-3">
+                <Input value={form.acronym} onChange={(e) => setForm({ ...form, acronym: e.target.value })} />
+              </Field>
+              <Field label="Avatar" className="col-span-12">
+                <div className="flex flex-col sm:flex-row gap-4 items-start">
+                  <ClinicAvatarThumb avatar={form.avatar} name={form.name || "Clinic"} size="lg" />
+                  <div className="flex flex-col gap-2 pt-1">
+                    <input
+                      ref={avatarFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif,image/webp"
+                      className="hidden"
+                      onChange={onAvatarFileChange}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={avatarUploading}
+                      onClick={() => avatarFileInputRef.current?.click()}
+                    >
+                      <Upload className="h-4 w-4 mr-1.5" />
+                      {avatarUploading ? "Processing…" : "Upload image"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={!form.avatar || avatarUploading}
+                      onClick={clearAvatar}
+                    >
+                      <X className="h-4 w-4 mr-1.5" />
+                      Clear avatar
+                    </Button>
+                    <p className="text-xs text-muted-foreground max-w-xs">
+                      JPEG, PNG, GIF, or WebP. Max upload {CLINIC_AVATAR_MAX_UPLOAD_PX}×{CLINIC_AVATAR_MAX_UPLOAD_PX} px
+                      (larger images are rejected). Saved up to {CLINIC_AVATAR_MAX_PX}×{CLINIC_AVATAR_MAX_PX} px.
+                    </p>
+                  </div>
+                </div>
+              </Field>
+              <Field label="Address 1" className="col-span-12 sm:col-span-6">
+                <Input value={form.address1} onChange={(e) => setForm({ ...form, address1: e.target.value })} />
+              </Field>
+              <Field label="Address 2" className="col-span-12 sm:col-span-6">
+                <Input value={form.address2 ?? ""} onChange={(e) => setForm({ ...form, address2: e.target.value })} />
+              </Field>
+              <Field label="City" className="col-span-12 sm:col-span-3">
+                <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+              </Field>
+              <Field label="State" className="col-span-12 sm:col-span-3">
+                <Input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+              </Field>
+              <Field label="ZIP" className="col-span-12 sm:col-span-3">
+                <Input value={form.zip} onChange={(e) => setForm({ ...form, zip: e.target.value })} />
+              </Field>
+              <Field label="Tel" className="col-span-12 sm:col-span-3">
+                <Input value={form.tel} onChange={(e) => setForm({ ...form, tel: e.target.value })} />
+              </Field>
+              <Field label="Web" className="col-span-12 sm:col-span-6">
+                <Input value={form.web ?? ""} onChange={(e) => setForm({ ...form, web: e.target.value })} />
+              </Field>
+              <Field label="Portal" className="col-span-12 sm:col-span-6">
+                <Input value={form.portal ?? ""} onChange={(e) => setForm({ ...form, portal: e.target.value })} />
+              </Field>
+              <Field label="Theme color" className="col-span-12">
                 <div className="flex items-center gap-3 mb-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
                   <div
                     className="h-9 w-14 shrink-0 rounded-md shadow-sm"
@@ -982,6 +1080,42 @@ export default function Clinics() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+function ClinicAvatarThumb({
+  avatar,
+  name,
+  size = "sm"
+}: {
+  avatar?: string | null;
+  name: string;
+  size?: "sm" | "lg";
+}) {
+  const dim = size === "lg" ? "h-[250px] w-[250px]" : "h-10 w-10";
+  const icon = size === "lg" ? "h-12 w-12" : "h-5 w-5";
+  const label = name.trim() || "Clinic";
+
+  if (avatar) {
+    return (
+      <img
+        src={avatar}
+        alt={`${label} avatar`}
+        className={cn(dim, "rounded-lg object-cover border border-border/60 bg-muted shrink-0")}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        dim,
+        "rounded-lg bg-gradient-primary flex items-center justify-center text-primary-foreground shrink-0 border border-border/40"
+      )}
+      aria-hidden
+    >
+      <Building2 className={icon} />
     </div>
   );
 }

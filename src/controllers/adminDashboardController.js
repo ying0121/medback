@@ -10,6 +10,7 @@ const {
   resolveInboundGreeting
 } = require("../services/greetingService");
 const { normalizeThemeColor } = require("../constants/themeColors");
+const { parseClinicAvatar } = require("../utils/clinicAvatar");
 
 function normalizeAudioPayload(rawAudio) {
   if (!rawAudio) return { audioUrl: undefined, audioMimeType: undefined };
@@ -57,6 +58,7 @@ function mapClinicRowToApi(row) {
     web: row.web || "",
     portal: row.portal || "",
     themeColor: normalizeThemeColor(row.themeColor),
+    avatar: row.avatar ? String(row.avatar) : null,
     twilioConfigured: Boolean(
       row.twilioPhoneNumber &&
         row.twilioCallerId &&
@@ -92,7 +94,8 @@ function clinicPayloadFromBody(body) {
     phone: sanitizeText(body?.tel || body?.phone),
     web: sanitizeText(body?.web),
     portal: sanitizeText(body?.portal),
-    themeColor: normalizeThemeColor(body?.themeColor)
+    themeColor: normalizeThemeColor(body?.themeColor),
+    avatar: parseClinicAvatar(body)
   };
 }
 
@@ -139,6 +142,7 @@ async function createClinic(req, res, next) {
     if (!payload.name) {
       return res.status(400).json({ error: "name is required." });
     }
+    if (payload.avatar === undefined) payload.avatar = null;
 
     const created = await Clinic.create(payload);
     return res.status(201).json({ clinic: mapClinicRowToApi(created) });
@@ -163,6 +167,7 @@ async function updateClinic(req, res, next) {
     if (!payload.name) {
       return res.status(400).json({ error: "name is required." });
     }
+    if (payload.avatar === undefined) delete payload.avatar;
 
     await clinic.update(payload);
     await clinic.reload();
