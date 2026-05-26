@@ -3,7 +3,7 @@
  *
  * The wire protocol is a single `message` event carrying a typed JSON object:
  *   - `connect`  : establish/restore a Conversation row; returns conversationId,
- *                  clinicName, clinicAcronym, greeting, and themeColor
+ *                  clinicName, clinicAcronym, chat greeting, themeColor, avatar
  *   - `chat`     : a text turn, returns assistant reply
  *   - `voice`    : an audio turn, returns transcript + assistant reply + TTS
  *   - `pong`     : keepalive (silently ignored)

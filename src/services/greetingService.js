@@ -1,5 +1,5 @@
 /**
- * Inbound voice greeting templates — per-clinic text with token replacement.
+ * Per-clinic greeting templates (inbound phone vs web chat) with token replacement.
  *
  * Supported placeholders (case-insensitive):
  *   $clinic_name$    — clinics.name, else acronym, else env fallback
@@ -19,8 +19,24 @@ const GREETING_PLACEHOLDERS = [
   { token: "$clinic_city$", label: "City", description: "Clinic city from profile" }
 ];
 
-const SYSTEM_DEFAULT_GREETING =
+const SYSTEM_DEFAULT_INBOUND_GREETING =
   "Hello. This is our automated assistant. How can I help you today?";
+
+const SYSTEM_DEFAULT_CHAT_GREETING =
+  "Hello! Welcome. How can I help you today?";
+
+const GREETING_KIND = {
+  inbound: {
+    clinicField: "inboundGreeting",
+    envKey: "TWILIO_INBOUND_VOICE_GREETING",
+    systemDefault: SYSTEM_DEFAULT_INBOUND_GREETING
+  },
+  chat: {
+    clinicField: "chatGreeting",
+    envKey: "CHAT_GREETING",
+    systemDefault: SYSTEM_DEFAULT_CHAT_GREETING
+  }
+};
 
 function normalizeGreetingText(rawText, fallbackText) {
   const base = String(rawText || "").trim() || fallbackText;
@@ -54,61 +70,79 @@ function applyGreetingPlaceholders(text, clinic) {
     .replace(CLINIC_CITY_RE, ctx.clinicCity);
 }
 
-function getDefaultGreetingTemplate() {
-  return normalizeGreetingText(
-    process.env.TWILIO_INBOUND_VOICE_GREETING,
-    SYSTEM_DEFAULT_GREETING
-  );
+function getDefaultGreetingTemplate(kind = "inbound") {
+  const meta = GREETING_KIND[kind] || GREETING_KIND.inbound;
+  return normalizeGreetingText(process.env[meta.envKey], meta.systemDefault);
 }
 
-/**
- * Raw template for a clinic: DB value, else global env default.
- */
-function getGreetingTemplateForClinic(clinic) {
-  const custom = String(clinic?.inboundGreeting || "").trim();
-  if (custom) return normalizeGreetingText(custom, SYSTEM_DEFAULT_GREETING);
-  return getDefaultGreetingTemplate();
+function getGreetingTemplateForClinic(clinic, kind = "inbound") {
+  const meta = GREETING_KIND[kind] || GREETING_KIND.inbound;
+  const custom = String(clinic?.[meta.clinicField] || "").trim();
+  if (custom) {
+    return normalizeGreetingText(custom, meta.systemDefault);
+  }
+  return getDefaultGreetingTemplate(kind);
 }
 
-/**
- * Final spoken greeting after placeholder substitution.
- */
-function resolveInboundGreeting(clinic) {
-  const template = getGreetingTemplateForClinic(clinic);
+function resolveGreeting(clinic, kind = "inbound") {
+  const template = getGreetingTemplateForClinic(clinic, kind);
   return applyGreetingPlaceholders(template, clinic);
 }
 
+function resolveInboundGreeting(clinic) {
+  return resolveGreeting(clinic, "inbound");
+}
+
+function resolveChatGreeting(clinic) {
+  return resolveGreeting(clinic, "chat");
+}
+
+function previewGreetingTemplate(template, clinic, kind = "inbound") {
+  const normalized = normalizeGreetingText(
+    template,
+    getDefaultGreetingTemplate(kind)
+  );
+  return applyGreetingPlaceholders(normalized, clinic);
+}
+
+function buildGreetingPanel(clinic, kind) {
+  const meta = GREETING_KIND[kind] || GREETING_KIND.inbound;
+  const greeting = String(clinic?.[meta.clinicField] || "").trim();
+  return {
+    greeting,
+    defaultGreeting: getDefaultGreetingTemplate(kind),
+    resolvedPreview: resolveGreeting(clinic, kind),
+    usesCustomGreeting: Boolean(greeting)
+  };
+}
+
 /**
- * Display fields for chat Socket.IO connect (and similar UIs).
- * Name/acronym use the same fallbacks as greeting placeholders.
+ * Socket.IO connect payload — uses chat greeting only.
  */
 function getClinicConnectFields(clinic) {
   const ctx = buildPlaceholderContext(clinic);
   return {
     clinicName: ctx.clinicName,
     clinicAcronym: ctx.clinicAcronym,
-    greeting: resolveInboundGreeting(clinic),
+    greeting: resolveChatGreeting(clinic),
     themeColor: normalizeThemeColor(clinic?.themeColor),
     avatar: clinic?.avatar ? String(clinic.avatar) : null
   };
 }
 
-/**
- * Preview arbitrary draft text (e.g. from admin UI) before save.
- */
-function previewGreetingTemplate(template, clinic) {
-  const normalized = normalizeGreetingText(template, getDefaultGreetingTemplate());
-  return applyGreetingPlaceholders(normalized, clinic);
-}
-
 module.exports = {
   GREETING_PLACEHOLDERS,
-  SYSTEM_DEFAULT_GREETING,
+  GREETING_KIND,
+  SYSTEM_DEFAULT_INBOUND_GREETING,
+  SYSTEM_DEFAULT_CHAT_GREETING,
   normalizeGreetingText,
   applyGreetingPlaceholders,
   getDefaultGreetingTemplate,
   getGreetingTemplateForClinic,
+  resolveGreeting,
   resolveInboundGreeting,
+  resolveChatGreeting,
   previewGreetingTemplate,
+  buildGreetingPanel,
   getClinicConnectFields
 };

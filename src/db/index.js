@@ -100,7 +100,17 @@ async function syncDatabase() {
   await ensureClinicInboundGreetingColumn();
   await ensureClinicThemeColorColumn();
   await ensureClinicAvatarColumn();
+  await ensureClinicChatGreetingColumn();
   await migrateThemeColorLegacyIds();
+}
+
+async function ensureClinicChatGreetingColumn() {
+  try {
+    await sequelize.query("ALTER TABLE clinics ADD COLUMN chat_greeting TEXT NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
 }
 
 async function ensureClinicAvatarColumn() {

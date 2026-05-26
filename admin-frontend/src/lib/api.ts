@@ -37,6 +37,8 @@ export interface Clinic {
   elevenLabsVoiceId?: string | null;
   /** Per-clinic inbound phone greeting (may use placeholders). */
   greetingConfigured?: boolean;
+  /** Per-clinic web chat greeting (Socket.IO connect). */
+  chatGreetingConfigured?: boolean;
   /** Chat frontend theme token (Socket.IO connect). */
   themeColor?: ClinicThemeColor;
 }
@@ -47,13 +49,23 @@ export interface GreetingPlaceholder {
   description: string;
 }
 
-export interface ClinicGreetingConfig {
+export interface ClinicGreetingPanel {
   greeting: string;
   defaultGreeting: string;
-  placeholders: GreetingPlaceholder[];
   resolvedPreview: string;
   usesCustomGreeting: boolean;
 }
+
+export interface ClinicGreetingsConfig {
+  placeholders: GreetingPlaceholder[];
+  inbound: ClinicGreetingPanel;
+  chat: ClinicGreetingPanel;
+  defaultInboundGreeting: string;
+  defaultChatGreeting: string;
+}
+
+/** @deprecated Use ClinicGreetingsConfig */
+export type ClinicGreetingConfig = ClinicGreetingsConfig;
 
 export interface ElevenLabsVoice {
   voice_id: string;
@@ -230,28 +242,37 @@ export async function getClinicTwilioConfig(clinicId: string): Promise<ClinicTwi
   return request<ClinicTwilioConfigInput>(`/api/admin/dashboard/clinics/${clinicId}/twilio`);
 }
 
-export async function getClinicGreeting(clinicId: string): Promise<ClinicGreetingConfig> {
-  return request<ClinicGreetingConfig>(`/api/admin/dashboard/clinics/${clinicId}/greeting`);
+export async function getClinicGreetings(clinicId: string): Promise<ClinicGreetingsConfig> {
+  return request<ClinicGreetingsConfig>(`/api/admin/dashboard/clinics/${clinicId}/greeting`);
 }
 
-export async function updateClinicGreeting(clinicId: string, greeting: string) {
+export async function updateClinicGreetings(
+  clinicId: string,
+  payload: { inboundGreeting: string; chatGreeting: string }
+) {
   return request<{
     success: boolean;
-    greeting: string;
-    resolvedPreview: string;
-    usesCustomGreeting: boolean;
+    inbound: ClinicGreetingPanel;
+    chat: ClinicGreetingPanel;
   }>(`/api/admin/dashboard/clinics/${clinicId}/greeting`, {
     method: "PATCH",
-    body: JSON.stringify({ greeting })
+    body: JSON.stringify({
+      inboundGreeting: payload.inboundGreeting,
+      chatGreeting: payload.chatGreeting
+    })
   });
 }
 
-export async function previewClinicGreeting(clinicId: string, greeting: string) {
+export async function previewClinicGreeting(
+  clinicId: string,
+  type: "inbound" | "chat",
+  greeting: string
+) {
   const data = await request<{ resolvedPreview: string }>(
     `/api/admin/dashboard/clinics/${clinicId}/greeting/preview`,
     {
       method: "POST",
-      body: JSON.stringify({ greeting })
+      body: JSON.stringify({ type, greeting })
     }
   );
   return data.resolvedPreview;

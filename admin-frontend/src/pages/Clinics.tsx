@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff, MessageSquareText, Upload, X } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
@@ -28,8 +28,8 @@ import {
   fetchClinicElevenLabsPreviewBlob,
   fetchClinicElevenLabsPreviewSourceBlob,
   updateClinicElevenLabsVoice,
-  getClinicGreeting,
-  updateClinicGreeting,
+  getClinicGreetings,
+  updateClinicGreetings,
   previewClinicGreeting,
   type Clinic,
   type ElevenLabsVoice,
@@ -45,7 +45,7 @@ import {
   themeGradient,
 } from "@/lib/themeColors";
 import { cn } from "@/lib/utils";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   processClinicAvatarFile,
   CLINIC_AVATAR_MAX_PX,
@@ -119,11 +119,14 @@ export default function Clinics() {
   const lastBlobUrlRef = useRef<string | null>(null);
 
   const [greetingClinic, setGreetingClinic] = useState<Clinic | null>(null);
-  const [greetingDraft, setGreetingDraft] = useState("");
-  const [greetingDefault, setGreetingDefault] = useState("");
+  const [greetingTab, setGreetingTab] = useState<"inbound" | "chat">("inbound");
+  const [inboundGreetingDraft, setInboundGreetingDraft] = useState("");
+  const [chatGreetingDraft, setChatGreetingDraft] = useState("");
+  const [inboundGreetingDefault, setInboundGreetingDefault] = useState("");
+  const [chatGreetingDefault, setChatGreetingDefault] = useState("");
   const [greetingPlaceholders, setGreetingPlaceholders] = useState<GreetingPlaceholder[]>([]);
-  const [greetingPreview, setGreetingPreview] = useState("");
-  const [greetingUsesCustom, setGreetingUsesCustom] = useState(false);
+  const [inboundGreetingPreview, setInboundGreetingPreview] = useState("");
+  const [chatGreetingPreview, setChatGreetingPreview] = useState("");
   const [loadingGreeting, setLoadingGreeting] = useState(false);
   const [savingGreeting, setSavingGreeting] = useState(false);
   const greetingPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,9 +148,13 @@ export default function Clinics() {
   useEffect(() => {
     if (!greetingClinic) return;
     if (greetingPreviewTimerRef.current) clearTimeout(greetingPreviewTimerRef.current);
+    const draft = greetingTab === "chat" ? chatGreetingDraft : inboundGreetingDraft;
     greetingPreviewTimerRef.current = setTimeout(() => {
-      previewClinicGreeting(greetingClinic.id, greetingDraft)
-        .then(setGreetingPreview)
+      previewClinicGreeting(greetingClinic.id, greetingTab, draft)
+        .then((text) => {
+          if (greetingTab === "chat") setChatGreetingPreview(text);
+          else setInboundGreetingPreview(text);
+        })
         .catch(() => {
           /* keep last preview */
         });
@@ -155,7 +162,7 @@ export default function Clinics() {
     return () => {
       if (greetingPreviewTimerRef.current) clearTimeout(greetingPreviewTimerRef.current);
     };
-  }, [greetingClinic, greetingDraft]);
+  }, [greetingClinic, greetingTab, inboundGreetingDraft, chatGreetingDraft]);
 
   useEffect(() => {
     if (!voiceModalClinic) {
@@ -262,19 +269,24 @@ export default function Clinics() {
 
   const openGreeting = async (c: Clinic) => {
     setGreetingClinic(c);
-    setGreetingDraft("");
-    setGreetingPreview("");
+    setGreetingTab("inbound");
+    setInboundGreetingDraft("");
+    setChatGreetingDraft("");
+    setInboundGreetingPreview("");
+    setChatGreetingPreview("");
     setGreetingPlaceholders([]);
     try {
       setLoadingGreeting(true);
-      const data = await getClinicGreeting(c.id);
-      setGreetingDraft(data.greeting);
-      setGreetingDefault(data.defaultGreeting);
+      const data = await getClinicGreetings(c.id);
+      setInboundGreetingDraft(data.inbound.greeting);
+      setChatGreetingDraft(data.chat.greeting);
+      setInboundGreetingDefault(data.defaultInboundGreeting);
+      setChatGreetingDefault(data.defaultChatGreeting);
       setGreetingPlaceholders(data.placeholders);
-      setGreetingPreview(data.resolvedPreview);
-      setGreetingUsesCustom(data.usesCustomGreeting);
+      setInboundGreetingPreview(data.inbound.resolvedPreview);
+      setChatGreetingPreview(data.chat.resolvedPreview);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to load greeting";
+      const msg = err instanceof Error ? err.message : "Failed to load greetings";
       toast.error(msg);
       setGreetingClinic(null);
     } finally {
@@ -283,29 +295,39 @@ export default function Clinics() {
   };
 
   const insertGreetingToken = (token: string) => {
-    setGreetingDraft((prev) => {
+    const apply = (prev: string) => {
       const trimmed = prev.trimEnd();
       return trimmed ? `${trimmed} ${token}` : token;
-    });
+    };
+    if (greetingTab === "chat") setChatGreetingDraft(apply);
+    else setInboundGreetingDraft(apply);
   };
 
-  const resetGreetingToDefault = () => {
-    setGreetingDraft("");
-    toast.message("Cleared custom greeting — system default will be used on save.");
+  const resetActiveGreetingToDefault = () => {
+    if (greetingTab === "chat") {
+      setChatGreetingDraft("");
+      toast.message("Cleared custom chat greeting — system default will be used on save.");
+    } else {
+      setInboundGreetingDraft("");
+      toast.message("Cleared custom inbound greeting — system default will be used on save.");
+    }
   };
 
   const saveGreeting = async () => {
     if (!greetingClinic) return;
     try {
       setSavingGreeting(true);
-      const result = await updateClinicGreeting(greetingClinic.id, greetingDraft.trim());
-      setGreetingPreview(result.resolvedPreview);
-      setGreetingUsesCustom(result.usesCustomGreeting);
-      toast.success(result.usesCustomGreeting ? "Custom greeting saved" : "Using system default greeting");
+      const result = await updateClinicGreetings(greetingClinic.id, {
+        inboundGreeting: inboundGreetingDraft.trim(),
+        chatGreeting: chatGreetingDraft.trim()
+      });
+      setInboundGreetingPreview(result.inbound.resolvedPreview);
+      setChatGreetingPreview(result.chat.resolvedPreview);
+      toast.success("Greetings saved");
       setGreetingClinic(null);
       refresh();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save greeting";
+      const msg = err instanceof Error ? err.message : "Failed to save greetings";
       toast.error(msg);
     } finally {
       setSavingGreeting(false);
@@ -494,13 +516,21 @@ export default function Clinics() {
           variant="ghost"
           onClick={() => openGreeting(r)}
           title={
-            r.greetingConfigured
-              ? "Inbound greeting — custom"
-              : "Inbound greeting — using default"
+            r.greetingConfigured && r.chatGreetingConfigured
+              ? "Inbound & chat greetings — custom"
+              : r.greetingConfigured
+                ? "Inbound greeting — custom"
+                : r.chatGreetingConfigured
+                  ? "Chat greeting — custom"
+                  : "Greetings — using defaults"
           }
         >
           <MessageSquareText
-            className={`h-4 w-4 ${r.greetingConfigured ? "text-sky-600" : "text-muted-foreground"}`}
+            className={`h-4 w-4 ${
+              r.greetingConfigured || r.chatGreetingConfigured
+                ? "text-sky-600"
+                : "text-muted-foreground"
+            }`}
           />
         </Button>
         <Button
@@ -973,84 +1003,64 @@ export default function Clinics() {
           if (!o) setGreetingClinic(null);
         }}
       >
-        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle>Inbound voice greeting</DialogTitle>
+        <DialogContent className="flex max-h-[90vh] min-h-0 max-w-2xl flex-col gap-0 overflow-hidden p-6 sm:max-w-2xl">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Clinic greetings</DialogTitle>
             <DialogDescription>
               {greetingClinic ? (
                 <>
-                  Greeting spoken when callers reach <strong>{greetingClinic.name}</strong>.
-                  Leave empty to use the system default. Insert placeholders to personalize text.
+                  Separate scripts for <strong>{greetingClinic.name}</strong>: inbound phone calls and web chat.
+                  Leave empty to use each system default.
                 </>
               ) : null}
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">
-            <div className="space-y-4 py-2 pr-2">
-              <div>
-                <Label className="text-xs text-muted-foreground mb-2 block">Placeholders — click to insert</Label>
-                <div className="flex flex-wrap gap-2">
-                  {greetingPlaceholders.map((p) => (
-                    <Button
-                      key={p.token}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8 font-mono text-xs"
-                      onClick={() => insertGreetingToken(p.token)}
-                      title={p.description}
-                    >
-                      {p.token}
-                    </Button>
-                  ))}
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {greetingPlaceholders.map((p) => (
-                    <span key={p.token} className="block">
-                      <strong className="font-mono">{p.token}</strong> — {p.description}
-                    </span>
-                  ))}
-                </p>
-              </div>
-              <Field label="Greeting script">
-                <Textarea
-                  rows={5}
-                  value={greetingDraft}
-                  onChange={(e) => setGreetingDraft(e.target.value)}
-                  placeholder={greetingDefault || "Hello from $clinic_name$. How can I help you today?"}
-                  disabled={loadingGreeting}
-                  className="resize-y min-h-[120px]"
+          <Tabs
+            value={greetingTab}
+            onValueChange={(v) => setGreetingTab(v as "inbound" | "chat")}
+            className="flex flex-1 min-h-0 flex-col"
+          >
+            <TabsList className="grid w-full grid-cols-2 shrink-0">
+              <TabsTrigger value="inbound">Inbound phone</TabsTrigger>
+              <TabsTrigger value="chat">Web chat</TabsTrigger>
+            </TabsList>
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-6 px-6 mt-4 [scrollbar-gutter:stable]">
+              <TabsContent value="inbound" className="mt-0 space-y-4 pb-4 focus-visible:outline-none">
+                <GreetingTabPanel
+                  draft={inboundGreetingDraft}
+                  setDraft={setInboundGreetingDraft}
+                  preview={inboundGreetingPreview}
+                  defaultText={inboundGreetingDefault}
+                  placeholders={greetingPlaceholders}
+                  loading={loadingGreeting}
+                  onInsertToken={insertGreetingToken}
+                  previewLabel="Caller will hear"
+                  placeholderHint="Hello from $clinic_name$. How can I help you today?"
                 />
-              </Field>
-              <div className="rounded-xl border bg-muted/40 p-4 space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Caller will hear
-                </div>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {loadingGreeting ? "Loading preview…" : greetingPreview || "—"}
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  {greetingUsesCustom || greetingDraft.trim()
-                    ? "Custom greeting for this clinic"
-                    : "System default (from server env or built-in fallback)"}
-                </p>
-              </div>
-              {greetingDefault && (
-                <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">System default: </span>
-                  {greetingDefault}
-                </div>
-              )}
+              </TabsContent>
+              <TabsContent value="chat" className="mt-0 space-y-4 pb-4 focus-visible:outline-none">
+                <GreetingTabPanel
+                  draft={chatGreetingDraft}
+                  setDraft={setChatGreetingDraft}
+                  preview={chatGreetingPreview}
+                  defaultText={chatGreetingDefault}
+                  placeholders={greetingPlaceholders}
+                  loading={loadingGreeting}
+                  onInsertToken={insertGreetingToken}
+                  previewLabel="Chat user will see"
+                  placeholderHint="Welcome to $clinic_name$. How can we help you?"
+                />
+              </TabsContent>
             </div>
-          </ScrollArea>
-          <DialogFooter className="gap-2 sm:gap-0">
+          </Tabs>
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/60 pt-4 sm:gap-0">
             <Button
               type="button"
               variant="outline"
-              onClick={resetGreetingToDefault}
+              onClick={resetActiveGreetingToDefault}
               disabled={loadingGreeting || savingGreeting}
             >
-              Use system default
+              Use default (active tab)
             </Button>
             <Button variant="outline" onClick={() => setGreetingClinic(null)}>
               Cancel
@@ -1060,7 +1070,7 @@ export default function Clinics() {
               disabled={loadingGreeting || savingGreeting}
               className="bg-gradient-primary text-primary-foreground"
             >
-              {savingGreeting ? "Saving…" : "Save greeting"}
+              {savingGreeting ? "Saving…" : "Save both greetings"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1081,6 +1091,80 @@ export default function Clinics() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function GreetingTabPanel({
+  draft,
+  setDraft,
+  preview,
+  defaultText,
+  placeholders,
+  loading,
+  onInsertToken,
+  previewLabel,
+  placeholderHint
+}: {
+  draft: string;
+  setDraft: Dispatch<SetStateAction<string>>;
+  preview: string;
+  defaultText: string;
+  placeholders: GreetingPlaceholder[];
+  loading: boolean;
+  onInsertToken: (token: string) => void;
+  previewLabel: string;
+  placeholderHint: string;
+}) {
+  return (
+    <>
+      <div>
+        <Label className="text-xs text-muted-foreground mb-2 block">Placeholders — click to insert</Label>
+        <div className="flex flex-wrap gap-2">
+          {placeholders.map((p) => (
+            <Button
+              key={p.token}
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 font-mono text-xs"
+              onClick={() => onInsertToken(p.token)}
+              title={p.description}
+            >
+              {p.token}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <Field label="Greeting script">
+        <Textarea
+          rows={5}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={defaultText || placeholderHint}
+          disabled={loading}
+          className="resize-y min-h-[120px]"
+        />
+      </Field>
+      <div className="rounded-xl border bg-muted/40 p-4 space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {previewLabel}
+        </div>
+        <p className="text-sm leading-relaxed whitespace-pre-wrap">
+          {loading ? "Loading preview…" : preview || "—"}
+        </p>
+        <p className="text-[11px] text-muted-foreground">
+          {draft.trim()
+            ? "Custom greeting for this clinic"
+            : "System default (from server env or built-in fallback)"}
+        </p>
+      </div>
+      {defaultText && (
+        <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">System default: </span>
+          {defaultText}
+        </div>
+      )}
+    </>
   );
 }
 

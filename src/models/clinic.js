@@ -109,6 +109,11 @@ const Clinic = sequelize.define(
       allowNull: true,
       field: "inbound_greeting"
     },
+    chatGreeting: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "chat_greeting"
+    },
     themeColor: {
       type: DataTypes.STRING(32),
       allowNull: false,

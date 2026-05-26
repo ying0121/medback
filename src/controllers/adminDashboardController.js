@@ -7,7 +7,7 @@ const {
   GREETING_PLACEHOLDERS,
   getDefaultGreetingTemplate,
   previewGreetingTemplate,
-  resolveInboundGreeting
+  buildGreetingPanel
 } = require("../services/greetingService");
 const { normalizeThemeColor } = require("../constants/themeColors");
 const { parseClinicAvatar } = require("../utils/clinicAvatar");
@@ -71,8 +71,20 @@ function mapClinicRowToApi(row) {
     elevenLabsConfigured: Boolean(row.elevenlabsApiKey),
     elevenLabsVoiceConfigured: Boolean(row.elevenlabsVoiceId),
     elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null,
-    greetingConfigured: Boolean(String(row.inboundGreeting || "").trim())
+    greetingConfigured: Boolean(String(row.inboundGreeting || "").trim()),
+    chatGreetingConfigured: Boolean(String(row.chatGreeting || "").trim())
   };
+}
+
+function normalizeGreetingDraft(raw) {
+  if (raw === null || raw === undefined) return null;
+  return String(raw).trim() || null;
+}
+
+function validateGreetingLength(greeting, label) {
+  if (greeting && greeting.length > 2000) {
+    throw new Error(`${label} must be 2000 characters or fewer.`);
+  }
 }
 
 function clinicPayloadFromBody(body) {
@@ -693,15 +705,12 @@ async function getClinicGreeting(req, res, next) {
       return res.status(404).json({ error: "Clinic not found." });
     }
 
-    const greeting = String(clinic.inboundGreeting || "").trim();
-    const defaultGreeting = getDefaultGreetingTemplate();
-
     return res.status(200).json({
-      greeting,
-      defaultGreeting,
       placeholders: GREETING_PLACEHOLDERS,
-      resolvedPreview: resolveInboundGreeting(clinic),
-      usesCustomGreeting: Boolean(greeting)
+      inbound: buildGreetingPanel(clinic, "inbound"),
+      chat: buildGreetingPanel(clinic, "chat"),
+      defaultInboundGreeting: getDefaultGreetingTemplate("inbound"),
+      defaultChatGreeting: getDefaultGreetingTemplate("chat")
     });
   } catch (err) {
     return next(err);
@@ -720,26 +729,42 @@ async function updateClinicGreeting(req, res, next) {
       return res.status(404).json({ error: "Clinic not found." });
     }
 
-    if (!Object.prototype.hasOwnProperty.call(req.body || {}, "greeting")) {
-      return res.status(400).json({ error: "greeting field is required." });
+    const body = req.body || {};
+    const hasInbound =
+      Object.prototype.hasOwnProperty.call(body, "inboundGreeting") ||
+      Object.prototype.hasOwnProperty.call(body, "greeting");
+    const hasChat = Object.prototype.hasOwnProperty.call(body, "chatGreeting");
+
+    if (!hasInbound && !hasChat) {
+      return res.status(400).json({
+        error: "inboundGreeting and/or chatGreeting is required."
+      });
     }
 
-    const raw = req.body.greeting;
-    const greeting =
-      raw === null || raw === undefined ? null : String(raw).trim();
+    const updates = {};
 
-    if (greeting && greeting.length > 2000) {
-      return res.status(400).json({ error: "Greeting must be 2000 characters or fewer." });
+    if (hasInbound) {
+      const raw = Object.prototype.hasOwnProperty.call(body, "inboundGreeting")
+        ? body.inboundGreeting
+        : body.greeting;
+      const inboundGreeting = normalizeGreetingDraft(raw);
+      validateGreetingLength(inboundGreeting, "Inbound greeting");
+      updates.inboundGreeting = inboundGreeting;
     }
 
-    await clinic.update({ inboundGreeting: greeting || null });
+    if (hasChat) {
+      const chatGreeting = normalizeGreetingDraft(body.chatGreeting);
+      validateGreetingLength(chatGreeting, "Chat greeting");
+      updates.chatGreeting = chatGreeting;
+    }
+
+    await clinic.update(updates);
     await clinic.reload();
 
     return res.status(200).json({
       success: true,
-      greeting: greeting || "",
-      resolvedPreview: resolveInboundGreeting(clinic),
-      usesCustomGreeting: Boolean(greeting)
+      inbound: buildGreetingPanel(clinic, "inbound"),
+      chat: buildGreetingPanel(clinic, "chat")
     });
   } catch (err) {
     return next(err);
@@ -758,10 +783,19 @@ async function previewClinicGreeting(req, res, next) {
       return res.status(404).json({ error: "Clinic not found." });
     }
 
-    const draft = String(req.body?.greeting ?? "").trim();
-    const resolvedPreview = previewGreetingTemplate(draft || getDefaultGreetingTemplate(), clinic);
+    const kind = String(req.body?.type || "inbound").trim().toLowerCase();
+    if (kind !== "inbound" && kind !== "chat") {
+      return res.status(400).json({ error: "type must be inbound or chat." });
+    }
 
-    return res.status(200).json({ resolvedPreview });
+    const draft = String(req.body?.greeting ?? "").trim();
+    const resolvedPreview = previewGreetingTemplate(
+      draft || getDefaultGreetingTemplate(kind),
+      clinic,
+      kind
+    );
+
+    return res.status(200).json({ resolvedPreview, type: kind });
   } catch (err) {
     return next(err);
   }
