@@ -324,6 +324,7 @@ export default function Calls() {
                           transcript={m.transcription}
                           isUser={isUser}
                           compact={false}
+                          darkMode
                         />
                       )}
                       <div className="text-[10px] text-muted-foreground">

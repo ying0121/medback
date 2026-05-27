@@ -9,6 +9,7 @@ export interface VoiceWavePlayerProps {
   isUser?: boolean;
   hasError?: boolean;
   compact?: boolean;
+  darkMode?: boolean;
 }
 
 export default function VoiceWavePlayer({
@@ -17,7 +18,8 @@ export default function VoiceWavePlayer({
   transcript = "",
   isUser = false,
   hasError = false,
-  compact = false
+  compact = false,
+  darkMode = false
 }: VoiceWavePlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const blobUrlRef = useRef<string | null>(null);
@@ -169,10 +171,34 @@ export default function VoiceWavePlayer({
   const isLong = text.length > 200;
   const displayed = isLong && !showFullTranscript ? `${text.slice(0, 200)}...` : text;
 
-  const accent = hasError ? "bg-red-500/70" : isUser ? "bg-white/70" : "bg-primary/60";
-  const accentDim = hasError ? "bg-red-500/25" : isUser ? "bg-white/25" : "bg-primary/20";
-  const trackBg = hasError ? "bg-red-200/70" : isUser ? "bg-white/20" : "bg-muted";
-  const trackFill = hasError ? "bg-red-600" : isUser ? "bg-white" : "bg-primary";
+  const accent = hasError
+    ? "bg-red-500/70"
+    : darkMode
+      ? "bg-sky-300/90"
+      : isUser
+        ? "bg-white/70"
+        : "bg-primary/60";
+  const accentDim = hasError
+    ? "bg-red-500/25"
+    : darkMode
+      ? "bg-slate-500/80"
+      : isUser
+        ? "bg-white/25"
+        : "bg-primary/20";
+  const trackBg = hasError
+    ? "bg-red-200/70"
+    : darkMode
+      ? "bg-slate-700/90"
+      : isUser
+        ? "bg-white/20"
+        : "bg-muted";
+  const trackFill = hasError
+    ? "bg-red-600"
+    : darkMode
+      ? "bg-sky-300"
+      : isUser
+        ? "bg-white"
+        : "bg-primary";
 
   if (!audioBase64 && !text) return null;
 
@@ -202,7 +228,9 @@ export default function VoiceWavePlayer({
               style={{
                 background: hasError
                   ? "rgba(239,68,68,0.14)"
-                  : isUser
+                  : darkMode
+                    ? "rgba(15,23,42,0.88)"
+                    : isUser
                     ? "rgba(255,255,255,0.08)"
                     : "rgba(0,0,0,0.06)"
               }}
@@ -230,6 +258,8 @@ export default function VoiceWavePlayer({
                   "h-8 w-8 rounded-full flex items-center justify-center shrink-0 transition-opacity hover:opacity-90 active:scale-95",
                   hasError
                     ? "bg-red-600 text-white"
+                    : darkMode
+                      ? "bg-slate-900 text-sky-200 border border-slate-700"
                     : isUser
                       ? "bg-white text-primary"
                       : "bg-primary text-primary-foreground"
@@ -284,7 +314,12 @@ export default function VoiceWavePlayer({
               )}
             </div>
           ) : (
-            <div className="text-[11px] rounded-lg px-2.5 py-1.5 border border-border text-muted-foreground">
+            <div
+              className={cn(
+                "text-[11px] rounded-lg px-2.5 py-1.5 border text-muted-foreground",
+                darkMode ? "border-slate-700 bg-slate-900/50 text-slate-300" : "border-border"
+              )}
+            >
               Unable to load audio.
             </div>
           )}
@@ -297,6 +332,8 @@ export default function VoiceWavePlayer({
             "rounded-xl px-3 py-2 text-xs flex gap-2",
             hasError
               ? "bg-red-50 border border-red-200"
+              : darkMode
+                ? "bg-slate-900/70 border border-slate-700/80 text-slate-100"
               : isUser
                 ? "bg-white/10"
                 : "bg-accent/10 border border-accent/20"
