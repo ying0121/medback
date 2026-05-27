@@ -68,8 +68,10 @@ class InboundCallSession {
     this.elApiKey = opts.elApiKey || null;
     this.elVoiceId = opts.elVoiceId || null;
 
-    /** @type {Buffer[]} μ-law frames from the caller's current turn (for history). */
+    /** @type {Buffer[]} μ-law frames from the caller's current utterance (for history). */
     this._userTurnMulawChunks = [];
+    /** True while Deepgram VAD says the caller is speaking (history capture only). */
+    this._userCapturing = false;
 
     this.stt = new DeepgramService(callSid);
     this.llm = new InboundLlmService(callSid, {
@@ -177,14 +179,29 @@ class InboundCallSession {
     this.streamSid = streamSid;
   }
 
+  _beginUserTurnCapture() {
+    this._userCapturing = true;
+    this._userTurnMulawChunks = [];
+  }
+
+  _endUserTurnCapture() {
+    this._userCapturing = false;
+  }
+
   _shouldCaptureUserAudio() {
-    // Keep capturing while the LLM runs so early-flush + final share one buffer;
-    // stop only during bot playback (echo guard).
-    return this._startupComplete && !this._greetingActive && !this.isBotSpeaking;
+    // Record only while the caller is actively speaking (VAD window), not during
+    // LLM latency or bot playback — that was inflating history clips by seconds.
+    return (
+      this._startupComplete &&
+      !this._greetingActive &&
+      this._userCapturing &&
+      !this.isBotSpeaking
+    );
   }
 
   /** Snapshot and clear buffered caller audio for the turn being processed. */
   _takeUserAudioSnapshot() {
+    this._endUserTurnCapture();
     const chunks = this._userTurnMulawChunks;
     this._userTurnMulawChunks = [];
     if (!chunks.length) return null;
@@ -293,6 +310,11 @@ class InboundCallSession {
       // flush → second _runPipeline cancels the first and drops TTS mid-flight.
       if (this.isBotSpeaking) return;
 
+      // Fallback if SpeechStarted was missed — still bound to live speech, not silence between turns.
+      if (!this._userCapturing && transcript.trim()) {
+        this._beginUserTurnCapture();
+      }
+
       this.partialTranscript = transcript;
 
       if (!this.earlyFlushTriggered && transcript.length >= INTERIM_FLUSH_CHARS) {
@@ -318,6 +340,8 @@ class InboundCallSession {
       console.log(`[InboundSession] STT final="${transcript}" callSid=${this.callSid}`);
       if (!transcript?.trim()) return;
 
+      this._endUserTurnCapture();
+
       this.partialTranscript = "";
       this.earlyFlushTriggered = false;
 
@@ -336,6 +360,7 @@ class InboundCallSession {
         console.log(
           `[InboundSession] utteranceEnd flush text="${text}" callSid=${this.callSid}`
         );
+        this._endUserTurnCapture();
         this.partialTranscript = "";
         this.earlyFlushTriggered = false;
         this._runPipeline(text);
@@ -351,7 +376,10 @@ class InboundCallSession {
       if (this.isBotSpeaking) {
         console.log(`[InboundSession] barge-in via SpeechStarted callSid=${this.callSid}`);
         this._handleBargeIn();
+        this._beginUserTurnCapture();
+        return;
       }
+      this._beginUserTurnCapture();
     });
 
     this.stt.on("error", (err) => {
@@ -385,7 +413,8 @@ class InboundCallSession {
       return;
     }
 
-    const userMulaw = this._takeUserAudioSnapshot();
+    // Early flush runs while the caller may still be speaking — defer snapshot until final.
+    const userMulaw = this._userCapturing ? null : this._takeUserAudioSnapshot();
     const userAudioB64 = mulawToWavBase64(userMulaw);
 
     this.isProcessing = true;

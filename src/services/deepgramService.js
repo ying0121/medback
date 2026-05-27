@@ -26,6 +26,8 @@ class DeepgramService extends EventEmitter {
     this.socket = null;
     this.isOpen = false;
     this.audioQueue = [];
+    this.lastFinalTranscript = "";
+    this.lastFinalAt = 0;
   }
 
   /**
@@ -125,13 +127,17 @@ class DeepgramService extends EventEmitter {
           );
         }
 
-        if (speechFinal) {
-          // speech_final=true means the user STOPPED SPEAKING (silence detected).
-          // This is the correct moment to trigger the LLM pipeline — only once
-          // per utterance.  is_final=true alone means a chunk was finalized but
-          // speech is still ongoing; treat it as interim so the pipeline does
-          // not fire prematurely on every word.
-          this.emit("final", transcript);
+        if (speechFinal || isFinal) {
+          const now = Date.now();
+          const dedupeWindowMs = 800;
+          const duplicateFinal =
+            transcript === this.lastFinalTranscript &&
+            now - this.lastFinalAt < dedupeWindowMs;
+          if (!duplicateFinal) {
+            this.lastFinalTranscript = transcript;
+            this.lastFinalAt = now;
+            this.emit("final", transcript);
+          }
         } else {
           this.emit("interim", transcript);
         }

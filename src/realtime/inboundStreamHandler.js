@@ -123,7 +123,7 @@ function attachInboundStreamWS(server) {
                 msg.start?.customParameters?.callSid ??
                 msg.start?.callSid ??
                 "unknown";
-              const streamSid = msg.streamSid;
+              const streamSid = msg.streamSid || msg.start?.streamSid || null;
 
               console.log(
                 `[InboundStream] stream started callSid=${callSid} streamSid=${streamSid}`
