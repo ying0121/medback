@@ -60,13 +60,16 @@ class DeepgramService extends EventEmitter {
       String(process.env.DEEPGRAM_MODEL || "").trim() || "nova-2-phonecall";
     const smartFormat =
       String(process.env.DEEPGRAM_SMART_FORMAT || "0").trim() === "1";
-
-    // v5: client.listen.v1.connect() returns a Promise that resolves to the
-    // socket wrapper (WrappedListenV1Socket) — NOT yet connected.
-    // Call socket.connect() afterwards to open the underlying WebSocket.
-    this.socket = await this.client.listen.v1.connect({
+    const configuredLanguage = String(process.env.DEEPGRAM_LANGUAGE || "multi").trim();
+    const detectLanguage =
+      String(process.env.DEEPGRAM_DETECT_LANGUAGE || "1").trim() !== "0";
+    const useAutoLanguage =
+      !configuredLanguage ||
+      configuredLanguage.toLowerCase() === "auto" ||
+      configuredLanguage.toLowerCase() === "multi";
+    const language = useAutoLanguage ? undefined : configuredLanguage;
+    const connectOptions = {
       model,
-      language: "en-US",
       encoding: "mulaw",
       sample_rate: 8000,
       channels: 1,
@@ -75,12 +78,24 @@ class DeepgramService extends EventEmitter {
       utterance_end_ms: utteranceEndMs,
       vad_events: true,
       smart_format: smartFormat,
-    });
+    };
+    if (language) {
+      connectOptions.language = language;
+    } else if (detectLanguage) {
+      // Default behavior: allow multilingual callers without forcing English.
+      connectOptions.detect_language = true;
+    }
+
+    // v5: client.listen.v1.connect() returns a Promise that resolves to the
+    // socket wrapper (WrappedListenV1Socket) — NOT yet connected.
+    // Call socket.connect() afterwards to open the underlying WebSocket.
+    this.socket = await this.client.listen.v1.connect(connectOptions);
 
     this.socket.on("open", () => {
       this.isOpen = true;
+      const languageMode = language || (detectLanguage ? "auto-detect" : "default");
       console.log(
-        `[Deepgram] connection opened callSid=${this.callSid} model=${model} endpointing=${endpointingMs}ms queuedFrames=${this.audioQueue.length}`
+        `[Deepgram] connection opened callSid=${this.callSid} model=${model} language=${languageMode} endpointing=${endpointingMs}ms queuedFrames=${this.audioQueue.length}`
       );
       for (const chunk of this.audioQueue) {
         this.socket.sendMedia(chunk);

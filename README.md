@@ -192,6 +192,8 @@ Copy `.env.example` and set values for your environment. Grouped by concern:
 |----------|-------------|
 | `DEEPGRAM_API_KEY` | Streaming STT for phone calls |
 | `DEEPGRAM_MODEL` | Default `nova-2-phonecall` |
+| `DEEPGRAM_LANGUAGE` | STT language mode (`multi`/`auto` for multilingual autodetect, or force locale like `en-US`) |
+| `DEEPGRAM_DETECT_LANGUAGE` | Enable Deepgram autodetection in `multi`/`auto` mode (default `1`) |
 | `VAD_SILENCE_MS` | Endpointing silence (default `300`) |
 | `BOT_SYSTEM_PROMPT` | Base prompt; clinic context appended automatically |
 | `OPENAI_INBOUND_MODEL` | Optional faster model for phone-only |
