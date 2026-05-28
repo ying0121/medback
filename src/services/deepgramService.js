@@ -2,8 +2,8 @@
  * DeepgramService
  *
  * Persistent live-transcription connection for one inbound phone call.
- * Uses nova-2-phonecall model (tuned for 8 kHz μ-law Twilio audio) with
- * interim_results + endpointing for low-latency turn-taking.
+ * Multilingual streaming uses language=multi (NOT detect_language — that is
+ * pre-recorded only and returns HTTP 400 on live WebSockets).
  *
  * Written for @deepgram/sdk v5 (DeepgramClient class-based API).
  *
@@ -18,6 +18,77 @@
 const { DeepgramClient } = require("@deepgram/sdk");
 const { EventEmitter } = require("events");
 
+/** Models that only support English — cannot be used with language=multi. */
+const ENGLISH_ONLY_MODELS = new Set([
+  "nova-2-phonecall",
+  "nova-3-phonecall",
+  "nova-2-meeting",
+  "nova-2-finance",
+  "nova-2-conversationalai",
+  "nova-2-voicemail",
+  "nova-2-video",
+  "nova-2-medical",
+  "nova-2-drivethru",
+  "nova-2-automotive",
+  "nova-2-atc",
+]);
+
+const DEFAULT_MULTILINGUAL_MODEL = "nova-3";
+
+/**
+ * Streaming STT config. By default ALWAYS uses language=multi for inbound calls.
+ * Set DEEPGRAM_FORCE_ENGLISH_STT=1 only if you intentionally want English-only STT.
+ * @returns {{ model: string, language: string, multilingual: boolean }}
+ */
+function resolveDeepgramListenConfig() {
+  const forceEnglish =
+    String(process.env.DEEPGRAM_FORCE_ENGLISH_STT || "0").trim() === "1";
+
+  if (!forceEnglish) {
+    let model =
+      String(process.env.DEEPGRAM_MULTILINGUAL_MODEL || "").trim() ||
+      String(process.env.DEEPGRAM_MODEL || "").trim() ||
+      DEFAULT_MULTILINGUAL_MODEL;
+
+    if (ENGLISH_ONLY_MODELS.has(model.toLowerCase())) {
+      model =
+        String(process.env.DEEPGRAM_MULTILINGUAL_MODEL || "").trim() ||
+        DEFAULT_MULTILINGUAL_MODEL;
+    }
+
+    return { model, language: "multi", multilingual: true };
+  }
+
+  const language =
+    String(process.env.DEEPGRAM_LANGUAGE || "en-US").trim() || "en-US";
+  const model =
+    String(process.env.DEEPGRAM_MODEL || "").trim() || "nova-2-phonecall";
+
+  return { model, language, multilingual: false };
+}
+
+/**
+ * @param {object|null|undefined} alt Deepgram channel.alternatives[0]
+ * @returns {string[]}
+ */
+function extractDetectedLanguages(alt) {
+  if (!alt) return [];
+  const langs = new Set();
+  if (Array.isArray(alt.languages)) {
+    for (const code of alt.languages) {
+      const normalized = String(code || "").trim();
+      if (normalized) langs.add(normalized);
+    }
+  }
+  if (Array.isArray(alt.words)) {
+    for (const word of alt.words) {
+      const normalized = String(word?.language || "").trim();
+      if (normalized) langs.add(normalized);
+    }
+  }
+  return [...langs];
+}
+
 class DeepgramService extends EventEmitter {
   constructor(callSid) {
     super();
@@ -28,6 +99,9 @@ class DeepgramService extends EventEmitter {
     this.audioQueue = [];
     this.lastFinalTranscript = "";
     this.lastFinalAt = 0;
+    /** @type {string[]} BCP-47 / ISO codes from latest Deepgram result (e.g. es, ja). */
+    this.lastDetectedLanguages = [];
+    this.listenConfig = resolveDeepgramListenConfig();
   }
 
   /**
@@ -56,20 +130,22 @@ class DeepgramService extends EventEmitter {
       ? Math.max(1000, utteranceEndConfigured)
       : 1000;
 
-    const model =
-      String(process.env.DEEPGRAM_MODEL || "").trim() || "nova-2-phonecall";
+    this.listenConfig = resolveDeepgramListenConfig();
+    const { model, language, multilingual } = this.listenConfig;
+
+    if (multilingual && language !== "multi") {
+      console.error(
+        `[Deepgram] invalid multilingual config language=${language} callSid=${this.callSid} — forcing multi`
+      );
+      this.listenConfig.language = "multi";
+    }
+
     const smartFormat =
       String(process.env.DEEPGRAM_SMART_FORMAT || "0").trim() === "1";
-    const configuredLanguage = String(process.env.DEEPGRAM_LANGUAGE || "multi").trim();
-    const detectLanguage =
-      String(process.env.DEEPGRAM_DETECT_LANGUAGE || "1").trim() !== "0";
-    const useAutoLanguage =
-      !configuredLanguage ||
-      configuredLanguage.toLowerCase() === "auto" ||
-      configuredLanguage.toLowerCase() === "multi";
-    const language = useAutoLanguage ? undefined : configuredLanguage;
+
     const connectOptions = {
-      model,
+      model: this.listenConfig.model,
+      language: multilingual ? "multi" : this.listenConfig.language,
       encoding: "mulaw",
       sample_rate: 8000,
       channels: 1,
@@ -79,12 +155,16 @@ class DeepgramService extends EventEmitter {
       vad_events: true,
       smart_format: smartFormat,
     };
-    if (language) {
-      connectOptions.language = language;
-    } else if (detectLanguage) {
-      // Default behavior: allow multilingual callers without forcing English.
-      connectOptions.detect_language = true;
-    }
+
+    console.log(
+      `[Deepgram] listen config callSid=${this.callSid} ${JSON.stringify({
+        model: connectOptions.model,
+        language: connectOptions.language,
+        encoding: connectOptions.encoding,
+        sample_rate: connectOptions.sample_rate,
+        multilingual,
+      })}`
+    );
 
     // v5: client.listen.v1.connect() returns a Promise that resolves to the
     // socket wrapper (WrappedListenV1Socket) — NOT yet connected.
@@ -93,9 +173,8 @@ class DeepgramService extends EventEmitter {
 
     this.socket.on("open", () => {
       this.isOpen = true;
-      const languageMode = language || (detectLanguage ? "auto-detect" : "default");
       console.log(
-        `[Deepgram] connection opened callSid=${this.callSid} model=${model} language=${languageMode} endpointing=${endpointingMs}ms queuedFrames=${this.audioQueue.length}`
+        `[Deepgram] connection opened callSid=${this.callSid} model=${connectOptions.model} language=${connectOptions.language} endpointing=${endpointingMs}ms queuedFrames=${this.audioQueue.length}`
       );
       for (const chunk of this.audioQueue) {
         this.socket.sendMedia(chunk);
@@ -109,14 +188,10 @@ class DeepgramService extends EventEmitter {
       if (!data) return;
 
       const msgType = data.type ?? (typeof data === "string" ? "raw-string" : "unknown");
-      // Log non-Results/non-SpeechStarted messages for diagnostics (avoid log spam for every interim)
       if (msgType !== "Results" && msgType !== "SpeechStarted") {
         console.log(`[Deepgram] msg type=${msgType} callSid=${this.callSid}`);
       }
 
-      // SpeechStarted is Deepgram's VAD signal: the user has begun speaking.
-      // We emit this so InboundCallSession can trigger barge-in ONLY when the
-      // user actually speaks, rather than on every silent audio frame.
       if (data.type === "SpeechStarted") {
         console.log(`[Deepgram] SpeechStarted callSid=${this.callSid}`);
         this.emit("speechStarted");
@@ -133,12 +208,23 @@ class DeepgramService extends EventEmitter {
         if (!alt || !String(alt.transcript || "").trim()) return;
 
         const transcript = alt.transcript.trim();
+        const detectedLanguages = extractDetectedLanguages(alt);
+        if (detectedLanguages.length) {
+          this.lastDetectedLanguages = detectedLanguages;
+        }
+
         const isFinal = Boolean(data.is_final);
         const speechFinal = Boolean(data.speech_final);
 
         if (speechFinal || isFinal) {
+          const langInfo =
+            detectedLanguages.length > 0
+              ? ` languages=[${detectedLanguages.join(",")}]`
+              : this.lastDetectedLanguages.length > 0
+                ? ` languages=[${this.lastDetectedLanguages.join(",")}]`
+                : "";
           console.log(
-            `[Deepgram] transcript="${transcript}" is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
+            `[Deepgram] transcript="${transcript}"${langInfo} is_final=${isFinal} speech_final=${speechFinal} callSid=${this.callSid}`
           );
         }
 
@@ -170,9 +256,10 @@ class DeepgramService extends EventEmitter {
       this.emit("close");
     });
 
-    // v5: must call connect() to actually open the underlying WebSocket.
     this.socket.connect();
-    console.log(`[Deepgram] connecting callSid=${this.callSid}`);
+    console.log(
+      `[Deepgram] connecting callSid=${this.callSid} model=${connectOptions.model} language=${connectOptions.language}`
+    );
   }
 
   sendAudio(buffer) {
@@ -194,4 +281,10 @@ class DeepgramService extends EventEmitter {
   }
 }
 
-module.exports = { DeepgramService };
+module.exports = {
+  DeepgramService,
+  resolveDeepgramListenConfig,
+  extractDetectedLanguages,
+  ENGLISH_ONLY_MODELS,
+  DEFAULT_MULTILINGUAL_MODEL,
+};
