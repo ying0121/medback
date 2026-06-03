@@ -67,13 +67,42 @@ export interface ClinicGreetingsConfig {
 /** @deprecated Use ClinicGreetingsConfig */
 export type ClinicGreetingConfig = ClinicGreetingsConfig;
 
+export interface ElevenLabsVerifiedLanguage {
+  language: string;
+  locale: string | null;
+  accent: string | null;
+}
+
 export interface ElevenLabsVoice {
   voice_id: string;
   name: string;
   category: string | null;
+  description: string | null;
+  language: string | null;
   labels: Record<string, string>;
+  verified_languages: ElevenLabsVerifiedLanguage[];
   preview_url: string | null;
+  image_url: string | null;
+  source?: "workspace" | "shared";
 }
+
+export interface ElevenLabsVoicesPage {
+  voices: ElevenLabsVoice[];
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+export type ElevenLabsVoiceListParams = {
+  page?: number;
+  page_size?: number;
+  language?: string;
+  gender?: string;
+  age?: string;
+  accent?: string;
+  category?: string;
+  search?: string;
+};
 
 export interface User {
   id: string;
@@ -278,11 +307,32 @@ export async function previewClinicGreeting(
   return data.resolvedPreview;
 }
 
-export async function listClinicElevenLabsVoices(clinicId: string): Promise<ElevenLabsVoice[]> {
-  const data = await request<{ voices: ElevenLabsVoice[] }>(
-    `/api/admin/dashboard/clinics/${clinicId}/elevenlabs/voices`
-  );
-  return data.voices || [];
+export async function listClinicElevenLabsVoices(
+  clinicId: string,
+  params: ElevenLabsVoiceListParams = {}
+): Promise<ElevenLabsVoicesPage> {
+  const qs = new URLSearchParams();
+  if (params.page != null) qs.set("page", String(params.page));
+  if (params.page_size != null) qs.set("page_size", String(params.page_size));
+  if (params.language) qs.set("language", params.language);
+  if (params.gender) qs.set("gender", params.gender);
+  if (params.age) qs.set("age", params.age);
+  if (params.accent) qs.set("accent", params.accent);
+  if (params.category) qs.set("category", params.category);
+  if (params.search) qs.set("search", params.search);
+
+  const query = qs.toString();
+  const path = `/api/admin/dashboard/clinics/${clinicId}/elevenlabs/voices${
+    query ? `?${query}` : ""
+  }`;
+
+  const data = await request<ElevenLabsVoicesPage>(path);
+  return {
+    voices: data.voices || [],
+    page: data.page ?? params.page ?? 1,
+    page_size: data.page_size ?? params.page_size ?? 24,
+    has_more: Boolean(data.has_more)
+  };
 }
 
 /** Server-generated preview MP3 (uses clinic API key). Caller should revoke object URLs after playback. */

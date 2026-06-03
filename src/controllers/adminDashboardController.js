@@ -1,7 +1,7 @@
 const axios = require("axios");
 const { Op } = require("sequelize");
 const { Conversation, Message, User, Clinic, Call, IncomingMessage } = require("../db");
-const { listVoices, textToSpeechMp3 } = require("../services/elevenlabsService");
+const { listVoicesForAdmin, textToSpeechMp3 } = require("../services/elevenlabsService");
 const { detectAudioMimeFromBase64 } = require("../utils/audioMime");
 const {
   GREETING_PLACEHOLDERS,
@@ -498,8 +498,27 @@ async function listClinicElevenLabsVoices(req, res) {
     if (!clinic.elevenlabsApiKey) {
       return res.status(400).json({ error: "Save an ElevenLabs API key for this clinic first." });
     }
-    const voices = await listVoices(clinic.elevenlabsApiKey);
-    return res.status(200).json({ voices });
+    const page = Math.max(1, parseInt(String(req.query?.page || "1"), 10) || 1);
+    const pageSize = Math.min(
+      50,
+      Math.max(10, parseInt(String(req.query?.page_size || "24"), 10) || 24)
+    );
+    const result = await listVoicesForAdmin(clinic.elevenlabsApiKey, {
+      page,
+      page_size: pageSize,
+      language: req.query?.language,
+      gender: req.query?.gender,
+      age: req.query?.age,
+      accent: req.query?.accent,
+      category: req.query?.category,
+      search: req.query?.search
+    });
+    return res.status(200).json({
+      voices: result.voices,
+      page: result.page,
+      page_size: result.page_size,
+      has_more: result.has_more
+    });
   } catch (err) {
     const msg = String(err?.response?.data?.detail?.message || err?.message || "Failed to list voices.");
     return res.status(502).json({ error: msg });

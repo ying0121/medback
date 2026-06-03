@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff, MessageSquareText, Upload, X } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
+import VoicePickerDialog from "@/components/admin/VoicePickerDialog";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,6 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   listClinics,
   createClinic,
@@ -24,15 +24,11 @@ import {
   updateClinicTwilioConfig,
   getClinicElevenLabsConfig,
   updateClinicElevenLabsApiKey,
-  listClinicElevenLabsVoices,
-  fetchClinicElevenLabsPreviewBlob,
-  fetchClinicElevenLabsPreviewSourceBlob,
   updateClinicElevenLabsVoice,
   getClinicGreetings,
   updateClinicGreetings,
   previewClinicGreeting,
   type Clinic,
-  type ElevenLabsVoice,
   type ClinicTwilioConfigInput,
   type GreetingPlaceholder,
   DEFAULT_CLINIC_THEME_COLOR,
@@ -110,13 +106,7 @@ export default function Clinics() {
   const [loadingElevenLabs, setLoadingElevenLabs] = useState(false);
 
   const [voiceModalClinic, setVoiceModalClinic] = useState<Clinic | null>(null);
-  const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
-  const [voicesLoading, setVoicesLoading] = useState(false);
-  const [selectedVoiceId, setSelectedVoiceId] = useState("");
   const [savingVoice, setSavingVoice] = useState(false);
-  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-  const lastBlobUrlRef = useRef<string | null>(null);
 
   const [greetingClinic, setGreetingClinic] = useState<Clinic | null>(null);
   const [greetingTab, setGreetingTab] = useState<"inbound" | "chat">("inbound");
@@ -132,18 +122,6 @@ export default function Clinics() {
   const greetingPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
-
-  const stopVoicePreview = () => {
-    if (previewAudioRef.current) {
-      previewAudioRef.current.pause();
-      previewAudioRef.current = null;
-    }
-    if (lastBlobUrlRef.current) {
-      URL.revokeObjectURL(lastBlobUrlRef.current);
-      lastBlobUrlRef.current = null;
-    }
-    setPreviewingVoiceId(null);
-  };
 
   useEffect(() => {
     if (!greetingClinic) return;
@@ -163,32 +141,6 @@ export default function Clinics() {
       if (greetingPreviewTimerRef.current) clearTimeout(greetingPreviewTimerRef.current);
     };
   }, [greetingClinic, greetingTab, inboundGreetingDraft, chatGreetingDraft]);
-
-  useEffect(() => {
-    if (!voiceModalClinic) {
-      setVoices([]);
-      setSelectedVoiceId("");
-      return;
-    }
-    let cancelled = false;
-    setVoicesLoading(true);
-    setSelectedVoiceId(voiceModalClinic.elevenLabsVoiceId || "");
-    listClinicElevenLabsVoices(voiceModalClinic.id)
-      .then((v) => {
-        if (!cancelled) setVoices(v);
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : "Could not load voices";
-        toast.error(msg);
-        if (!cancelled) setVoices([]);
-      })
-      .finally(() => {
-        if (!cancelled) setVoicesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [voiceModalClinic]);
 
   const refresh = () => listClinics().then(setData);
   useEffect(() => { refresh(); }, []);
@@ -355,61 +307,18 @@ export default function Clinics() {
     }
   };
 
-  const playVoicePreview = async (v: ElevenLabsVoice) => {
+  const saveVoiceSelection = async (voiceId: string) => {
     if (!voiceModalClinic) return;
-    stopVoicePreview();
-    setPreviewingVoiceId(v.voice_id);
-    const playBlob = async (blob: Blob) => {
-      const url = URL.createObjectURL(blob);
-      lastBlobUrlRef.current = url;
-      const a = new Audio(url);
-      previewAudioRef.current = a;
-      a.onended = () => {
-        setPreviewingVoiceId(null);
-        URL.revokeObjectURL(url);
-        lastBlobUrlRef.current = null;
-      };
-      a.onerror = () => {
-        setPreviewingVoiceId(null);
-        URL.revokeObjectURL(url);
-        lastBlobUrlRef.current = null;
-        toast.error("Could not play preview audio.");
-      };
-      await a.play();
-    };
-    try {
-      const previewUrl = v.preview_url?.trim();
-      if (previewUrl) {
-        try {
-          const blob = await fetchClinicElevenLabsPreviewSourceBlob(voiceModalClinic.id, previewUrl);
-          await playBlob(blob);
-          return;
-        } catch {
-          /* fall through to TTS preview */
-        }
-      }
-      const blob = await fetchClinicElevenLabsPreviewBlob(voiceModalClinic.id, v.voice_id);
-      await playBlob(blob);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Preview failed";
-      toast.error(msg);
-      setPreviewingVoiceId(null);
-    }
-  };
-
-  const saveVoice = async () => {
-    if (!voiceModalClinic) return;
-    if (!selectedVoiceId) return toast.error("Select a voice");
     try {
       setSavingVoice(true);
-      await updateClinicElevenLabsVoice(voiceModalClinic.id, selectedVoiceId);
+      await updateClinicElevenLabsVoice(voiceModalClinic.id, voiceId);
       toast.success("ElevenLabs voice saved");
-      stopVoicePreview();
       setVoiceModalClinic(null);
       refresh();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to save voice";
       toast.error(msg);
+      throw err;
     } finally {
       setSavingVoice(false);
     }
@@ -751,97 +660,16 @@ export default function Clinics() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
+      <VoicePickerDialog
         open={!!voiceModalClinic}
         onOpenChange={(o) => {
-          if (!o) {
-            stopVoicePreview();
-            setVoiceModalClinic(null);
-          }
+          if (!o) setVoiceModalClinic(null);
         }}
-      >
-        <DialogContent className="flex min-h-0 max-h-[90vh] w-[calc(100vw-2rem)] max-w-2xl flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
-          <DialogHeader className="shrink-0 space-y-1.5 px-6 pb-2 pt-6 text-center sm:text-left">
-            <DialogTitle>ElevenLabs voice</DialogTitle>
-            <DialogDescription>
-              {voiceModalClinic ? (
-                <>
-                  Choose the voice for inbound phone responses for <strong>{voiceModalClinic.name}</strong>.
-                  Save an API key first if voices do not load.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <div
-            className="mx-6 mb-1 min-h-0 max-h-[min(52vh,28rem)] flex-1 overflow-y-auto overflow-x-hidden rounded-md border border-border/60 bg-muted/15 px-2 py-2 [scrollbar-gutter:stable]"
-            role="region"
-            aria-label="Voice list"
-          >
-            {voicesLoading ? (
-              <p className="text-sm text-muted-foreground px-2 py-6">Loading voices…</p>
-            ) : voices.length === 0 ? (
-              <p className="text-sm text-muted-foreground px-2 py-6">
-                No voices returned. Check the API key or your ElevenLabs account.
-              </p>
-            ) : (
-              <RadioGroup value={selectedVoiceId} onValueChange={setSelectedVoiceId} className="gap-0">
-                {voices.map((v) => {
-                  const labelBits = [
-                    v.category,
-                    ...Object.entries(v.labels || {}).slice(0, 4).map(([k, val]) => `${k}: ${val}`),
-                  ].filter(Boolean);
-                  return (
-                    <div
-                      key={v.voice_id}
-                      className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border/60 py-3 pl-1 pr-1 last:border-b-0"
-                    >
-                      <RadioGroupItem value={v.voice_id} id={`voice-${v.voice_id}`} className="mt-0.5 shrink-0 self-start" />
-                      <label htmlFor={`voice-${v.voice_id}`} className="min-w-0 cursor-pointer py-0.5 text-left">
-                        <div className="font-medium leading-snug break-words">{v.name}</div>
-                        <div className="text-xs leading-snug text-muted-foreground break-words">
-                          {labelBits.join(" · ") || "—"}
-                        </div>
-                      </label>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="shrink-0 whitespace-nowrap justify-self-end"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          playVoicePreview(v);
-                        }}
-                        disabled={previewingVoiceId === v.voice_id}
-                      >
-                        <Play className="h-3.5 w-3.5 shrink-0 mr-1" />
-                        {previewingVoiceId === v.voice_id ? "Playing…" : "Listen"}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </RadioGroup>
-            )}
-          </div>
-          <DialogFooter className="shrink-0 border-t border-border/60 px-6 py-4 sm:justify-end">
-            <Button
-              variant="outline"
-              onClick={() => {
-                stopVoicePreview();
-                setVoiceModalClinic(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={saveVoice}
-              disabled={savingVoice || !selectedVoiceId || voices.length === 0}
-              className="bg-gradient-primary text-primary-foreground"
-            >
-              {savingVoice ? "Saving…" : "Save voice"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        clinic={voiceModalClinic ? { id: voiceModalClinic.id, name: voiceModalClinic.name } : null}
+        initialSelectedVoiceId={voiceModalClinic?.elevenLabsVoiceId || ""}
+        saving={savingVoice}
+        onSave={saveVoiceSelection}
+      />
 
       <Dialog
         open={!!twilioClinic}
