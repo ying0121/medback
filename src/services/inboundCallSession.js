@@ -2,45 +2,27 @@
  * InboundCallSession
  *
  * One instance per active inbound phone call.
- * Owns the Deepgram STT connection, LLM service, and TTS service.
+ * Bridges Twilio Media Streams ↔ OpenAI Realtime API (STT + LLM + TTS in one).
  *
  * Flow:
- *   Twilio Media Stream WS → sendAudio()
- *     → DeepgramService → "interim" / "final" / "utteranceEnd" events
- *       → optional end-call classifier → farewell TTS + Twilio REST hangup
- *       → InboundLlmService.streamReply() → sentence generator
- *         → InboundTtsService.streamAudio() → μ-law audio stream
- *           → mediaWs.send() back to Twilio
+ *   Twilio WS → sendAudio() → OpenAI Realtime input_audio_buffer.append
+ *   OpenAI Realtime response.output_audio.delta → Twilio media events
  *
- * Barge-in: if the caller speaks while the bot is talking, cancel the
- * current TTS/LLM loop and send a Twilio "clear" message immediately.
+ * Barge-in: OpenAI server VAD interrupts the model; we also send Twilio "clear".
  *
  * DB persistence:
- *   - Each user utterance → incoming_messages (userType="user", caller μ-law → WAV)
- *   - Each bot reply      → incoming_messages (userType="bot", TTS μ-law → WAV or MP3 fallback)
+ *   - User utterance → incoming_messages (from input_audio_transcription.completed)
+ *   - Bot reply      → incoming_messages (from output_audio_transcript.done + μ-law audio)
  */
 
-const { DeepgramService } = require("./deepgramService");
-const { InboundLlmService } = require("./inboundLlmService");
-const { InboundTtsService } = require("./inboundTtsService");
+const {
+  OpenAIRealtimeBridge,
+  buildRealtimeInstructions
+} = require("./openaiRealtimeService");
 const { mulawToWavBase64 } = require("./inboundAudioCodec");
-const { textToSpeechMp3 } = require("./elevenlabsService");
 const { saveIncomingMessageRow, findOrCreateCallBySid } = require("./callPersistenceService");
 const { analyzeInboundEndCallTurn } = require("./openaiService");
 const { endCall } = require("./twilioService");
-
-const INTERIM_FLUSH_CHARS = Math.max(
-  12,
-  parseInt(process.env.INTERIM_FLUSH_CHARS || "36", 10)
-);
-const PIPELINE_HANDOFF_MS = Math.max(
-  0,
-  parseInt(process.env.INBOUND_PIPELINE_HANDOFF_MS || "20", 10)
-);
-const END_CALL_HEAD_START_MS = Math.max(
-  0,
-  parseInt(process.env.INBOUND_END_CALL_HEAD_START_MS || "40", 10)
-);
 
 class InboundCallSession {
   /**
@@ -49,8 +31,7 @@ class InboundCallSession {
    * @param {{
    *   clinicPrompt: string|null,
    *   knowledgePrompt: string|null,
-   *   elApiKey: string|null,
-   *   elVoiceId: string|null,
+   *   openaiVoice: string|null,
    *   call: object|null,
    *   greetingText: string,
    *   clinicId: number|null
@@ -65,55 +46,27 @@ class InboundCallSession {
     this.clinicId = Number.isFinite(cid) && cid > 0 ? cid : null;
     this.clinicPrompt = opts.clinicPrompt || null;
     this.knowledgePrompt = opts.knowledgePrompt || null;
-    this.elApiKey = opts.elApiKey || null;
-    this.elVoiceId = opts.elVoiceId || null;
 
-    /** @type {Buffer[]} μ-law frames from the caller's current utterance (for history). */
+    /** @type {Buffer[]} μ-law frames from caller's current utterance. */
     this._userTurnMulawChunks = [];
-    /** True while Deepgram VAD says the caller is speaking (history capture only). */
     this._userCapturing = false;
 
-    this.stt = new DeepgramService(callSid);
-    this.llm = new InboundLlmService(callSid, {
-      clinicPrompt: opts.clinicPrompt || null,
-      knowledgePrompt: opts.knowledgePrompt || null,
+    this.realtime = new OpenAIRealtimeBridge(callSid, {
+      instructions: buildRealtimeInstructions({
+        clinicPrompt: opts.clinicPrompt || null,
+        knowledgePrompt: opts.knowledgePrompt || null
+      }),
+      voice: opts.openaiVoice || null
     });
-    this.tts = new InboundTtsService(callSid, opts.elApiKey || null, opts.elVoiceId || null);
 
-    this.isBotSpeaking = false;
-    this.isProcessing = false;
-    this.cancelFlag = false;
     this.streamSid = null;
-    // Monotonic counter: incremented on every new pipeline run and on every
-    // cancel.  Each pipeline run stores its generation at start time and checks
-    // it on every await point so that a stale run exits immediately even if
-    // cancelFlag was already reset by the new run.
-    this._pipelineGen = 0;
-
-    this.partialTranscript = "";
-    this.earlyFlushTriggered = false;
-    /** When true, STT must not start the LLM pipeline (avoids canceling greeting TTS). */
-    this._greetingActive = false;
-    /**
-     * Guard against the race where the WebSocket message handler emits
-     * concurrent `media` event invocations while `session.start()` is still
-     * awaiting (greeting playback + Deepgram handshake).  Those frames
-     * represent silence/echo captured during the greeting — sending them to
-     * Deepgram after connect causes it to fire spurious speech_final events
-     * that cancel the first real user pipeline before TTS can play.
-     * Set to true only after start() completes.
-     */
     this._startupComplete = false;
+    this._greetingActive = false;
+    this._pendingEndCall = null;
 
-    this._bindSTTEvents();
+    this._bindRealtimeEvents();
   }
 
-  // ─── Lifecycle ─────────────────────────────────────────────────────────────
-
-  /**
-   * Ensure `this.call` is loaded — pending WS context can be empty when the HTTP
-   * webhook ran on another instance or the in-memory map expired.
-   */
   async _ensureCallRecord() {
     if (this.call?.id) return this.call;
 
@@ -126,11 +79,6 @@ class InboundCallSession {
         from: "unknown",
         status: "in-progress"
       });
-      if (this.call) {
-        console.log(
-          `[InboundSession] call record ensured id=${this.call.id} callSid=${sid}`
-        );
-      }
     } catch (err) {
       console.error(
         `[InboundSession] call record ensure failed callSid=${sid}: ${err.message}`
@@ -142,11 +90,8 @@ class InboundCallSession {
 
   async start() {
     await this._ensureCallRecord();
+    await this.realtime.connect();
 
-    // 1. Play greeting FIRST before connecting Deepgram.
-    //    This ensures: (a) no STT noise cancels the greeting, (b) the large
-    //    audio queue that builds up during greeting playback is discarded before
-    //    Deepgram opens (prevents stale silence/echo from confusing the STT).
     if (this.greetingText) {
       try {
         await this._speakGreeting();
@@ -155,23 +100,12 @@ class InboundCallSession {
       }
     }
 
-    // 2. Discard audio that queued while the greeting was playing.
-    //    That audio is silence/echo from the caller's side while they were
-    //    listening — it should not be sent to Deepgram.
-    this.stt.clearQueue();
-
-    // 3. Now connect Deepgram; new audio from the caller's speech will flow in.
-    await this.stt.connect();
-
-    // 4. Mark the session ready.  Any media frames that arrived from Twilio
-    //    while we were awaiting start() were silently dropped (see sendAudio).
-    //    From this point on, sendAudio forwards audio to Deepgram in real time.
     this._startupComplete = true;
-    console.log(`[InboundSession] startup complete — audio active callSid=${this.callSid}`);
+    console.log(`[InboundSession] startup complete callSid=${this.callSid}`);
   }
 
   close() {
-    this.stt.close();
+    this.realtime.close();
     console.log(`[InboundSession] closed callSid=${this.callSid}`);
   }
 
@@ -179,583 +113,188 @@ class InboundCallSession {
     this.streamSid = streamSid;
   }
 
+  sendAudio(audioBuffer) {
+    if (!this._startupComplete || this._greetingActive) return;
+
+    if (this._userCapturing && audioBuffer?.length) {
+      this._userTurnMulawChunks.push(Buffer.from(audioBuffer));
+    }
+
+    this.realtime.appendAudio(audioBuffer);
+  }
+
   _beginUserTurnCapture() {
     this._userCapturing = true;
     this._userTurnMulawChunks = [];
   }
 
-  _endUserTurnCapture() {
-    this._userCapturing = false;
-  }
-
-  _shouldCaptureUserAudio() {
-    // Record only while the caller is actively speaking (VAD window), not during
-    // LLM latency or bot playback — that was inflating history clips by seconds.
-    return (
-      this._startupComplete &&
-      !this._greetingActive &&
-      this._userCapturing &&
-      !this.isBotSpeaking
-    );
-  }
-
-  /** Snapshot and clear buffered caller audio for the turn being processed. */
   _takeUserAudioSnapshot() {
-    this._endUserTurnCapture();
+    this._userCapturing = false;
     const chunks = this._userTurnMulawChunks;
     this._userTurnMulawChunks = [];
     if (!chunks.length) return null;
     return Buffer.concat(chunks);
   }
 
-  /**
-   * @param {Buffer|null} mulawBuf
-   * @param {string} text
-   * @returns {Promise<{ audio: string|null, status: string }>}
-   */
-  async _resolveStoredBotAudio(mulawBuf, text) {
-    const wavB64 = mulawToWavBase64(mulawBuf);
-    if (wavB64) return { audio: wavB64, status: "success" };
-
-    const spoken = String(text || "").trim();
-    const apiKey = String(this.elApiKey || "").trim();
-    const voiceId = String(this.elVoiceId || "").trim();
-    if (!spoken || !apiKey || !voiceId) {
-      return { audio: null, status: "no-audio" };
-    }
-
-    try {
-      const mp3 = await textToSpeechMp3(apiKey, voiceId, spoken, {
-        modelId:
-          String(process.env.ELEVENLABS_INBOUND_TTS_MODEL || process.env.ELEVENLABS_TTS_MODEL || "").trim() ||
-          undefined
-      });
-      return { audio: mp3.toString("base64"), status: "success-mp3-fallback" };
-    } catch (err) {
-      console.warn(
-        `[InboundSession] bot MP3 fallback failed callSid=${this.callSid}: ${err.message}`
+  _bindRealtimeEvents() {
+    this.realtime.on("audioDelta", (buf) => {
+      if (this.ws.readyState !== 1 /* OPEN */ || !this.streamSid) return;
+      this.ws.send(
+        JSON.stringify({
+          event: "media",
+          streamSid: this.streamSid,
+          media: { payload: buf.toString("base64") }
+        })
       );
-      return { audio: null, status: "no-audio" };
-    }
-  }
+    });
 
-  // ─── Audio ingress ─────────────────────────────────────────────────────────
+    this.realtime.on("speechStarted", () => {
+      if (this._greetingActive) return;
+      this._beginUserTurnCapture();
+      if (this.realtime.botSpeaking) {
+        this.realtime.cancelResponse();
+        this._clearTwilioAudio();
+      }
+    });
 
-  sendAudio(audioBuffer) {
-    // Drop all audio that arrives before start() completes.
-    // The WebSocket message handler is async: while start() is awaiting
-    // (greeting + Deepgram connect, ~3-5 s), Twilio keeps sending media events
-    // as concurrent handler invocations.  Those frames are greeting-period
-    // silence/echo that would confuse Deepgram's VAD if forwarded.
-    if (!this._startupComplete) return;
+    this.realtime.on("userTranscript", (transcript) => {
+      if (this._greetingActive) return;
 
-    // NOTE: barge-in is handled by the Deepgram "speechStarted" VAD event
-    // (see _bindSTTEvents), NOT here on every audio frame.  Triggering
-    // _handleBargeIn() on every frame was the root cause of "second speaking
-    // no reply": Twilio sends continuous silent frames every 20 ms, so barge-in
-    // fired immediately after the bot started speaking, killing every response.
-    if (this._shouldCaptureUserAudio() && audioBuffer?.length) {
-      this._userTurnMulawChunks.push(Buffer.from(audioBuffer));
-    }
-    this.stt.sendAudio(audioBuffer);
-  }
-
-  // ─── Greeting ──────────────────────────────────────────────────────────────
-
-  async _speakGreeting() {
-    this._greetingActive = true;
-    this.cancelFlag = false;
-    this.isBotSpeaking = false;
-
-    try {
-      console.log(
-        `[InboundSession] greeting start callSid=${this.callSid} streamSid=${this.streamSid}`
-      );
-      // Send the ENTIRE greeting as a single TTS call — no sentence splitting.
-      // Multiple API calls create audible silence gaps between sentences and
-      // introduce more failure points.  A single streaming call is simpler and
-      // plays the greeting continuously without gaps.
-      const greetingMulaw = await this._streamTTSToTwilio(this.greetingText);
-      console.log(`[InboundSession] greeting done callSid=${this.callSid}`);
+      const userMulaw = this._takeUserAudioSnapshot();
+      const userAudioB64 = mulawToWavBase64(userMulaw);
 
       if (this.call) {
-        const { audio, status } = await this._resolveStoredBotAudio(
-          greetingMulaw,
-          this.greetingText
-        );
-        saveIncomingMessageRow({
-          callId: this.call.id,
-          audio,
-          transcription: this.greetingText,
-          userType: "bot",
-          status,
-        }).catch((err) => {
-          console.error(
-            `[InboundSession] greeting save failed callSid=${this.callSid}: ${err.message}`
-          );
-        });
-      }
-    } finally {
-      this._greetingActive = false;
-      this.isBotSpeaking = false;
-    }
-  }
-
-  // ─── STT event bindings ────────────────────────────────────────────────────
-
-  _bindSTTEvents() {
-    this.stt.on("interim", (transcript) => {
-      if (this._greetingActive) return;
-      // Mic still sends audio while the bot plays; TTS echo can trigger early
-      // flush → second _runPipeline cancels the first and drops TTS mid-flight.
-      if (this.isBotSpeaking) return;
-
-      // Fallback if SpeechStarted was missed — still bound to live speech, not silence between turns.
-      if (!this._userCapturing && transcript.trim()) {
-        this._beginUserTurnCapture();
-      }
-
-      this.partialTranscript = transcript;
-
-      if (!this.earlyFlushTriggered && transcript.length >= INTERIM_FLUSH_CHARS) {
-        console.log(
-          `[InboundSession] early flush at ${transcript.length} chars callSid=${this.callSid}`
-        );
-        this.earlyFlushTriggered = true;
-        this._runPipeline(transcript);
-      }
-    });
-
-    this.stt.on("final", (transcript) => {
-      if (this._greetingActive) return;
-      // Same echo issue as interim: speech_final on leaked playback looks like
-      // a new user turn and starts a pipeline that cancels the active one.
-      if (this.isBotSpeaking) {
-        console.log(
-          `[InboundSession] STT final ignored during bot playback (echo guard) callSid=${this.callSid}`
-        );
-        return;
-      }
-
-      console.log(`[InboundSession] STT final="${transcript}" callSid=${this.callSid}`);
-      if (!transcript?.trim()) return;
-
-      this._endUserTurnCapture();
-
-      this.partialTranscript = "";
-      this.earlyFlushTriggered = false;
-
-      // Always run the pipeline on a final transcript.
-      // If a pipeline is already running from an early flush, _runPipeline
-      // cancels it and restarts with the complete text.
-      this._runPipeline(transcript);
-    });
-
-    this.stt.on("utteranceEnd", () => {
-      if (this._greetingActive) return;
-      if (this.isBotSpeaking) return;
-
-      const text = this.partialTranscript.trim();
-      if (text.length >= 12) {
-        console.log(
-          `[InboundSession] utteranceEnd flush text="${text}" callSid=${this.callSid}`
-        );
-        this._endUserTurnCapture();
-        this.partialTranscript = "";
-        this.earlyFlushTriggered = false;
-        this._runPipeline(text);
-      }
-    });
-
-    // Deepgram's VAD event: user has started speaking.
-    // This is the correct and ONLY trigger for barge-in.  We used to trigger
-    // barge-in on every sendAudio() call while isBotSpeaking=true, which fired
-    // on silent frames every 20 ms and immediately cancelled every bot response.
-    this.stt.on("speechStarted", () => {
-      if (this._greetingActive) return;
-      if (this.isBotSpeaking) {
-        console.log(`[InboundSession] barge-in via SpeechStarted callSid=${this.callSid}`);
-        this._handleBargeIn();
-        this._beginUserTurnCapture();
-        return;
-      }
-      this._beginUserTurnCapture();
-    });
-
-    this.stt.on("error", (err) => {
-      console.error(
-        `[InboundSession] STT error callSid=${this.callSid}: ${err?.message ?? err}`
-      );
-    });
-  }
-
-  // ─── Main LLM → TTS pipeline ───────────────────────────────────────────────
-
-  async _runPipeline(userText) {
-    // Cancel any running pipeline immediately.
-    if (this.isProcessing) {
-      this._cancelPipeline(); // also increments _pipelineGen
-    }
-
-    // Claim this run's generation AFTER the possible cancel above.
-    const myGen = ++this._pipelineGen;
-
-    // Brief handoff so the previous pipeline's in-flight TTS can detect stale gen.
-    if (PIPELINE_HANDOFF_MS > 0) {
-      await sleep(PIPELINE_HANDOFF_MS);
-    }
-
-    // If another _runPipeline was called while we were sleeping, bail out.
-    if (myGen !== this._pipelineGen) {
-      console.log(
-        `[InboundSession] pipeline gen-superseded gen=${myGen} current=${this._pipelineGen} callSid=${this.callSid}`
-      );
-      return;
-    }
-
-    // Early flush runs while the caller may still be speaking — defer snapshot until final.
-    const userMulaw = this._userCapturing ? null : this._takeUserAudioSnapshot();
-    const userAudioB64 = mulawToWavBase64(userMulaw);
-
-    this.isProcessing = true;
-    this.cancelFlag = false;
-    this.isBotSpeaking = false;
-
-    if (this.call) {
-      setImmediate(() => {
-        if (myGen !== this._pipelineGen) return;
         saveIncomingMessageRow({
           callId: this.call.id,
           audio: userAudioB64,
-          transcription: userText,
+          transcription: transcript,
           userType: "user",
-          status: userAudioB64 ? "success" : "success-no-audio",
+          status: userAudioB64 ? "success" : "success-no-audio"
         }).catch((err) => {
           console.error(
             `[InboundSession] user message save failed callSid=${this.callSid}: ${err.message}`
           );
         });
-      });
-    }
-
-    try {
-      console.log(
-        `[InboundSession] pipeline start callSid=${this.callSid} gen=${myGen} text="${userText.slice(0, 60)}"`
-      );
-
-      // Run end-call classification in parallel with the LLM (not on the hot path).
-      let endTurn = { endCall: false, farewell: "" };
-      const endTurnPromise = analyzeInboundEndCallTurn({
-        text: userText,
-        clinicPrompt: this.clinicPrompt,
-        knowledgePrompt: this.knowledgePrompt,
-      })
-        .then((r) => {
-          endTurn = r;
-          return r;
-        })
-        .catch((e) => {
-          console.warn(
-            `[InboundSession] end-call classify failed callSid=${this.callSid}: ${e.message}`
-          );
-          return endTurn;
-        });
-
-      const t0 = Date.now();
-      let fullBotReply = "";
-      let segmentIdx = 0;
-      let playedAnyTts = false;
-      /** @type {Buffer[]} */
-      const botMulawParts = [];
-
-      for await (const segment of this.llm.streamReply(userText)) {
-        if (segmentIdx === 0 && END_CALL_HEAD_START_MS > 0) {
-          await Promise.race([endTurnPromise, sleep(END_CALL_HEAD_START_MS)]);
-        }
-
-        if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
-          console.log(
-            `[InboundSession] end-call detected during stream callSid=${this.callSid}`
-          );
-          if (playedAnyTts) this._clearTwilioAudio();
-          break;
-        }
-
-        segmentIdx++;
-        console.log(
-          `[InboundSession] LLM segment #${segmentIdx} callSid=${this.callSid} gen=${myGen} text="${segment.slice(0, 80)}"`
-        );
-
-        if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(
-            `[InboundSession] pipeline cancelled before TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
-          );
-          break;
-        }
-
-        if (segmentIdx === 1) {
-          console.log(
-            `[InboundSession] time-to-first-segment: ${Date.now() - t0}ms callSid=${this.callSid}`
-          );
-        }
-
-        fullBotReply += (fullBotReply ? " " : "") + segment;
-        const segmentMulaw = await this._streamTTSToTwilio(segment, myGen);
-        if (segmentMulaw?.length) botMulawParts.push(segmentMulaw);
-        playedAnyTts = true;
-
-        if (this.cancelFlag || myGen !== this._pipelineGen) {
-          console.log(
-            `[InboundSession] pipeline cancelled after TTS gen=${myGen} cancelFlag=${this.cancelFlag} currentGen=${this._pipelineGen} callSid=${this.callSid}`
-          );
-          break;
-        }
       }
 
-      if (!endTurn.endCall) {
-        try {
-          endTurn = await endTurnPromise;
-        } catch {
-          /* keep last endTurn */
-        }
-      }
+      this._checkEndCall(transcript);
+    });
 
-      if (endTurn.endCall && !this.cancelFlag && myGen === this._pipelineGen) {
-        const fallbackFarewell = String(
-          process.env.TWILIO_INBOUND_VOICE_FAREWELL ||
-            "Thank you for calling. Take care and goodbye."
-        ).trim();
-        const farewell = String(endTurn.farewell || "").trim() || fallbackFarewell;
+    this.realtime.on("botTranscript", ({ transcript, audioBuf }) => {
+      if (this._greetingActive) return;
 
-        const lastAssistant = [...this.llm.history].reverse().find((m) => m.role === "assistant");
-        if (lastAssistant) lastAssistant.content = farewell;
-        else this.llm.history.push({ role: "assistant", content: farewell });
-
-        console.log(
-          `[InboundSession] end-call farewell="${farewell.slice(0, 80)}" callSid=${this.callSid}`
-        );
-
-        const farewellMulaw = await this._streamTTSToTwilio(farewell, myGen);
-
-        if (this.call) {
-          const { audio, status } = await this._resolveStoredBotAudio(farewellMulaw, farewell);
-          saveIncomingMessageRow({
-            callId: this.call.id,
-            audio,
-            transcription: farewell,
-            userType: "bot",
-            status,
-          }).catch((err) => {
-            console.error(
-              `[InboundSession] farewell save failed callSid=${this.callSid}: ${err.message}`
-            );
-          });
-        }
-
-        if (this.clinicId && this.callSid) {
-          try {
-            await endCall(this.callSid, { clinicId: this.clinicId });
-            console.log(`[InboundSession] Twilio call ended callSid=${this.callSid}`);
-          } catch (hangErr) {
-            console.error(
-              `[InboundSession] endCall REST failed callSid=${this.callSid}: ${hangErr.message}`
-            );
-          }
-        } else {
-          console.warn(
-            `[InboundSession] hangup skipped (missing clinicId) callSid=${this.callSid}`
-          );
-        }
-        return;
-      }
-
-      if (segmentIdx === 0) {
-        console.warn(`[InboundSession] LLM yielded NO segments callSid=${this.callSid}`);
-      }
-
-      if (this.call && fullBotReply) {
-        const botMulaw =
-          botMulawParts.length > 0 ? Buffer.concat(botMulawParts) : null;
-        const { audio, status } = await this._resolveStoredBotAudio(botMulaw, fullBotReply);
+      const wavB64 = mulawToWavBase64(audioBuf);
+      if (this.call) {
         saveIncomingMessageRow({
           callId: this.call.id,
-          audio,
-          transcription: fullBotReply,
+          audio: wavB64,
+          transcription: transcript,
           userType: "bot",
-          status: playedAnyTts ? status : "no-audio",
+          status: wavB64 ? "success" : "no-audio"
         }).catch((err) => {
           console.error(
             `[InboundSession] bot message save failed callSid=${this.callSid}: ${err.message}`
           );
         });
       }
-    } catch (err) {
+
+      this._maybeHangupAfterFarewell(transcript);
+    });
+
+    this.realtime.on("error", (err) => {
       console.error(
-        `[InboundSession] pipeline error callSid=${this.callSid}: ${err.message}`
+        `[InboundSession] Realtime error callSid=${this.callSid}: ${err?.message ?? err}`
       );
-    } finally {
-      this.isProcessing = false;
-      this.isBotSpeaking = false;
-    }
+    });
   }
 
-  // ─── TTS → Twilio WebSocket ────────────────────────────────────────────────
+  async _speakGreeting() {
+    this._greetingActive = true;
 
-  /**
-   * Stream TTS audio to the Twilio WebSocket and return the μ-law payload for DB storage.
-   * @param {string} text
-   * @param {number|null} pipelineGen
-   * @returns {Promise<Buffer|null>}
-   */
-  async _streamTTSToTwilio(text, pipelineGen = null) {
-    const isStale = () =>
-      this.cancelFlag || (pipelineGen !== null && pipelineGen !== this._pipelineGen);
+    return new Promise((resolve) => {
+      const onDone = ({ transcript, audioBuf }) => {
+        cleanup();
+        if (this.call && transcript) {
+          const wavB64 = mulawToWavBase64(audioBuf);
+          saveIncomingMessageRow({
+            callId: this.call.id,
+            audio: wavB64,
+            transcription: transcript,
+            userType: "bot",
+            status: wavB64 ? "success" : "no-audio"
+          }).catch(() => {});
+        }
+        resolve();
+      };
 
-    if (isStale() || !text?.trim()) {
-      console.log(
-        `[InboundSession] TTS skipped callSid=${this.callSid} gen=${pipelineGen} stale=${isStale()} emptyText=${!text?.trim()}`
-      );
-      return null;
-    }
+      const onAudioDone = () => {
+        // If transcript event didn't fire, still unblock startup.
+        setTimeout(() => {
+          if (this._greetingActive) {
+            cleanup();
+            resolve();
+          }
+        }, 500);
+      };
 
-    console.log(
-      `[InboundSession] TTS start callSid=${this.callSid} gen=${pipelineGen} text="${text.slice(0, 60)}"`
-    );
+      const cleanup = () => {
+        this._greetingActive = false;
+        this.realtime.off("botTranscript", onDone);
+        this.realtime.off("audioDone", onAudioDone);
+      };
 
-    const audioStream = await this.tts.streamAudio(text);
+      this.realtime.on("botTranscript", onDone);
+      this.realtime.on("audioDone", onAudioDone);
+      this.realtime.speakText(this.greetingText);
+    });
+  }
 
-    if (isStale()) {
-      console.log(
-        `[InboundSession] TTS discarded stale after ElevenLabs call gen=${pipelineGen} currentGen=${this._pipelineGen} cancelFlag=${this.cancelFlag} callSid=${this.callSid}`
-      );
-      return null;
-    }
-
-    if (!audioStream) {
-      console.warn(`[InboundSession] TTS returned null stream callSid=${this.callSid}`);
-      return null;
-    }
-
-    this.isBotSpeaking = true;
-    let chunkCount = 0;
-    /** @type {Buffer[]} */
-    const mulawParts = [];
-
-    const sendMulawChunk = (buf) => {
-      if (!buf?.length || isStale()) return;
-      mulawParts.push(buf);
-      if (this.ws.readyState === 1 /* OPEN */) {
-        this.ws.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: this.streamSid,
-            media: { payload: buf.toString("base64") },
-          })
-        );
-      }
-    };
-
-    console.log(
-      `[InboundSession] TTS streaming start streamSid=${this.streamSid} wsState=${this.ws.readyState} callSid=${this.callSid}`
-    );
+  async _checkEndCall(userText) {
+    if (String(process.env.INBOUND_END_CALL_ENABLED || "1").trim() === "0") return;
 
     try {
-      if (typeof audioStream.getReader === "function") {
-        const reader = audioStream.getReader();
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (isStale()) break;
-            if (this.ws.readyState !== 1 /* OPEN */) {
-              console.warn(
-                `[InboundSession] WS not open (state=${this.ws.readyState}) while streaming TTS callSid=${this.callSid}`
-              );
-              break;
-            }
-            if (!value || !value.length) continue;
-            if (chunkCount === 0) {
-              console.log(
-                `[InboundSession] TTS first chunk received gen=${pipelineGen} streamSid=${this.streamSid} callSid=${this.callSid}`
-              );
-            }
-            sendMulawChunk(Buffer.from(value));
-            chunkCount++;
-          }
-        } finally {
-          try {
-            reader.releaseLock();
-          } catch {
-            /* ignore */
-          }
-        }
-        console.log(
-          `[InboundSession] TTS done (getReader) chunks=${chunkCount} callSid=${this.callSid}`
-        );
-      } else if (typeof audioStream[Symbol.asyncIterator] === "function") {
-        for await (const chunk of audioStream) {
-          if (isStale()) break;
-          if (this.ws.readyState !== 1 /* OPEN */) break;
-          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          if (!buf.length) continue;
-          sendMulawChunk(buf);
-          chunkCount++;
-        }
-        console.log(
-          `[InboundSession] TTS done (asyncIterator) chunks=${chunkCount} callSid=${this.callSid}`
-        );
-      } else {
-        await new Promise((resolve) => {
-          audioStream.on("data", (chunk) => {
-            if (isStale()) {
-              audioStream.destroy?.();
-              resolve();
-              return;
-            }
-            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            if (buf.length > 0) {
-              sendMulawChunk(buf);
-              chunkCount++;
-            }
-          });
-          audioStream.on("end", () => {
-            console.log(
-              `[InboundSession] TTS done (on-data) chunks=${chunkCount} callSid=${this.callSid}`
-            );
-            resolve();
-          });
-          audioStream.on("error", (err) => {
-            console.warn(
-              `[InboundSession] TTS stream error callSid=${this.callSid}: ${err.message}`
-            );
-            resolve();
-          });
-        });
-      }
-    } finally {
-      this.isBotSpeaking = false;
+      const endTurn = await analyzeInboundEndCallTurn({
+        text: userText,
+        clinicPrompt: this.clinicPrompt,
+        knowledgePrompt: this.knowledgePrompt
+      });
+
+      if (!endTurn.endCall) return;
+
+      this._pendingEndCall = endTurn;
+      const fallbackFarewell = String(
+        process.env.TWILIO_INBOUND_VOICE_FAREWELL ||
+          "Thank you for calling. Take care and goodbye."
+      ).trim();
+      const farewell = String(endTurn.farewell || "").trim() || fallbackFarewell;
+
+      console.log(`[InboundSession] end-call farewell="${farewell.slice(0, 80)}" callSid=${this.callSid}`);
+      this.realtime.speakText(farewell);
+    } catch (err) {
+      console.warn(
+        `[InboundSession] end-call classify failed callSid=${this.callSid}: ${err.message}`
+      );
     }
-
-    if (isStale() || !mulawParts.length) return null;
-    return Buffer.concat(mulawParts);
   }
 
-  // ─── Barge-in & cancellation ───────────────────────────────────────────────
+  async _maybeHangupAfterFarewell(transcript) {
+    if (!this._pendingEndCall) return;
 
-  _handleBargeIn() {
-    if (!this.isBotSpeaking || this._greetingActive) return;
-    console.log(`[InboundSession] barge-in detected callSid=${this.callSid}`);
-    this._cancelPipeline();
-    this._clearTwilioAudio();
-  }
+    const spoken = String(transcript || "").trim();
+    if (!spoken) return;
 
-  _cancelPipeline() {
-    console.log(
-      `[InboundSession] _cancelPipeline oldGen=${this._pipelineGen} callSid=${this.callSid}`
-    );
-    this.cancelFlag = true;
-    this.isBotSpeaking = false;
-    this._pipelineGen++; // invalidates all in-flight _streamTTSToTwilio calls
+    this._pendingEndCall = null;
+
+    if (this.clinicId && this.callSid) {
+      try {
+        await endCall(this.callSid, { clinicId: this.clinicId });
+        console.log(`[InboundSession] Twilio call ended callSid=${this.callSid}`);
+      } catch (hangErr) {
+        console.error(
+          `[InboundSession] endCall REST failed callSid=${this.callSid}: ${hangErr.message}`
+        );
+      }
+    }
   }
 
   _clearTwilioAudio() {
@@ -764,7 +303,5 @@ class InboundCallSession {
     }
   }
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 module.exports = { InboundCallSession };

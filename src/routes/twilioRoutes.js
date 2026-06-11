@@ -26,7 +26,7 @@ router.get("/voice/tts/:token", ttsPlaybackAudio);
 router.post("/voice/twiml", voiceTwiml);
 router.post("/voice/dial-result", voiceDialResultTwiml);
 
-// Inbound PSTN voice bot (live-streaming via Twilio Media Streams + Deepgram)
+// Inbound PSTN voice bot (Twilio Media Streams + OpenAI Realtime)
 router.post("/voice/inbound", inboundVoiceWebhook);
 router.post("/voice/stream-status", inboundVoiceStreamStatus);
 router.post("/voice/inbound/fallback", inboundVoiceFallbackTwiml);

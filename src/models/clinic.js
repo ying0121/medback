@@ -59,15 +59,10 @@ const Clinic = sequelize.define(
       type: DataTypes.STRING(255),
       allowNull: true
     },
-    elevenlabsApiKey: {
-      type: DataTypes.TEXT,
+    openaiVoice: {
+      type: DataTypes.STRING(64),
       allowNull: true,
-      field: "elevenlabs_api_key"
-    },
-    elevenlabsVoiceId: {
-      type: DataTypes.STRING(128),
-      allowNull: true,
-      field: "elevenlabs_voice_id"
+      field: "openai_voice"
     },
     twilioPhoneNumber: {
       type: DataTypes.STRING(64),

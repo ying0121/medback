@@ -1,5 +1,5 @@
 /**
- * Short-lived in-memory cache for ElevenLabs MP3 buffers served via Twilio <Play>.
+ * Short-lived in-memory cache for TTS MP3 buffers served via Twilio <Play>.
  *
  * Twilio dials the URL we hand it within a few seconds, so a 12-minute TTL is
  * plenty and the cache stays small. Entries are pruned lazily (on every

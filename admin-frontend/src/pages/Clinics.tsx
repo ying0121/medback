@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { Pencil, Plus, Trash2, Building2, RefreshCw, Mic2, AudioLines, Play, Phone, Eye, EyeOff, MessageSquareText, Upload, X } from "lucide-react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw, AudioLines, Phone, Eye, EyeOff, MessageSquareText, Upload, X } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import VoicePickerDialog from "@/components/admin/VoicePickerDialog";
 import { DataTable, type Column } from "@/components/admin/DataTable";
@@ -22,9 +22,7 @@ import {
   syncClinicsFromExternalApi,
   getClinicTwilioConfig,
   updateClinicTwilioConfig,
-  getClinicElevenLabsConfig,
-  updateClinicElevenLabsApiKey,
-  updateClinicElevenLabsVoice,
+  updateClinicBotVoice,
   getClinicGreetings,
   updateClinicGreetings,
   previewClinicGreeting,
@@ -100,11 +98,6 @@ export default function Clinics() {
   const [twilioPhoneDisplay, setTwilioPhoneDisplay] = useState("+1");
   const [savingTwilio, setSavingTwilio] = useState(false);
   const [loadingTwilio, setLoadingTwilio] = useState(false);
-  const [elevenLabsClinic, setElevenLabsClinic] = useState<Clinic | null>(null);
-  const [elevenLabsKey, setElevenLabsKey] = useState("");
-  const [savingElevenLabs, setSavingElevenLabs] = useState(false);
-  const [loadingElevenLabs, setLoadingElevenLabs] = useState(false);
-
   const [voiceModalClinic, setVoiceModalClinic] = useState<Clinic | null>(null);
   const [savingVoice, setSavingVoice] = useState(false);
 
@@ -204,21 +197,6 @@ export default function Clinics() {
     refresh();
   };
 
-  const openElevenLabs = async (c: Clinic) => {
-    setElevenLabsClinic(c);
-    setElevenLabsKey("");
-    try {
-      setLoadingElevenLabs(true);
-      const data = await getClinicElevenLabsConfig(c.id);
-      setElevenLabsKey(data.apiKey || "");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to load ElevenLabs key";
-      toast.error(msg);
-    } finally {
-      setLoadingElevenLabs(false);
-    }
-  };
-
   const openGreeting = async (c: Clinic) => {
     setGreetingClinic(c);
     setGreetingTab("inbound");
@@ -311,8 +289,8 @@ export default function Clinics() {
     if (!voiceModalClinic) return;
     try {
       setSavingVoice(true);
-      await updateClinicElevenLabsVoice(voiceModalClinic.id, voiceId);
-      toast.success("ElevenLabs voice saved");
+      await updateClinicBotVoice(voiceModalClinic.id, voiceId);
+      toast.success("Bot voice saved");
       setVoiceModalClinic(null);
       refresh();
     } catch (err: unknown) {
@@ -321,25 +299,6 @@ export default function Clinics() {
       throw err;
     } finally {
       setSavingVoice(false);
-    }
-  };
-
-  const saveElevenLabs = async () => {
-    if (!elevenLabsClinic) return;
-    const trimmed = elevenLabsKey.trim();
-    if (!trimmed) return toast.error("API key is required");
-    try {
-      setSavingElevenLabs(true);
-      await updateClinicElevenLabsApiKey(elevenLabsClinic.id, trimmed);
-      toast.success("ElevenLabs API key saved");
-      setElevenLabsClinic(null);
-      setElevenLabsKey("");
-      refresh();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save API key";
-      toast.error(msg);
-    } finally {
-      setSavingElevenLabs(false);
     }
   };
 
@@ -453,25 +412,14 @@ export default function Clinics() {
         <Button
           size="icon"
           variant="ghost"
-          onClick={() => openElevenLabs(r)}
-          title={r.elevenLabsConfigured ? "ElevenLabs API key — configured" : "ElevenLabs API key"}
-        >
-          <Mic2 className={`h-4 w-4 ${r.elevenLabsConfigured ? "text-violet-600" : "text-muted-foreground"}`} />
-        </Button>
-        <Button
-          size="icon"
-          variant="ghost"
           onClick={() => setVoiceModalClinic(r)}
-          disabled={!r.elevenLabsConfigured}
           title={
-            r.elevenLabsConfigured
-              ? r.elevenLabsVoiceConfigured
-                ? "ElevenLabs voice — configured"
-                : "Choose ElevenLabs voice"
-              : "Save an API key first"
+            r.botVoiceConfigured
+              ? `Bot voice — ${r.openaiVoice || "configured"}`
+              : "Choose bot voice (OpenAI Realtime)"
           }
         >
-          <AudioLines className={`h-4 w-4 ${r.elevenLabsVoiceConfigured ? "text-violet-600" : "text-muted-foreground"}`} />
+          <AudioLines className={`h-4 w-4 ${r.botVoiceConfigured ? "text-violet-600" : "text-muted-foreground"}`} />
         </Button>
         <Button size="icon" variant="ghost" onClick={() => openEdit(r)}><Pencil className="h-4 w-4" /></Button>
         <Button size="icon" variant="ghost" onClick={() => setConfirmDelete(r)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
@@ -666,7 +614,7 @@ export default function Clinics() {
           if (!o) setVoiceModalClinic(null);
         }}
         clinic={voiceModalClinic ? { id: voiceModalClinic.id, name: voiceModalClinic.name } : null}
-        initialSelectedVoiceId={voiceModalClinic?.elevenLabsVoiceId || ""}
+        initialSelectedVoiceId={voiceModalClinic?.openaiVoice || ""}
         saving={savingVoice}
         onSave={saveVoiceSelection}
       />
@@ -773,53 +721,6 @@ export default function Clinics() {
             </Button>
             <Button onClick={saveTwilio} disabled={savingTwilio || loadingTwilio} className="bg-gradient-primary text-primary-foreground">
               {loadingTwilio ? "Loading..." : savingTwilio ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={!!elevenLabsClinic}
-        onOpenChange={(o) => {
-          if (!o) {
-            setElevenLabsClinic(null);
-            setElevenLabsKey("");
-          }
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>ElevenLabs account</DialogTitle>
-            <DialogDescription>
-              {elevenLabsClinic ? (
-                <>
-                  Set the API key for <strong>{elevenLabsClinic.name}</strong>. The key is stored on the server.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 py-1">
-            <Field label="API key">
-              <SecretInput
-                autoComplete="off"
-                placeholder="xi_…"
-                value={elevenLabsKey}
-                onChange={(e) => setElevenLabsKey(e.target.value)}
-              />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setElevenLabsClinic(null);
-                setElevenLabsKey("");
-              }}
-            >
-              Cancel
-            </Button>
-            <Button onClick={saveElevenLabs} disabled={savingElevenLabs || loadingElevenLabs} className="bg-gradient-primary text-primary-foreground">
-              {loadingElevenLabs ? "Loading..." : savingElevenLabs ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

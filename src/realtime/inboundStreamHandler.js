@@ -10,7 +10,7 @@
  *      + call row in `pendingInboundSessions` keyed by CallSid.
  *   2. WS   /api/twilio/voice/stream   — Media Stream connects, "start" event
  *      retrieves the pending context, creates an InboundCallSession, and starts
- *      the Deepgram → LLM → ElevenLabs pipeline.
+ *      the OpenAI Realtime voice pipeline.
  */
 
 const { WebSocketServer } = require("ws");
@@ -25,7 +25,7 @@ const STREAM_PATH = configuredStreamPath.startsWith("/") ? configuredStreamPath 
 /**
  * Clinic context + call row stored by the HTTP inbound webhook
  * until the WebSocket "start" event fires (usually within ~1 s).
- * callSid → { clinicPrompt, knowledgePrompt, elApiKey, elVoiceId, clinicId, clinicName, call, greetingText }
+ * callSid → { clinicPrompt, knowledgePrompt, openaiVoice, clinicId, clinicName, call, greetingText }
  */
 const pendingInboundSessions = new Map();
 

@@ -30,11 +30,10 @@ export interface Clinic {
   web?: string;
   portal?: string;
   twilioConfigured?: boolean;
-  /** Present when loaded from API; never exposes the secret key. */
-  elevenLabsConfigured?: boolean;
-  elevenLabsVoiceConfigured?: boolean;
-  /** Saved ElevenLabs voice_id for inbound TTS (not secret). */
-  elevenLabsVoiceId?: string | null;
+  /** OpenAI Realtime / TTS voice configured for this clinic. */
+  botVoiceConfigured?: boolean;
+  /** Saved OpenAI voice id (e.g. marin, alloy). */
+  openaiVoice?: string | null;
   /** Per-clinic inbound phone greeting (may use placeholders). */
   greetingConfigured?: boolean;
   /** Per-clinic web chat greeting (Socket.IO connect). */
@@ -67,42 +66,11 @@ export interface ClinicGreetingsConfig {
 /** @deprecated Use ClinicGreetingsConfig */
 export type ClinicGreetingConfig = ClinicGreetingsConfig;
 
-export interface ElevenLabsVerifiedLanguage {
-  language: string;
-  locale: string | null;
-  accent: string | null;
-}
-
-export interface ElevenLabsVoice {
-  voice_id: string;
+export interface BotVoice {
+  id: string;
   name: string;
-  category: string | null;
-  description: string | null;
-  language: string | null;
-  labels: Record<string, string>;
-  verified_languages: ElevenLabsVerifiedLanguage[];
-  preview_url: string | null;
-  image_url: string | null;
-  source?: "workspace" | "shared";
+  description: string;
 }
-
-export interface ElevenLabsVoicesPage {
-  voices: ElevenLabsVoice[];
-  page: number;
-  page_size: number;
-  has_more: boolean;
-}
-
-export type ElevenLabsVoiceListParams = {
-  page?: number;
-  page_size?: number;
-  language?: string;
-  gender?: string;
-  age?: string;
-  accent?: string;
-  category?: string;
-  search?: string;
-};
 
 export interface User {
   id: string;
@@ -232,21 +200,14 @@ export async function syncClinicsFromExternalApi() {
   return data;
 }
 
-export async function updateClinicElevenLabsApiKey(clinicId: string, apiKey: string) {
-  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`, {
-    method: "PATCH",
-    body: JSON.stringify({ apiKey })
-  });
+export async function getClinicBotVoice(clinicId: string): Promise<{ voice: string }> {
+  return request<{ voice: string }>(`/api/admin/dashboard/clinics/${clinicId}/bot-voice`);
 }
 
-export async function getClinicElevenLabsConfig(clinicId: string): Promise<{ apiKey: string }> {
-  return request<{ apiKey: string }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`);
-}
-
-export async function updateClinicElevenLabsVoice(clinicId: string, voiceId: string) {
-  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/elevenlabs`, {
+export async function updateClinicBotVoice(clinicId: string, voice: string) {
+  await request<{ success: boolean; voice: string }>(`/api/admin/dashboard/clinics/${clinicId}/bot-voice`, {
     method: "PATCH",
-    body: JSON.stringify({ voiceId })
+    body: JSON.stringify({ voice })
   });
 }
 
@@ -307,55 +268,14 @@ export async function previewClinicGreeting(
   return data.resolvedPreview;
 }
 
-export async function listClinicElevenLabsVoices(
-  clinicId: string,
-  params: ElevenLabsVoiceListParams = {}
-): Promise<ElevenLabsVoicesPage> {
-  const qs = new URLSearchParams();
-  if (params.page != null) qs.set("page", String(params.page));
-  if (params.page_size != null) qs.set("page_size", String(params.page_size));
-  if (params.language) qs.set("language", params.language);
-  if (params.gender) qs.set("gender", params.gender);
-  if (params.age) qs.set("age", params.age);
-  if (params.accent) qs.set("accent", params.accent);
-  if (params.category) qs.set("category", params.category);
-  if (params.search) qs.set("search", params.search);
-
-  const query = qs.toString();
-  const path = `/api/admin/dashboard/clinics/${clinicId}/elevenlabs/voices${
-    query ? `?${query}` : ""
-  }`;
-
-  const data = await request<ElevenLabsVoicesPage>(path);
-  return {
-    voices: data.voices || [],
-    page: data.page ?? params.page ?? 1,
-    page_size: data.page_size ?? params.page_size ?? 24,
-    has_more: Boolean(data.has_more)
-  };
+export async function listClinicBotVoices(clinicId: string): Promise<{ voices: BotVoice[] }> {
+  return request<{ voices: BotVoice[] }>(`/api/admin/dashboard/clinics/${clinicId}/bot-voice/voices`);
 }
 
-/** Server-generated preview MP3 (uses clinic API key). Caller should revoke object URLs after playback. */
-export async function fetchClinicElevenLabsPreviewBlob(clinicId: string, voiceId: string): Promise<Blob> {
+/** Server-generated preview audio via OpenAI TTS. Caller should revoke object URLs after playback. */
+export async function fetchClinicBotVoicePreviewBlob(clinicId: string, voice: string): Promise<Blob> {
   const res = await fetch(
-    `${API_BASE_URL}/api/admin/dashboard/clinics/${clinicId}/elevenlabs/preview?voiceId=${encodeURIComponent(voiceId)}`,
-    { credentials: "include" }
-  );
-  const ct = res.headers.get("content-type") || "";
-  if (!res.ok) {
-    const data = ct.includes("application/json") ? await res.json().catch(() => ({})) : {};
-    throw new Error((data as { error?: string }).error || "Preview failed");
-  }
-  return res.blob();
-}
-
-/** Proxies ElevenLabs `preview_url` (e.g. GCS) same-origin so the browser can play it. */
-export async function fetchClinicElevenLabsPreviewSourceBlob(
-  clinicId: string,
-  previewUrl: string
-): Promise<Blob> {
-  const res = await fetch(
-    `${API_BASE_URL}/api/admin/dashboard/clinics/${clinicId}/elevenlabs/preview-source?previewUrl=${encodeURIComponent(previewUrl)}`,
+    `${API_BASE_URL}/api/admin/dashboard/clinics/${clinicId}/bot-voice/preview?voice=${encodeURIComponent(voice)}`,
     { credentials: "include" }
   );
   const ct = res.headers.get("content-type") || "";

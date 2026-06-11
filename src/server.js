@@ -14,6 +14,10 @@ const configuredSocketPath = process.env.WEBSOCKET_CHAT_URL || "/ws/chat";
 const socketPath = configuredSocketPath.startsWith("/") ? configuredSocketPath : `/${configuredSocketPath}`;
 const SOCKET_IO_PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS) || 25000;
 const SOCKET_IO_PING_TIMEOUT_MS  = Number(process.env.WS_PING_TIMEOUT_MS) || 60000;
+// When false, clients stay on HTTP long-polling (avoids TRANSPORT_MISMATCH behind proxies
+// that do not forward WebSocket Upgrade headers on /ws/chat).
+const SOCKET_IO_ALLOW_UPGRADES =
+  String(process.env.SOCKET_IO_ALLOW_UPGRADES ?? "1").trim() !== "0";
 
 // Comma-separated list, normalised to lowercase + no trailing slash for fast comparison.
 const allowedOrigins = process.env.ALLOWED_WS_ORIGINS
@@ -27,6 +31,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   path: socketPath,
   transports: ["polling", "websocket"],
+  allowUpgrades: SOCKET_IO_ALLOW_UPGRADES,
   pingInterval: SOCKET_IO_PING_INTERVAL_MS,
   pingTimeout:  SOCKET_IO_PING_TIMEOUT_MS,
   cors: {
@@ -67,7 +72,9 @@ connectDatabase()
     const port = Number(process.env.PORT || 4000);
     server.listen(port, () => {
       logInfo(`Server listening on http://localhost:${port}`);
-      logOk(`Socket.IO ready at http://localhost:${port}${socketPath}`);
+      logOk(
+        `Socket.IO ready at http://localhost:${port}${socketPath} allowUpgrades=${SOCKET_IO_ALLOW_UPGRADES}`
+      );
     });
   })
   .catch((err) => {

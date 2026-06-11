@@ -227,7 +227,11 @@ function attachChatSocket(io) {
   io.engine.on("connection_error", (err) => {
     const origin = err?.req?.headers?.origin || "no-origin";
     const url    = err?.req?.url || "-";
-    logErr(`[SOCKET.IO] connection error origin=${origin} url=${url} message=${err.message}`);
+    const code   = err?.code ?? "-";
+    const ctx    = err?.context ? JSON.stringify(err.context) : "-";
+    logErr(
+      `[SOCKET.IO] connection error origin=${origin} url=${url} code=${code} message=${err.message} context=${ctx}`
+    );
   });
 
   return io;

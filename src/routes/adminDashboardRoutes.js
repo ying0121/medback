@@ -3,13 +3,12 @@ const {
   listClinics,
   createClinic,
   updateClinic,
-  getClinicElevenLabsConfig,
-  updateClinicElevenLabsApiKey,
+  getClinicBotVoice,
+  updateClinicBotVoice,
   getClinicTwilioConfig,
   updateClinicTwilioConfig,
-  listClinicElevenLabsVoices,
-  previewClinicElevenLabsVoice,
-  streamElevenLabsPreviewSource,
+  listClinicBotVoices,
+  previewClinicBotVoice,
   listConversationsByClinic,
   listConversationMessages,
   getStats,
@@ -29,11 +28,10 @@ router.get("/stats", getStats);
 router.get("/clinics", listClinics);
 router.post("/clinics", createClinic);
 router.patch("/clinics/:id", updateClinic);
-router.get("/clinics/:id/elevenlabs/voices", listClinicElevenLabsVoices);
-router.get("/clinics/:id/elevenlabs/preview", previewClinicElevenLabsVoice);
-router.get("/clinics/:id/elevenlabs/preview-source", streamElevenLabsPreviewSource);
-router.get("/clinics/:id/elevenlabs", getClinicElevenLabsConfig);
-router.patch("/clinics/:id/elevenlabs", updateClinicElevenLabsApiKey);
+router.get("/clinics/:id/bot-voice/voices", listClinicBotVoices);
+router.get("/clinics/:id/bot-voice/preview", previewClinicBotVoice);
+router.get("/clinics/:id/bot-voice", getClinicBotVoice);
+router.patch("/clinics/:id/bot-voice", updateClinicBotVoice);
 router.get("/clinics/:id/twilio", getClinicTwilioConfig);
 router.patch("/clinics/:id/twilio", updateClinicTwilioConfig);
 router.get("/clinics/:id/greeting", getClinicGreeting);

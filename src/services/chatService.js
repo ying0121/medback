@@ -18,7 +18,8 @@ const {
   transcribeAudioBase64
 } = require("./openaiService");
 const { getCallStatus, endCall } = require("./twilioService");
-const { textToSpeechMp3 } = require("./elevenlabsService");
+const { generateSpeechFromText } = require("./openaiService");
+const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
 const { buildClinicContextByBusinessClinicId } = require("./contextPromptService");
 const { getClinicConnectFields } = require("./greetingService");
 
@@ -85,17 +86,13 @@ async function buildContextPrompts(clinicId) {
   return buildClinicContextByBusinessClinicId(clinicId);
 }
 
-async function getClinicElevenLabsConfig(clinicId) {
-  if (!clinicId) return null;
+async function getClinicOpenAiVoice(clinicId) {
+  if (!clinicId) return resolveOpenAiVoice(null);
   const clinic = await Clinic.findOne({
     where: { clinicId },
-    attributes: ["id", "elevenlabsApiKey", "elevenlabsVoiceId"]
+    attributes: ["openaiVoice"]
   });
-  if (!clinic) return null;
-  const apiKey = String(clinic.elevenlabsApiKey || "").trim();
-  const voiceId = String(clinic.elevenlabsVoiceId || "").trim();
-  if (!apiKey || !voiceId) return null;
-  return { apiKey, voiceId };
+  return resolveOpenAiVoice(clinic?.openaiVoice);
 }
 
 async function listMessages(conversationId) {
@@ -213,13 +210,9 @@ async function processIncomingMessage({
           knowledgePrompt: contextPrompts.knowledgePrompt
         }
       );
-      const elevenlabs = await getClinicElevenLabsConfig(conversation.clinicId);
-      if (!elevenlabs) {
-        throw new Error("ElevenLabs is not configured for this clinic.");
-      }
-      const mp3 = await textToSpeechMp3(elevenlabs.apiKey, elevenlabs.voiceId, assistantText);
-      const audioBase64Out = mp3.toString("base64");
-      const audioMimeTypeOut = "audio/mpeg";
+      const voice = await getClinicOpenAiVoice(conversation.clinicId);
+      const { audioBase64: audioBase64Out, audioMimeType: audioMimeTypeOut } =
+        await generateSpeechFromText({ text: assistantText, voice });
 
       await createMessage({
         conversationId: ensuredConversationId,

@@ -1,7 +1,11 @@
 const axios = require("axios");
 const { Op } = require("sequelize");
 const { Conversation, Message, User, Clinic, Call, IncomingMessage } = require("../db");
-const { listVoicesForAdmin, textToSpeechMp3 } = require("../services/elevenlabsService");
+const { generateSpeechFromText } = require("../services/openaiService");
+const {
+  listOpenAiVoicesForAdmin,
+  resolveOpenAiVoice
+} = require("../services/openaiRealtimeVoices");
 const { detectAudioMimeFromBase64 } = require("../utils/audioMime");
 const {
   GREETING_PLACEHOLDERS,
@@ -37,9 +41,8 @@ function makeClinicSummary(clinicId) {
     acronym: `C${clinicId}`,
     city: "",
     twilioConfigured: false,
-    elevenLabsConfigured: false,
-    elevenLabsVoiceConfigured: false,
-    elevenLabsVoiceId: null
+    botVoiceConfigured: false,
+    openaiVoice: null
   };
 }
 
@@ -68,9 +71,8 @@ function mapClinicRowToApi(row) {
         row.twilioApiKeySecret &&
         row.twilioTwimlAppSid
     ),
-    elevenLabsConfigured: Boolean(row.elevenlabsApiKey),
-    elevenLabsVoiceConfigured: Boolean(row.elevenlabsVoiceId),
-    elevenLabsVoiceId: row.elevenlabsVoiceId ? String(row.elevenlabsVoiceId) : null,
+    botVoiceConfigured: Boolean(row.openaiVoice),
+    openaiVoice: row.openaiVoice ? String(row.openaiVoice) : null,
     greetingConfigured: Boolean(String(row.inboundGreeting || "").trim()),
     chatGreetingConfigured: Boolean(String(row.chatGreeting || "").trim())
   };
@@ -337,25 +339,16 @@ function normalizeTwilioUsPhoneNumber(value) {
   return null;
 }
 
-async function updateClinicElevenLabsApiKey(req, res, next) {
+async function updateClinicBotVoice(req, res, next) {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
       return res.status(400).json({ error: "Invalid clinic id." });
     }
 
-    const apiKeyRaw = req.body?.apiKey;
-    const voiceIdRaw = req.body?.voiceId;
-    const apiKey =
-      typeof apiKeyRaw === "string" ? apiKeyRaw.trim() : undefined;
-    const voiceId =
-      typeof voiceIdRaw === "string" ? voiceIdRaw.trim() : undefined;
-
-    if (apiKey === undefined && voiceId === undefined) {
-      return res.status(400).json({ error: "Provide apiKey and/or voiceId." });
-    }
-    if (apiKey !== undefined && !apiKey) {
-      return res.status(400).json({ error: "apiKey cannot be empty when provided." });
+    const voiceRaw = req.body?.voice;
+    if (typeof voiceRaw !== "string" || !voiceRaw.trim()) {
+      return res.status(400).json({ error: "voice is required." });
     }
 
     const clinic = await Clinic.findByPk(id);
@@ -363,29 +356,25 @@ async function updateClinicElevenLabsApiKey(req, res, next) {
       return res.status(404).json({ error: "Clinic not found." });
     }
 
-    const updates = {};
-    if (apiKey !== undefined) updates.elevenlabsApiKey = apiKey;
-    if (voiceId !== undefined) updates.elevenlabsVoiceId = voiceId || null;
-
-    await clinic.update(updates);
-    return res.status(200).json({ success: true });
+    await clinic.update({ openaiVoice: resolveOpenAiVoice(voiceRaw) });
+    return res.status(200).json({ success: true, voice: clinic.openaiVoice });
   } catch (err) {
     return next(err);
   }
 }
 
-async function getClinicElevenLabsConfig(req, res, next) {
+async function getClinicBotVoice(req, res, next) {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
       return res.status(400).json({ error: "Invalid clinic id." });
     }
-    const clinic = await Clinic.findByPk(id, { attributes: ["id", "elevenlabsApiKey"] });
+    const clinic = await Clinic.findByPk(id, { attributes: ["id", "openaiVoice"] });
     if (!clinic) {
       return res.status(404).json({ error: "Clinic not found." });
     }
     return res.status(200).json({
-      apiKey: clinic.elevenlabsApiKey ? String(clinic.elevenlabsApiKey) : ""
+      voice: clinic.openaiVoice ? String(clinic.openaiVoice) : ""
     });
   } catch (err) {
     return next(err);
@@ -485,149 +474,51 @@ async function getClinicTwilioConfig(req, res, next) {
   }
 }
 
-async function listClinicElevenLabsVoices(req, res) {
+async function listClinicBotVoices(req, res) {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
       return res.status(400).json({ error: "Invalid clinic id." });
     }
-    const clinic = await Clinic.findByPk(id, { attributes: ["id", "elevenlabsApiKey"] });
+    const clinic = await Clinic.findByPk(id, { attributes: ["id"] });
     if (!clinic) {
       return res.status(404).json({ error: "Clinic not found." });
     }
-    if (!clinic.elevenlabsApiKey) {
-      return res.status(400).json({ error: "Save an ElevenLabs API key for this clinic first." });
-    }
-    const page = Math.max(1, parseInt(String(req.query?.page || "1"), 10) || 1);
-    const pageSize = Math.min(
-      50,
-      Math.max(10, parseInt(String(req.query?.page_size || "24"), 10) || 24)
-    );
-    const result = await listVoicesForAdmin(clinic.elevenlabsApiKey, {
-      page,
-      page_size: pageSize,
-      language: req.query?.language,
-      gender: req.query?.gender,
-      age: req.query?.age,
-      accent: req.query?.accent,
-      category: req.query?.category,
-      search: req.query?.search
-    });
-    return res.status(200).json({
-      voices: result.voices,
-      page: result.page,
-      page_size: result.page_size,
-      has_more: result.has_more
-    });
+    return res.status(200).json({ voices: listOpenAiVoicesForAdmin() });
   } catch (err) {
-    const msg = String(err?.response?.data?.detail?.message || err?.message || "Failed to list voices.");
+    const msg = String(err?.message || "Failed to list voices.");
     return res.status(502).json({ error: msg });
   }
 }
 
-async function previewClinicElevenLabsVoice(req, res) {
+async function previewClinicBotVoice(req, res) {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
       return res.status(400).json({ error: "Invalid clinic id." });
     }
-    const voiceId = String(req.query?.voiceId || "").trim();
-    if (!voiceId) {
-      return res.status(400).json({ error: "voiceId query parameter is required." });
+    const voice = resolveOpenAiVoice(req.query?.voice || req.query?.voiceId || "");
+    if (!voice) {
+      return res.status(400).json({ error: "voice query parameter is required." });
     }
 
-    const clinic = await Clinic.findByPk(id, { attributes: ["id", "elevenlabsApiKey"] });
+    const clinic = await Clinic.findByPk(id, { attributes: ["id"] });
     if (!clinic) {
       return res.status(404).json({ error: "Clinic not found." });
-    }
-    if (!clinic.elevenlabsApiKey) {
-      return res.status(400).json({ error: "Save an ElevenLabs API key for this clinic first." });
     }
 
     const sample =
-      String(process.env.ELEVENLABS_PREVIEW_TEXT || "").trim() ||
+      String(process.env.OPENAI_VOICE_PREVIEW_TEXT || "").trim() ||
       "Hello, this is a short preview of how I will sound on your phone line.";
 
-    const mp3 = await textToSpeechMp3(clinic.elevenlabsApiKey, voiceId, sample);
-    res.setHeader("Content-Type", "audio/mpeg");
+    const { audioBase64, audioMimeType } = await generateSpeechFromText({ text: sample, voice });
+    const buf = Buffer.from(audioBase64, "base64");
+    res.setHeader("Content-Type", audioMimeType || "audio/mpeg");
     res.setHeader("Cache-Control", "no-store");
-    return res.send(mp3);
+    return res.send(buf);
   } catch (err) {
-    const msg = String(err?.response?.data?.detail?.message || err?.message || "Preview failed.");
+    const msg = String(err?.message || "Preview failed.");
     return res.status(502).json({ error: msg });
-  }
-}
-
-function isAllowedElevenLabsPreviewUrl(parsed) {
-  if (parsed.protocol !== "https:") return false;
-  const host = String(parsed.hostname || "").toLowerCase();
-  if (host === "api.elevenlabs.io") return true;
-  if (host === "elevenlabs.io" || host.endsWith(".elevenlabs.io")) return true;
-  if (host === "storage.googleapis.com") {
-    const p = String(parsed.pathname || "").toLowerCase();
-    return p.includes("eleven");
-  }
-  return false;
-}
-
-/**
- * Proxies ElevenLabs `preview_url` so the admin UI can play audio same-origin (avoids browser CORS / decode issues).
- * GET ?previewUrl=https%3A%2F%2F...
- */
-async function streamElevenLabsPreviewSource(req, res) {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ error: "Invalid clinic id." });
-    }
-    const previewUrl = String(req.query?.previewUrl || "").trim();
-    if (!previewUrl.startsWith("https://")) {
-      return res.status(400).json({ error: "previewUrl must be an https URL." });
-    }
-
-    let parsed;
-    try {
-      parsed = new URL(previewUrl);
-    } catch {
-      return res.status(400).json({ error: "Invalid previewUrl." });
-    }
-    if (!isAllowedElevenLabsPreviewUrl(parsed)) {
-      return res.status(400).json({ error: "Preview URL host is not allowed." });
-    }
-
-    const clinic = await Clinic.findByPk(id, { attributes: ["id", "elevenlabsApiKey"] });
-    if (!clinic) {
-      return res.status(404).json({ error: "Clinic not found." });
-    }
-    if (!clinic.elevenlabsApiKey) {
-      return res.status(400).json({ error: "Save an ElevenLabs API key for this clinic first." });
-    }
-
-    const headers = { Accept: "audio/*,*/*;q=0.9" };
-    if (parsed.hostname.toLowerCase() === "api.elevenlabs.io") {
-      headers["xi-api-key"] = clinic.elevenlabsApiKey;
-    }
-
-    const response = await axios.get(previewUrl, {
-      responseType: "arraybuffer",
-      headers,
-      timeout: 45000,
-      maxRedirects: 5,
-      validateStatus: (s) => s >= 200 && s < 400
-    });
-
-    const rawCt = response.headers["content-type"];
-    const ct =
-      typeof rawCt === "string" && rawCt.trim().length
-        ? rawCt.split(";")[0].trim()
-        : "audio/mpeg";
-    res.setHeader("Content-Type", ct);
-    res.setHeader("Cache-Control", "private, max-age=120");
-    return res.send(Buffer.from(response.data));
-  } catch (err) {
-    const status = err?.response?.status;
-    const msg = String(err?.response?.data?.detail?.message || err?.message || "Failed to fetch preview.");
-    return res.status(status === 401 || status === 403 ? status : 502).json({ error: msg });
   }
 }
 
@@ -893,13 +784,12 @@ module.exports = {
   listClinics,
   createClinic,
   updateClinic,
-  updateClinicElevenLabsApiKey,
-  getClinicElevenLabsConfig,
+  updateClinicBotVoice,
+  getClinicBotVoice,
   updateClinicTwilioConfig,
   getClinicTwilioConfig,
-  listClinicElevenLabsVoices,
-  previewClinicElevenLabsVoice,
-  streamElevenLabsPreviewSource,
+  listClinicBotVoices,
+  previewClinicBotVoice,
   listConversationsByClinic,
   listConversationMessages,
   getStats,

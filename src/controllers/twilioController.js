@@ -4,7 +4,7 @@
  * Inbound PSTN voice bot uses Twilio Media Streams (live-streaming mode):
  *   1. POST /voice/inbound  – returns <Connect><Stream> TwiML; pre-loads clinic
  *      context and registers it for the WebSocket phase.
- *   2. WS   /api/twilio/voice/stream  – Deepgram STT → LLM → ElevenLabs TTS
+ *   2. WS   /api/twilio/voice/stream  – OpenAI Realtime (STT + LLM + TTS)
  *      pipeline runs in real-time over the Media Stream WebSocket
  *      (see realtime/inboundStreamHandler.js + services/inboundCallSession.js).
  *
@@ -188,7 +188,7 @@ module.exports = {
   // POST /api/twilio/voice/inbound
   // Configure your Twilio phone number "A call comes in" → Webhook → this URL (POST).
   // Responds with TwiML <Connect><Stream> to open a bidirectional Media Stream
-  // WebSocket. The live pipeline (Deepgram STT → LLM → ElevenLabs TTS) runs
+  // WebSocket. The live pipeline (OpenAI Realtime) runs
   // entirely over the WebSocket in inboundStreamHandler.js.
   async inboundVoiceWebhook(req, res) {
     try {
@@ -213,8 +213,8 @@ module.exports = {
         });
       }
 
-      // 2. Load clinic context (prompts + ElevenLabs credentials).
-      let clinicContext = { clinicPrompt: null, knowledgePrompt: null, elApiKey: null, elVoiceId: null };
+      // 2. Load clinic context (prompts + OpenAI Realtime voice).
+      let clinicContext = { clinicPrompt: null, knowledgePrompt: null, openaiVoice: null };
       let inboundClinicId = null;
       try {
         const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
@@ -224,7 +224,7 @@ module.exports = {
         greetingText = resolveInboundGreeting(clinicRow || { name: clinicContext.clinicName });
         // eslint-disable-next-line no-console
         console.log(
-          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} hasElKey=${!!clinicContext.elApiKey} hasElVoice=${!!clinicContext.elVoiceId} customGreeting=${!!clinicRow?.inboundGreeting}`
+          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} voice=${clinicContext.openaiVoice || "-"} customGreeting=${!!clinicRow?.inboundGreeting}`
         );
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -543,7 +543,7 @@ module.exports = {
   },
 
   // GET /api/twilio/voice/tts/:token
-  // Twilio <Play> fetches this URL (short-lived ElevenLabs MP3).
+  // Twilio <Play> fetches this URL (short-lived cached MP3).
   async ttsPlaybackAudio(req, res) {
     const buf = getTtsPlaybackBuffer(req.params.token);
     if (!buf) return res.sendStatus(404);

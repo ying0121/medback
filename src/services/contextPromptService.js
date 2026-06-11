@@ -77,23 +77,23 @@ async function buildClinicContextByBusinessClinicId(businessClinicId) {
   };
 }
 
+const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
+
 /**
- * Build prompts + ElevenLabs credentials using the **system** clinic PK
+ * Build prompts + OpenAI Realtime voice using the **system** clinic PK
  * (inbound voice entrypoint).
  *
- * ElevenLabs credentials priority:
- *   1. Per-clinic DB values (`clinic.elevenlabsApiKey`, `clinic.elevenlabsVoiceId`)
- *   2. System-wide env fallback (`SYSTEM_ELEVEN_LABS_API_KEY`, `SYSTEM_ELEVEN_LABS_VOICE_ID`)
- *   3. null  (caller path falls back to Twilio <Say>)
+ * Voice priority:
+ *   1. Per-clinic `clinics.openai_voice`
+ *   2. `OPENAI_REALTIME_VOICE` / `OPENAI_TTS_VOICE` env fallback
  *
- * @returns {Promise<{ clinicPrompt: string|null, knowledgePrompt: string|null, elApiKey: string|null, elVoiceId: string|null, clinicName: string }>}
+ * @returns {Promise<{ clinicPrompt: string|null, knowledgePrompt: string|null, openaiVoice: string, clinicName: string }>}
  */
 async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
   const empty = {
     clinicPrompt: null,
     knowledgePrompt: null,
-    elApiKey: null,
-    elVoiceId: null,
+    openaiVoice: resolveOpenAiVoice(null),
     clinicName: ""
   };
   const id = Number(systemClinicId);
@@ -104,15 +104,6 @@ async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
 
   const knowledgeRows = await loadActiveKnowledge(clinic.clinicId);
 
-  const elApiKey =
-    String(clinic.elevenlabsApiKey || "").trim() ||
-    String(process.env.SYSTEM_ELEVEN_LABS_API_KEY || "").trim() ||
-    null;
-  const elVoiceId =
-    String(clinic.elevenlabsVoiceId || "").trim() ||
-    String(process.env.SYSTEM_ELEVEN_LABS_VOICE_ID || "").trim() ||
-    null;
-
   const clinicName =
     String(clinic.name || "").trim() ||
     String(clinic.acronym || "").trim() ||
@@ -121,8 +112,7 @@ async function buildInboundClinicContextBySystemClinicId(systemClinicId) {
   return {
     clinicPrompt: formatClinicPrompt(clinic),
     knowledgePrompt: formatKnowledgePrompt(knowledgeRows),
-    elApiKey,
-    elVoiceId,
+    openaiVoice: resolveOpenAiVoice(clinic.openaiVoice),
     clinicName
   };
 }
