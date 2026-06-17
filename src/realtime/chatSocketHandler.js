@@ -6,7 +6,8 @@
  *                     clinicName, clinicAcronym, chat greeting, themeColor, avatar
  *   - `chat`        : a text turn, returns assistant reply
  *   - `voice`       : an audio turn, returns transcript + assistant reply + TTS
- *   - `appointment` : server response when OpenAI detects the user wants to book
+ *   - `appointment` : client submits booking details after bot signals intent;
+ *                     server emails staff and replies as a chat or voice turn
  *   - `pong`        : keepalive (silently ignored)
  *
  * Responses are emitted with the helper-built payload shape so all client
@@ -19,6 +20,7 @@
 
 const {
   processIncomingMessage,
+  processAppointmentRequest,
   resolveConversationOnConnect,
   getClinicConnectInfoByBusinessClinicId
 } = require("../services/chatService");
@@ -26,7 +28,7 @@ const { Conversation } = require("../db");
 const { logOk, logInfo, logErr, logDbg } = require("./socketLogger");
 
 /** Allowed top-level message types from clients. `pong` is keepalive only. */
-const HANDLED_TYPES = ["connect", "chat", "voice"];
+const HANDLED_TYPES = ["connect", "chat", "voice", "appointment"];
 
 /**
  * Build a uniform response payload. Centralising this prevents the client
@@ -113,6 +115,13 @@ async function handleConnect(socket, parsed) {
   }));
 }
 
+function resolveReplyType(parsed, socket) {
+  if (parsed.replyType === "chat" || parsed.replyType === "voice") return parsed.replyType;
+  if (parsed.messageType === "chat" || parsed.messageType === "voice") return parsed.messageType;
+  if (socket.lastTurnType === "chat" || socket.lastTurnType === "voice") return socket.lastTurnType;
+  return "chat";
+}
+
 /**
  * Handle either a chat or voice turn; the only difference is which payload
  * field is required (`message` vs `audio`).
@@ -154,6 +163,7 @@ async function handleTurn(socket, parsed, msgType) {
   }
 
   const isAppointment = result.responseType === "appointment";
+  if (isAppointment) socket.lastTurnType = msgType;
 
   return send(socket, makePayload({
     type:           result.responseType || msgType,
@@ -167,11 +177,62 @@ async function handleTurn(socket, parsed, msgType) {
   }));
 }
 
+/**
+ * Handle a direct appointment submission from the client (after the bot
+ * signals appointment intent). Sends staff notification email and replies
+ * with a normal chat or voice turn containing the confirmation message.
+ */
+async function handleAppointment(socket, parsed) {
+  const replyType = resolveReplyType(parsed, socket);
+  const conversationId = Number(
+    parsed.conversationId || parsed.conversation_id || socket.conversationId
+  );
+  if (!conversationId) {
+    return send(socket, makePayload({
+      type: replyType, status: "error", message: "Send connect first."
+    }));
+  }
+
+  const patientInfo = parsed.patientInfo;
+  if (!patientInfo || typeof patientInfo !== "object") {
+    return send(socket, makePayload({
+      type: replyType, status: "error", message: "patientInfo is required."
+    }));
+  }
+
+  const result = await processAppointmentRequest({
+    conversationId,
+    clinicId: parsed.clinicId,
+    patientInfo,
+    userInfo: parsed.userInfo || null,
+    isTopic: parsed.isTopic || 0,
+    replyType
+  });
+
+  const responseType = result.replyType || replyType;
+
+  if (result.status === "error") {
+    return send(socket, makePayload({
+      type: responseType,
+      status: "error",
+      message: result.error || "Appointment request failed.",
+      conversationId: result.conversationId
+    }));
+  }
+
+  return send(socket, makePayload({
+    type: responseType,
+    status: "success",
+    response: result.confirmationMessage || null,
+    audio: result.audioBase64 || null,
+    audioMimeType: result.audioMimeType || null,
+    conversationId: result.conversationId
+  }));
+}
+
 /** Per-socket message dispatcher. */
 async function dispatchMessage(socket, raw) {
   const parsed = coerceFrame(raw);
-  console.log("=================================================================================")
-  console.log(parsed)
   if (!parsed) {
     return send(socket, makePayload({
       type: "connect", status: "error", message: "Invalid payload."
@@ -190,6 +251,7 @@ async function dispatchMessage(socket, raw) {
 
   try {
     if (msgType === "connect") return await handleConnect(socket, parsed);
+    if (msgType === "appointment") return await handleAppointment(socket, parsed);
     return await handleTurn(socket, parsed, msgType);
   } catch (err) {
     logErr(`[SOCKET.IO] handler error #${socket.wsId}: ${err.message}`);

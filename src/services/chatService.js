@@ -22,6 +22,7 @@ const { generateSpeechFromText } = require("./openaiService");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
 const { buildClinicContextByBusinessClinicId } = require("./contextPromptService");
 const { getClinicConnectFields } = require("./greetingService");
+const { sendAppointmentRequestEmail } = require("./emailService");
 
 async function createConversation({ clinicId, userInfo }) {
   const created = await Conversation.create({
@@ -62,6 +63,16 @@ async function getClinicConnectInfoByBusinessClinicId(businessClinicId) {
   });
 
   return getClinicConnectFields(clinic);
+}
+
+async function getClinicDetailsForEmail(businessClinicId) {
+  const id = Number(businessClinicId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+
+  return Clinic.findOne({
+    where: { clinicId: id },
+    attributes: ["name", "acronym", "address1", "address2", "city", "state", "zip", "phone", "email", "web"]
+  });
 }
 
 async function resolveConversationOnConnect({ conversationId, clinicId, userInfo }) {
@@ -362,6 +373,103 @@ async function processIncomingMessage({
   }
 }
 
+function summarizePatientInfo(patientInfo = {}) {
+  const parts = [
+    patientInfo.name,
+    patientInfo.phone,
+    patientInfo.email
+  ].filter((value) => value != null && String(value).trim() !== "");
+  return parts.join(" · ") || "Appointment request";
+}
+
+async function processAppointmentRequest({
+  conversationId,
+  clinicId = null,
+  patientInfo,
+  userInfo = null,
+  isTopic = 0,
+  replyType = "chat"
+}) {
+  const conversation = await ensureConversationExists(conversationId);
+  const businessClinicId = clinicId || conversation.clinicId;
+  const [{ clinicName, clinicAcronym }, clinicDetails] = await Promise.all([
+    getClinicConnectInfoByBusinessClinicId(businessClinicId),
+    getClinicDetailsForEmail(businessClinicId)
+  ]);
+  const normalizedReplyType = replyType === "voice" ? "voice" : "chat";
+
+  const patientSummary = summarizePatientInfo(patientInfo);
+
+  await createMessage({
+    conversationId,
+    userType: "user",
+    message: `[Appointment request] ${patientSummary}`,
+    messageType: normalizedReplyType,
+    isTopic,
+    status: "success"
+  });
+
+  const emailResult = await sendAppointmentRequestEmail({
+    clinicName,
+    clinicAcronym,
+    clinic: clinicDetails,
+    conversationId,
+    patientInfo,
+    replyType: normalizedReplyType
+  });
+
+  if (!emailResult.sent) {
+    await createMessage({
+      conversationId,
+      userType: "bot",
+      message: `Appointment notification could not be sent: ${emailResult.reason}`,
+      messageType: normalizedReplyType,
+      isTopic,
+      status: "error"
+    });
+
+    return {
+      conversationId,
+      status: "error",
+      replyType: normalizedReplyType,
+      error: emailResult.reason || "Failed to send appointment notification."
+    };
+  }
+
+  const confirmationMessage =
+    process.env.APPOINTMENT_CONFIRMATION_MESSAGE ||
+    "Your request has been sent to the clinic. They will respond as soon as possible.";
+
+  let audioBase64 = null;
+  let audioMimeType = null;
+
+  if (normalizedReplyType === "voice") {
+    const voice = await getClinicOpenAiVoice(businessClinicId);
+    const speech = await generateSpeechFromText({ text: confirmationMessage, voice });
+    audioBase64 = speech.audioBase64;
+    audioMimeType = speech.audioMimeType;
+  }
+
+  await createMessage({
+    conversationId,
+    userType: "bot",
+    message: confirmationMessage,
+    audio: audioBase64,
+    messageType: normalizedReplyType,
+    isTopic,
+    status: "success"
+  });
+
+  return {
+    conversationId,
+    status: "success",
+    replyType: normalizedReplyType,
+    confirmationMessage,
+    audioBase64,
+    audioMimeType
+  };
+}
+
 async function getTwilioCallStatus(callSid, clinicId) {
   return getCallStatus(callSid, { clinicId });
 }
@@ -373,6 +481,7 @@ async function endTwilioCall(callSid, clinicId) {
 module.exports = {
   createConversation,
   processIncomingMessage,
+  processAppointmentRequest,
   listMessages,
   ensureConversationExists,
   resolveConversationOnConnect,
