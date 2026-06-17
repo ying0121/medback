@@ -266,14 +266,20 @@ async function analyzeInboundEndCallTurn({ text, clinicPrompt = null, knowledgeP
   return parseEndCallTurn(raw);
 }
 
-async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
-  if (!text || !String(text).trim()) return false;
-  if (!openaiApiKey) return false;
+/**
+ * Classify chat/voice user intent in one OpenAI round-trip.
+ * @returns {"normal"|"twilio"|"appointment"}
+ */
+async function analyzeChatIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
+  if (!text || !String(text).trim()) return "normal";
+  if (!openaiApiKey) return "normal";
 
   const intentPrompt = [
-    "Classify if the user is asking for a live phone call.",
-    "Reply with exactly one word: twilio or normal.",
-    "Choose twilio only when user explicitly asks to call, phone call, ring me, talk by phone, or similar."
+    "Classify the user's intent for a medical clinic assistant.",
+    "Reply with exactly one word: normal, twilio, or appointment.",
+    "- twilio: user explicitly wants a live phone call (call me, phone call, ring me, talk by phone, or similar).",
+    "- appointment: user wants to schedule, book, make, change, or cancel an appointment, or asks about appointment availability.",
+    "- normal: all other messages."
   ].join(" ");
 
   const completion = await client.chat.completions.create({
@@ -291,7 +297,14 @@ async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt =
   const result = String(completion.choices?.[0]?.message?.content || "")
     .trim()
     .toLowerCase();
-  return result.includes("twilio");
+  if (result.includes("twilio")) return "twilio";
+  if (result.includes("appointment")) return "appointment";
+  return "normal";
+}
+
+async function detectTwilioIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
+  const intent = await analyzeChatIntent({ text, clinicPrompt, knowledgePrompt });
+  return intent === "twilio";
 }
 
 function parseMimeType(mimeType) {
@@ -414,6 +427,7 @@ module.exports = {
   generateAssistantReply,
   generateInboundMergedTurn,
   generateVoiceReply,
+  analyzeChatIntent,
   detectTwilioIntent,
   detectInboundSpeechLanguage,
   detectInboundEndCallIntent,

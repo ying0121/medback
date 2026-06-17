@@ -2,11 +2,12 @@
  * Socket.IO handler for the user-facing chat channel.
  *
  * The wire protocol is a single `message` event carrying a typed JSON object:
- *   - `connect`  : establish/restore a Conversation row; returns conversationId,
- *                  clinicName, clinicAcronym, chat greeting, themeColor, avatar
- *   - `chat`     : a text turn, returns assistant reply
- *   - `voice`    : an audio turn, returns transcript + assistant reply + TTS
- *   - `pong`     : keepalive (silently ignored)
+ *   - `connect`     : establish/restore a Conversation row; returns conversationId,
+ *                     clinicName, clinicAcronym, chat greeting, themeColor, avatar
+ *   - `chat`        : a text turn, returns assistant reply
+ *   - `voice`       : an audio turn, returns transcript + assistant reply + TTS
+ *   - `appointment` : server response when OpenAI detects the user wants to book
+ *   - `pong`        : keepalive (silently ignored)
  *
  * Responses are emitted with the helper-built payload shape so all client
  * branches see the same field set regardless of which sub-message they used.
@@ -152,14 +153,16 @@ async function handleTurn(socket, parsed, msgType) {
     }));
   }
 
+  const isAppointment = result.responseType === "appointment";
+
   return send(socket, makePayload({
-    type:           msgType,
+    type:           result.responseType || msgType,
     status:         "success",
     twilioIntent:   result.twilioIntent === true,
-    response:       result.assistantReply || null,
+    response:       isAppointment ? null : (result.assistantReply || null),
     transcriptText: result.transcriptText  || null,
-    audio:          result.audioBase64     || null,
-    audioMimeType:  result.audioMimeType   || null,
+    audio:          isAppointment ? null : (result.audioBase64 || null),
+    audioMimeType:  isAppointment ? null : (result.audioMimeType || null),
     conversationId: result.conversationId
   }));
 }
@@ -167,6 +170,8 @@ async function handleTurn(socket, parsed, msgType) {
 /** Per-socket message dispatcher. */
 async function dispatchMessage(socket, raw) {
   const parsed = coerceFrame(raw);
+  console.log("=================================================================================")
+  console.log(parsed)
   if (!parsed) {
     return send(socket, makePayload({
       type: "connect", status: "error", message: "Invalid payload."

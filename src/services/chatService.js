@@ -14,7 +14,7 @@
 const { Conversation, Message, Clinic } = require("../db");
 const {
   generateAssistantReply,
-  detectTwilioIntent,
+  analyzeChatIntent,
   transcribeAudioBase64
 } = require("./openaiService");
 const { getCallStatus, endCall } = require("./twilioService");
@@ -174,13 +174,13 @@ async function processIncomingMessage({
         status: "success"
       });
 
-      const twilioIntent = await detectTwilioIntent({
+      const chatIntent = await analyzeChatIntent({
         text: transcriptText,
         clinicPrompt: contextPrompts.clinicPrompt,
         knowledgePrompt: contextPrompts.knowledgePrompt
       });
 
-      if (twilioIntent) {
+      if (chatIntent === "twilio") {
         const callNotice =
           process.env.TWILIO_CALL_NOTICE ||
           "Connecting you to the doctor now. Please stay on the line.";
@@ -197,6 +197,18 @@ async function processIncomingMessage({
           status: "success",
           twilioIntent: true,
           assistantReply: callNotice,
+          transcriptText,
+          audioBase64: null,
+          audioMimeType: null
+        };
+      }
+
+      if (chatIntent === "appointment") {
+        return {
+          conversationId: ensuredConversationId,
+          status: "success",
+          responseType: "appointment",
+          twilioIntent: false,
           transcriptText,
           audioBase64: null,
           audioMimeType: null
@@ -227,7 +239,8 @@ async function processIncomingMessage({
       return {
         conversationId: ensuredConversationId,
         status: "success",
-        twilioIntent,
+        responseType: "voice",
+        twilioIntent: false,
         assistantReply: assistantText,
         transcriptText,
         audioBase64: audioBase64Out,
@@ -274,13 +287,13 @@ async function processIncomingMessage({
   const updatedAiMessages = toAiMessages(updatedDbMessages);
 
   try {
-    const twilioIntent = await detectTwilioIntent({
+    const chatIntent = await analyzeChatIntent({
       text,
       clinicPrompt: contextPrompts.clinicPrompt,
       knowledgePrompt: contextPrompts.knowledgePrompt
     });
 
-    if (twilioIntent) {
+    if (chatIntent === "twilio") {
       const callNotice =
         process.env.TWILIO_CALL_NOTICE ||
         "Connecting you to the doctor now. Please stay on the line.";
@@ -297,6 +310,15 @@ async function processIncomingMessage({
         status: "success",
         twilioIntent: true,
         assistantReply: callNotice
+      };
+    }
+
+    if (chatIntent === "appointment") {
+      return {
+        conversationId: ensuredConversationId,
+        status: "success",
+        responseType: "appointment",
+        twilioIntent: false
       };
     }
 
@@ -317,7 +339,8 @@ async function processIncomingMessage({
     return {
       conversationId: ensuredConversationId,
       status: "success",
-      twilioIntent,
+      responseType: "chat",
+      twilioIntent: false,
       assistantReply
     };
   } catch (err) {
