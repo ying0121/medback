@@ -7,6 +7,7 @@ const { connectDatabase, syncDatabase } = require("./db");
 const { attachChatSocket } = require("./realtime/chatSocketHandler");
 const { STREAM_PATH, attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
+require("./minized-chatbot-server");
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 

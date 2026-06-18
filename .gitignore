@@ -4,3 +4,5 @@ package-lock.json
 admin-frontend/node_modules
 admin-frontend/dist
 landing-frontend/dist
+signaling/
+scripts/
