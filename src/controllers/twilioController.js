@@ -19,9 +19,9 @@ const {
   setCallMuted,
   generateAccessToken,
   buildOutboundDialTwiml,
-  isE164,
   getClinicTwilioConfigByPhoneNumber,
   getClinicTwilioConfigByClinicId,
+  getDoctorPhoneNumberByClinicId,
 } = require("../services/twilioService");
 const { buildInboundClinicContextBySystemClinicId } = require("../services/contextPromptService");
 const {
@@ -108,33 +108,26 @@ module.exports = {
     // When using the Twilio Voice SDK, Twilio POSTs to this URL with:
     //   To   = whatever the frontend passed in device.connect({ params: { To: "..." } })
     //   From = the browser identity string
-    // If the frontend did NOT pass a phone number as To (e.g. it passed a
-    // TwiML App SID or nothing), we fall back to EXAMPLE_DOCTOR_PHONE_NUMBER.
-    const rawTo = String(req.body?.To || req.query?.To || "").trim();
+    // The doctor's phone number is resolved from the clinic record (clinics.phone).
     const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
-    const doctorPhoneNumber = isE164(rawTo)
-      ? rawTo
-      : String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
 
-    // eslint-disable-next-line no-console
-    console.log(`[Twilio][twiml] rawTo=${rawTo || "-"} resolved doctorPhone=${doctorPhoneNumber || "-"}`);
-
-    if (!doctorPhoneNumber) {
+    if (!Number.isFinite(clinicId) || clinicId <= 0) {
       // eslint-disable-next-line no-console
-      console.error("[Twilio][twiml] no valid doctor phone number — check EXAMPLE_DOCTOR_PHONE_NUMBER in .env");
+      console.error("[Twilio][twiml] clinicId is required.");
       res.type("text/xml");
       return res.send(buildSafeVoiceResponse("We are sorry, the call could not be connected. Please try again later."));
     }
 
     try {
-      const dialActionUrl = `${getServerUrl(req)}/api/twilio/voice/dial-result`;
-      if (!Number.isFinite(clinicId) || clinicId <= 0) {
-        throw new Error("clinicId is required.");
-      }
-      const clinicTwilio = await getClinicTwilioConfigByClinicId(clinicId);
-      const twilioNumber = clinicTwilio.twilioPhoneNumber;
+      const doctorPhoneNumber = await getDoctorPhoneNumberByClinicId(clinicId);
+
       // eslint-disable-next-line no-console
-      console.log(`[Twilio][twiml] callerId=${twilioNumber || "MISSING"} dialAction=${dialActionUrl}`);
+      console.log(`[Twilio][twiml] clinicId=${clinicId} doctorPhone=${doctorPhoneNumber || "-"}`);
+
+      const dialActionUrl = `${getServerUrl(req)}/api/twilio/voice/dial-result`;
+      await getClinicTwilioConfigByClinicId(clinicId);
+      // eslint-disable-next-line no-console
+      console.log(`[Twilio][twiml] doctorPhone=${doctorPhoneNumber || "-"} dialAction=${dialActionUrl}`);
 
       const twiml = await buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl, clinicId });
       // eslint-disable-next-line no-console
@@ -397,12 +390,6 @@ module.exports = {
       const providedIdentity = normalizeIdentity(req.body?.identity || req.query?.identity);
       const identity = providedIdentity || createRandomIdentity("patient");
       const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
-      const doctorPhoneNumber =
-        req.body?.toPhoneNumber ||
-        req.body?.doctorPhoneNumber ||
-        req.query?.toPhoneNumber ||
-        process.env.EXAMPLE_DOCTOR_PHONE_NUMBER ||
-        null;
       const patientPhoneNumber =
         req.body?.patientPhoneNumber ||
         req.body?.fromPhoneNumber ||
@@ -413,6 +400,13 @@ module.exports = {
       if (!Number.isFinite(clinicId) || clinicId <= 0) {
         return res.status(400).json({ error: "clinicId is required." });
       }
+
+      const doctorPhoneNumber =
+        req.body?.toPhoneNumber ||
+        req.body?.doctorPhoneNumber ||
+        req.query?.toPhoneNumber ||
+        (await getDoctorPhoneNumberByClinicId(clinicId));
+
       if (!doctorPhoneNumber || !patientPhoneNumber) {
         return res.status(400).json({
           error: "doctor and patient phone numbers are required."

@@ -33,12 +33,24 @@ function normalizePhone(phone) {
   return digits ? `+${digits}` : "";
 }
 
-async function getClinicTwilioConfigByClinicId(clinicId) {
+async function resolveSystemClinicId(clinicId) {
   const id = Number(clinicId);
   if (!Number.isFinite(id) || id <= 0) {
     throw new Error("clinicId is required.");
   }
-  const clinic = await Clinic.findByPk(id, {
+  const byPk = await Clinic.findByPk(id, { attributes: ["id"] });
+  if (byPk) return Number(byPk.id);
+  const byBusinessId = await Clinic.findOne({
+    where: { clinicId: id },
+    attributes: ["id"]
+  });
+  if (byBusinessId) return Number(byBusinessId.id);
+  throw new Error("Clinic not found.");
+}
+
+async function getClinicTwilioConfigByClinicId(clinicId) {
+  const systemClinicId = await resolveSystemClinicId(clinicId);
+  const clinic = await Clinic.findByPk(systemClinicId, {
     attributes: [
       "id",
       "twilioPhoneNumber",
@@ -67,6 +79,15 @@ async function getClinicTwilioConfigByClinicId(clinicId) {
     throw new Error("Clinic Twilio account SID, auth token, phone number and caller ID are required.");
   }
   return cfg;
+}
+
+async function getDoctorPhoneNumberByClinicId(clinicId) {
+  const systemClinicId = await resolveSystemClinicId(clinicId);
+  const clinic = await Clinic.findByPk(systemClinicId, { attributes: ["id", "phone"] });
+  if (!clinic) throw new Error("Clinic not found.");
+  const phone = normalizePhone(clinic.phone);
+  if (!phone) throw new Error("Clinic phone number is required.");
+  return phone;
 }
 
 async function getClinicTwilioConfigByPhoneNumber(phoneNumber) {
@@ -129,12 +150,12 @@ async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl, cl
 
   const twiml = new twilio.twiml.VoiceResponse();
   // Strict bridge mode: no auto speech, only doctor <-> patient connection.
-  const dial = twiml.dial({ answerOnBridge: true, callerId: cfg.twilioCallerId });
+  const dial = twiml.dial({ answerOnBridge: true, callerId: cfg.twilioPhoneNumber });
   dial.number(patientPhoneNumber);
 
   const options = {
     to: toPhoneNumber,
-    from: cfg.twilioCallerId,
+    from: cfg.twilioPhoneNumber,
     twiml: twiml.toString()
   };
   if (callbackUrl) {
@@ -278,11 +299,13 @@ async function buildOutboundDialTwiml({ doctorPhoneNumber, dialActionUrl = null,
   const cfg = await getClinicTwilioConfigByClinicId(clinicId);
   const target =
     String(doctorPhoneNumber || "").trim() ||
-    String(process.env.EXAMPLE_DOCTOR_PHONE_NUMBER || "").trim();
+    (await getDoctorPhoneNumberByClinicId(clinicId));
   if (!target) throw new Error("Doctor phone number is required.");
   const twiml = new twilio.twiml.VoiceResponse();
   const dialOptions = {
-    callerId: cfg.twilioCallerId || undefined,
+    // Twilio requires a verified number for browser -> PSTN; use the clinic Twilio line,
+    // not the optional twilioCallerId UI field and not the doctor phone.
+    callerId: cfg.twilioPhoneNumber,
     answerOnBridge: true,
     timeout: 30
   };
@@ -397,5 +420,6 @@ module.exports = {
   isE164,
   getClinicTwilioConfigByPhoneNumber,
   getClinicTwilioConfigByClinicId,
+  getDoctorPhoneNumberByClinicId,
   downloadTwilioRecording
 };
