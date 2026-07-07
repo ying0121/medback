@@ -19,6 +19,7 @@ const {
   setCallMuted,
   generateAccessToken,
   buildOutboundDialTwiml,
+  isE164,
   getClinicTwilioConfigByPhoneNumber,
   getClinicTwilioConfigByClinicId,
   getDoctorPhoneNumberByClinicId,
@@ -76,6 +77,13 @@ function buildSafeVoiceResponse(message) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">${escaped}</Say><Hangup/></Response>`;
 }
 
+/** PSTN callers arrive as E.164; Voice SDK clients use identity strings (no leading +). */
+function looksLikeInboundPstnCall(body) {
+  const callSid = String(body?.CallSid || "").trim();
+  const from = String(body?.From || "").trim();
+  return Boolean(callSid && isE164(from));
+}
+
 module.exports = {
   // GET /api/twilio/voice/token?identity=xxx
   // Returns a Twilio Access Token so the browser can use the Voice SDK.
@@ -112,6 +120,15 @@ module.exports = {
     const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
 
     if (!Number.isFinite(clinicId) || clinicId <= 0) {
+      // Phone numbers sometimes point at the TwiML App URL instead of /voice/inbound.
+      // PSTN callers have no clinicId but do have CallSid + E.164 From — route them correctly.
+      if (looksLikeInboundPstnCall(req.body)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[Twilio][twiml] PSTN inbound misrouted to TwiML App URL — delegating callSid=${req.body?.CallSid || "-"}`
+        );
+        return module.exports.inboundVoiceWebhook(req, res);
+      }
       // eslint-disable-next-line no-console
       console.error("[Twilio][twiml] clinicId is required.");
       res.type("text/xml");

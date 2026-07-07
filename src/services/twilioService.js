@@ -75,8 +75,11 @@ async function getClinicTwilioConfigByClinicId(clinicId) {
     twilioTwimlAppSid: String(clinic.twilioTwimlAppSid || "").trim()
   };
 
-  if (!cfg.twilioAccountSid || !cfg.twilioAuthToken || !cfg.twilioPhoneNumber || !cfg.twilioCallerId) {
-    throw new Error("Clinic Twilio account SID, auth token, phone number and caller ID are required.");
+  if (!cfg.twilioAccountSid || !cfg.twilioAuthToken || !cfg.twilioPhoneNumber) {
+    throw new Error("Clinic Twilio account SID, auth token and phone number are required.");
+  }
+  if (!cfg.twilioCallerId) {
+    cfg.twilioCallerId = cfg.twilioPhoneNumber;
   }
   return cfg;
 }
