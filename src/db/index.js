@@ -3,6 +3,7 @@ const Conversation = require("../models/conversation");
 const Message = require("../models/message");
 const Call = require("../models/call");
 const IncomingMessage = require("../models/incomingMessage");
+const CallAnalysis = require("../models/callAnalysis");
 const User = require("../models/user");
 const Clinic = require("../models/clinic");
 const Knowledge = require("../models/knowledge");
@@ -25,6 +26,17 @@ Call.hasMany(IncomingMessage, {
 });
 
 IncomingMessage.belongsTo(Call, {
+  foreignKey: "callId",
+  targetKey: "id"
+});
+
+Call.hasOne(CallAnalysis, {
+  foreignKey: "callId",
+  sourceKey: "id",
+  onDelete: "CASCADE"
+});
+
+CallAnalysis.belongsTo(Call, {
   foreignKey: "callId",
   targetKey: "id"
 });
@@ -154,6 +166,7 @@ module.exports = {
   Message,
   Call,
   IncomingMessage,
+  CallAnalysis,
   User,
   Clinic,
   Knowledge,

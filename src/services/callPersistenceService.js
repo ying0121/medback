@@ -15,6 +15,7 @@
  */
 
 const { Call, IncomingMessage } = require("../db");
+const { scheduleCallAnalysis } = require("./callAnalysisService");
 
 /**
  * Convert a raw Twilio `From` value into something safe to store on the row.
@@ -131,7 +132,7 @@ async function saveIncomingMessageRow({
  * does not POST /call-status (common for inbound numbers without StatusCallback).
  * Safe to call from stream stop, WS close, or stream-status webhooks.
  */
-async function finalizeInboundCallRecord(callSid, { status = "completed" } = {}) {
+async function finalizeInboundCallRecord(callSid, { status = "completed", clinicId = null } = {}) {
   const sid = String(callSid || "").trim();
   if (!sid || sid === "-" || sid === "unknown") return null;
 
@@ -159,6 +160,11 @@ async function finalizeInboundCallRecord(callSid, { status = "completed" } = {})
   }
 
   await call.update(updates);
+
+  if (isCompleted) {
+    scheduleCallAnalysis(call, { clinicId });
+  }
+
   return call;
 }
 

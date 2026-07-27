@@ -71,10 +71,10 @@ async function ensurePendingCallRecord(callSid, pendingData, startMsg = {}) {
   }
 }
 
-function finalizeInboundCallHistory(callSid) {
+function finalizeInboundCallHistory(callSid, clinicId = null) {
   const sid = String(callSid || "").trim();
   if (!sid || sid === "unknown") return;
-  finalizeInboundCallRecord(sid).catch((err) => {
+  finalizeInboundCallRecord(sid, { clinicId }).catch((err) => {
     console.error(
       `[InboundStream] finalize call failed callSid=${sid}: ${err.message}`
     );
@@ -154,7 +154,7 @@ function attachInboundStreamWS(server) {
           case "stop": {
             console.log(`[InboundStream] stream stopped callSid=${session?.callSid || "-"}`);
             if (session) {
-              finalizeInboundCallHistory(session.callSid);
+              finalizeInboundCallHistory(session.callSid, session.clinicId);
               session.close();
               session = null;
             }
@@ -174,7 +174,7 @@ function attachInboundStreamWS(server) {
         ? reasonBuffer.toString("utf8")
         : String(reasonBuffer || "");
       if (session) {
-        finalizeInboundCallHistory(session.callSid);
+        finalizeInboundCallHistory(session.callSid, session.clinicId);
         session.close();
         session = null;
       }

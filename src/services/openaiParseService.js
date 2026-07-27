@@ -119,12 +119,97 @@ function parseEndCallTurn(rawText) {
   };
 }
 
+function readStringArrayField(obj, aliases) {
+  if (!obj) return [];
+  for (const key of aliases) {
+    const value = obj[key];
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean);
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value
+        .split(/[,;\n]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+/**
+ * Parse structured post-call analysis JSON from the model.
+ * @returns {object|null}
+ */
+function parseCallAnalysis(rawText) {
+  const parsed = extractJsonObject(rawText);
+  if (!parsed) return null;
+
+  const patientName = readStringField(parsed, ["patient_name", "patientName"]);
+  const patientPhoneSpoken = readStringField(parsed, [
+    "patient_phone",
+    "patientPhone",
+    "patient_phone_spoken",
+    "patientPhoneSpoken"
+  ]);
+  const reasonForCall = readStringField(parsed, [
+    "reason_for_call",
+    "reasonForCall",
+    "call_reason"
+  ]);
+  const symptomsConditions = readStringField(parsed, [
+    "symptoms_conditions",
+    "symptomsConditions",
+    "symptoms",
+    "conditions",
+    "disease"
+  ]);
+  const helpRequested = readStringArrayField(parsed, [
+    "help_requested",
+    "helpRequested",
+    "help_needed"
+  ]);
+  const urgency = readStringField(parsed, ["urgency"], "unknown").toLowerCase();
+  const sentiment = readStringField(parsed, ["sentiment"], "unknown").toLowerCase();
+  const outcomeNextStep = readStringField(parsed, [
+    "outcome_next_step",
+    "outcomeNextStep",
+    "outcome",
+    "next_step",
+    "nextStep"
+  ]);
+  const summary = readStringField(parsed, ["summary", "call_summary", "callSummary"]);
+  const keyQuotes = readStringArrayField(parsed, ["key_quotes", "keyQuotes", "quotes"]);
+  const notes = readStringField(parsed, ["notes", "free_form_notes", "freeFormNotes"]);
+
+  if (!summary && !reasonForCall && !symptomsConditions && !helpRequested.length) {
+    return null;
+  }
+
+  return {
+    patientName,
+    patientPhoneSpoken,
+    reasonForCall,
+    symptomsConditions,
+    helpRequested,
+    urgency,
+    sentiment,
+    outcomeNextStep,
+    summary,
+    keyQuotes,
+    notes
+  };
+}
+
 module.exports = {
   extractJsonObject,
   readStringField,
   readBooleanField,
+  readStringArrayField,
   parseLanguageHints,
   parseInboundMergedTurn,
   parseEndCallFlag,
-  parseEndCallTurn
+  parseEndCallTurn,
+  parseCallAnalysis
 };

@@ -18,7 +18,8 @@ const {
   parseLanguageHints,
   parseInboundMergedTurn,
   parseEndCallFlag,
-  parseEndCallTurn
+  parseEndCallTurn,
+  parseCallAnalysis
 } = require("./openaiParseService");
 
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
@@ -423,6 +424,77 @@ async function generateSpeechFromText({ text, voice = openaiTtsVoice }) {
   };
 }
 
+const callAnalysisSystemPrompt = [
+  "You analyze completed inbound phone calls to a medical clinic voice assistant.",
+  "Extract structured information ONLY from what was actually said in the transcript.",
+  "Do not invent details. When information was not mentioned, use empty string or empty array.",
+  "Output exactly one JSON object (no markdown, no code fences) with keys:",
+  "patient_name, patient_phone, reason_for_call, symptoms_conditions, help_requested,",
+  "urgency, sentiment, outcome_next_step, summary, key_quotes, notes",
+  "Field rules:",
+  "- patient_name: caller's name if they stated it, else \"\".",
+  "- patient_phone: phone number the caller gave verbally, else \"\".",
+  "- reason_for_call: why they called / primary goal in 1-3 sentences.",
+  "- symptoms_conditions: symptoms, diseases, or conditions mentioned, else \"\".",
+  "- help_requested: JSON array of specific help types (e.g. appointment, refill, callback, directions, billing, test results, insurance, hours, other).",
+  "- urgency: one of low, medium, high, emergency, unknown.",
+  "- sentiment: one of positive, neutral, negative, distressed, unknown.",
+  "- outcome_next_step: what was resolved, promised, or should happen next.",
+  "- summary: 2-4 sentence executive summary for clinic staff.",
+  "- key_quotes: JSON array of up to 5 short direct quotes from the caller that matter clinically or operationally.",
+  "- notes: any other relevant observations for staff (free text), else \"\"."
+].join("\n");
+
+/**
+ * Analyze a full inbound phone call transcript and extract structured fields.
+ * @param {{ transcript: Array<{role: string, text: string}>, callerPhone?: string|null }} params
+ */
+async function analyzeInboundCallTranscript({ transcript = [], callerPhone = null }) {
+  const empty = {
+    patientName: "",
+    patientPhoneSpoken: "",
+    reasonForCall: "",
+    symptomsConditions: "",
+    helpRequested: [],
+    urgency: "unknown",
+    sentiment: "unknown",
+    outcomeNextStep: "",
+    summary: "Insufficient conversation data to analyze this call.",
+    keyQuotes: [],
+    notes: ""
+  };
+
+  const turns = (transcript || []).filter((turn) => String(turn?.text || "").trim());
+  if (!turns.length) return empty;
+  if (!openaiApiKey) return empty;
+
+  const formattedTranscript = turns
+    .map((turn) => `${turn.role}: ${String(turn.text).trim()}`)
+    .join("\n")
+    .slice(0, 12000);
+
+  const completion = await client.chat.completions.create({
+    model: openaiInboundModel,
+    temperature: 0.2,
+    max_completion_tokens: 900,
+    messages: [
+      { role: "system", content: callAnalysisSystemPrompt },
+      {
+        role: "user",
+        content: [
+          callerPhone ? `Caller ID on file: ${callerPhone}` : "Caller ID on file: unknown",
+          "",
+          "Call transcript:",
+          formattedTranscript
+        ].join("\n")
+      }
+    ]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  return parseCallAnalysis(raw) || empty;
+}
+
 module.exports = {
   generateAssistantReply,
   generateInboundMergedTurn,
@@ -434,5 +506,6 @@ module.exports = {
   analyzeInboundEndCallTurn,
   mightBeInboundEndCall,
   transcribeAudioBase64,
-  generateSpeechFromText
+  generateSpeechFromText,
+  analyzeInboundCallTranscript
 };

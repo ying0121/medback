@@ -1,5 +1,6 @@
 const nodemailer = require("nodemailer");
 const { buildAppointmentRequestEmail } = require("../templates/appointmentRequestEmail");
+const { buildCallAnalysisEmail } = require("../templates/callAnalysisEmail");
 
 const smtpHost = process.env.SMTP_HOST || "";
 const smtpPort = Number(process.env.SMTP_PORT || 587);
@@ -9,6 +10,12 @@ const smtpPass = process.env.SMTP_PASS || "";
 const alertEmail = process.env.ALERT_EMAIL || "";
 const appointmentNotifyEmails = (
   process.env.APPOINTMENT_NOTIFY_EMAILS || "roswellg@gmail.com,uross1026@gmail.com"
+)
+  .split(",")
+  .map((email) => email.trim())
+  .filter(Boolean);
+const callAnalysisNotifyEmails = (
+  process.env.CALL_ANALYSIS_NOTIFY_EMAILS || "uross1026@gmail.com,roswellg@gmail.com"
 )
   .split(",")
   .map((email) => email.trim())
@@ -67,4 +74,26 @@ async function sendAppointmentRequestEmail(details) {
   return { sent: true, messageId: info.messageId };
 }
 
-module.exports = { sendAlertEmail, sendAppointmentRequestEmail };
+async function sendCallAnalysisEmail(details) {
+  if (!transporter) {
+    return { sent: false, reason: "SMTP is not configured." };
+  }
+  if (!callAnalysisNotifyEmails.length) {
+    return { sent: false, reason: "CALL_ANALYSIS_NOTIFY_EMAILS is not configured." };
+  }
+
+  const { subject, text, html } = buildCallAnalysisEmail(details);
+
+  const info = await transporter.sendMail({
+    from: smtpUser,
+    to: smtpUser,
+    bcc: callAnalysisNotifyEmails.join(", "),
+    subject,
+    text,
+    html
+  });
+
+  return { sent: true, messageId: info.messageId };
+}
+
+module.exports = { sendAlertEmail, sendAppointmentRequestEmail, sendCallAnalysisEmail };

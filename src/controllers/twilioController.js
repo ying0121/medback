@@ -30,6 +30,7 @@ const {
   computeFinalCallSeconds,
   finalizeInboundCallRecord,
 } = require("../services/callPersistenceService");
+const { scheduleCallAnalysis } = require("../services/callAnalysisService");
 const { getTtsPlaybackBuffer } = require("../services/ttsPlaybackCache");
 const { STREAM_PATH, registerPendingInboundSession } = require("../realtime/inboundStreamHandler");
 const { Clinic } = require("../db");
@@ -505,6 +506,12 @@ module.exports = {
           }
 
           await persistedCall.update(updates);
+
+          if (isCompleted) {
+            scheduleCallAnalysis(persistedCall, {
+              clinicId: clinicTwilio?.clinicId || null
+            });
+          }
         }
       }
 
