@@ -124,6 +124,12 @@ function buildNextSteps(patientInfo = {}) {
   return steps;
 }
 
+function formatCaseNumber(conversationId, clinicAcronym) {
+  if (!conversationId) return "—";
+  const acronym = String(clinicAcronym || "").trim();
+  return `${conversationId}${acronym}-Bot(Text)`;
+}
+
 /**
  * @param {object} params
  * @param {string|null} params.clinicName
@@ -147,6 +153,10 @@ function buildAppointmentRequestEmail({
   const channel = formatChannel(replyType);
   const patientDescription = patientTypeDescription(patientInfo.type);
   const formattedSubmittedAt = formatDateTime(submittedAt);
+  const caseNumber = formatCaseNumber(
+    conversationId,
+    clinicAcronym || clinic.acronym || ""
+  );
 
   const patientRows = buildPatientRows(patientInfo, patientType);
   const clinicRows = buildClinicRows(clinic, clinicLabel);
@@ -163,7 +173,7 @@ function buildAppointmentRequestEmail({
     "",
     "REQUEST SUMMARY",
     `  Clinic: ${clinicLabel}`,
-    `  Case Number: #${conversationId}`,
+    `  Case Number: ${caseNumber}`,
     `  Submitted: ${formattedSubmittedAt}`,
     `  Request Channel: ${channel}`,
     "",
@@ -232,7 +242,7 @@ function buildAppointmentRequestEmail({
                     <div style="font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#2563eb;margin-bottom:10px;">Request Summary</div>
                     <div style="font-size:18px;font-weight:700;color:#0f172a;margin-bottom:8px;">${escapeHtml(clinicLabel)}</div>
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
-                      ${detailRow("Case Number", `#${conversationId}`)}
+                      ${detailRow("Case Number", caseNumber)}
                       ${detailRow("Submitted", formattedSubmittedAt)}
                       ${detailRow("Request Channel", channel)}
                     </table>

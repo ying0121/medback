@@ -95,7 +95,7 @@ function buildHelpRequestedList(helpRequested = []) {
 function formatCaseNumber(callId, clinicAcronym) {
   if (!callId) return "—";
   const acronym = String(clinicAcronym || "").trim();
-  return `#${callId}${acronym}`;
+  return `${callId}${acronym}-Bot(Voice)`;
 }
 
 function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicLabel = "Clinic" }) {
