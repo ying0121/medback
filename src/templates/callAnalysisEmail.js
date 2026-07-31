@@ -92,7 +92,13 @@ function buildHelpRequestedList(helpRequested = []) {
   return items.map((item) => titleCase(String(item).replace(/_/g, " "))).join(", ");
 }
 
-function buildCallAnalysisEmail({ call = {}, analysis = {}, clinicLabel = "Clinic" }) {
+function formatCaseNumber(callId, clinicAcronym) {
+  if (!callId) return "—";
+  const acronym = String(clinicAcronym || "").trim();
+  return `#${callId}${acronym}`;
+}
+
+function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicLabel = "Clinic" }) {
   const analyzedAt = analysis.createdAt || new Date().toISOString();
   const formattedAnalyzedAt = formatDateTime(analyzedAt);
   const formattedCallAt = formatDateTime(call.createdAt || analyzedAt);
@@ -102,12 +108,14 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinicLabel = "Clini
   const helpRequestedText = buildHelpRequestedList(analysis.helpRequested);
   const urgencyTheme = urgencyStyles(analysis.urgency);
   const sentimentTheme = sentimentStyles(analysis.sentiment);
+  const clinicAcronym = clinic.acronym || "";
+  const caseNumber = formatCaseNumber(call.id, clinicAcronym);
 
-  const subject = `HIPAA-Safe Call Analysis · ${clinicLabel} · Call #${call.id || "-"}`;
+  const subject = `HIPAA-Safe Call Analysis · ${clinicLabel} · ${caseNumber}`;
 
   const callRows = [
     ["Clinic", clinicLabel],
-    ["Call ID", call.id ? `#${call.id}` : "—"],
+    ["Case Number", caseNumber],
     ["Call SID", call.callSid || "—"],
     ["Call Started", formattedCallAt],
     ["Duration", duration],
