@@ -153,18 +153,17 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
       call: {
         id: call.id,
         callSid: call.callSid,
-        phone: call.phone,
         seconds: call.seconds,
         createdAt: call.createdAt
       },
       analysis: {
-        ...analysisResult,
-        callerPhone: call.phone || null,
+        urgency: analysisResult.urgency,
+        sentiment: analysisResult.sentiment,
+        helpRequested: analysisResult.helpRequested,
         createdAt: analysisRow.createdAt
       },
       clinic,
-      clinicLabel,
-      transcriptTurns: transcript
+      clinicLabel
     };
 
     const emailResult = await sendCallAnalysisEmail(emailPayload);
