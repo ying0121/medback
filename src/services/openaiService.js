@@ -440,8 +440,10 @@ const callAnalysisSystemPrompt = [
   "- urgency: one of low, medium, high, emergency, unknown.",
   "- sentiment: one of positive, neutral, negative, distressed, unknown.",
   "- outcome_next_step: what was resolved, promised, or should happen next.",
-  "- summary: 2-4 sentence executive summary for clinic staff.",
-  "- key_quotes: JSON array of up to 5 short direct quotes from the caller that matter clinically or operationally.",
+  "- summary: 2-4 sentence executive summary for clinic staff. Be specific about why they called and what follow-up is needed.",
+  "- key_quotes: JSON array of up to 5 short direct quotes from the caller. Prefer core and important talking only:",
+  "  primary reason for calling, symptoms/conditions, requested help, urgency cues, and promised next steps.",
+  "  Skip greetings, fillers, and unrelated small talk. Do not invent quotes.",
   "- notes: any other relevant observations for staff (free text), else \"\"."
 ].join("\n");
 

@@ -1,7 +1,7 @@
 /**
- * HIPAA-safe call analysis email template.
- * The email intentionally excludes all patient identifiers and raw transcript
- * content. Detailed PHI remains only in secure internal storage.
+ * Call analysis email template.
+ * Excludes patient identifiers (name, phone). Includes operational analysis,
+ * clinical summary fields, and core/important sample talking from the call.
  */
 
 function escapeHtml(value) {
@@ -75,12 +75,12 @@ function sentimentStyles(sentiment) {
   return { bg: "#f8fafc", border: "#e2e8f0", text: "#334155" };
 }
 
-function detailRow(label, value) {
+function detailRow(label, value, { multiline = false } = {}) {
   const display = hasValue(value) ? String(value).trim() : "—";
   return `
     <tr>
       <td style="padding:10px 0;border-bottom:1px solid #eef2f7;color:#64748b;font-size:13px;width:36%;vertical-align:top;">${escapeHtml(label)}</td>
-      <td style="padding:10px 0 10px 16px;border-bottom:1px solid #eef2f7;color:#0f172a;font-size:14px;font-weight:600;vertical-align:top;">${escapeHtml(display)}</td>
+      <td style="padding:10px 0 10px 16px;border-bottom:1px solid #eef2f7;color:#0f172a;font-size:14px;font-weight:600;vertical-align:top;${multiline ? "line-height:1.65;white-space:pre-wrap;" : ""}">${escapeHtml(display)}</td>
     </tr>`;
 }
 
@@ -98,6 +98,13 @@ function formatCaseNumber(callId, clinicAcronym) {
   return `${callId}${acronym}-Bot(Voice)`;
 }
 
+function normalizeQuotes(keyQuotes = []) {
+  return (Array.isArray(keyQuotes) ? keyQuotes : [])
+    .map((quote) => String(quote || "").trim())
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
 function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicLabel = "Clinic" }) {
   const analyzedAt = analysis.createdAt || new Date().toISOString();
   const formattedAnalyzedAt = formatDateTime(analyzedAt);
@@ -110,8 +117,12 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
   const sentimentTheme = sentimentStyles(analysis.sentiment);
   const clinicAcronym = clinic.acronym || "";
   const caseNumber = formatCaseNumber(call.id, clinicAcronym);
+  const keyQuotes = normalizeQuotes(analysis.keyQuotes);
+  const summary = hasValue(analysis.summary)
+    ? String(analysis.summary).trim()
+    : "No summary available.";
 
-  const subject = `HIPAA-Safe Call Analysis · ${clinicLabel} · ${caseNumber}`;
+  const subject = `Call Analysis · ${clinicLabel} · ${caseNumber}`;
 
   const callRows = [
     ["Clinic", clinicLabel],
@@ -123,34 +134,88 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
   ];
 
   const intelligenceRows = [
+    ["Reason for Call", analysis.reasonForCall],
+    ["Symptoms / Conditions", analysis.symptomsConditions],
+    ["Requested Help Categories", helpRequestedText],
     ["Urgency", urgency],
     ["Sentiment", sentiment],
-    ["Requested Help Categories", helpRequestedText]
+    ["Outcome / Next Step", analysis.outcomeNextStep]
   ];
 
-  const text = [
-    "HIPAA-SAFE CALL ANALYSIS",
-    "========================",
+  const textParts = [
+    "INBOUND CALL ANALYSIS",
+    "=====================",
     "",
-    "This email intentionally excludes patient identifiers and transcript content.",
-    "Review detailed data only in secure internal systems.",
+    "Patient name and phone numbers are excluded from this email.",
+    "",
+    "EXECUTIVE SUMMARY",
+    `  ${summary}`,
     "",
     "CALL METADATA",
     ...callRows.map(([label, value]) => `  ${label}: ${value}`),
     "",
-    "ANALYSIS SNAPSHOT",
-    ...intelligenceRows.map(([label, value]) => `  ${label}: ${value}`),
+    "CLINICAL & OPERATIONAL DETAILS",
+    ...intelligenceRows.map(([label, value]) => {
+      const display = hasValue(value) ? String(value).trim() : "—";
+      return `  ${label}: ${display}`;
+    })
+  ];
+
+  if (keyQuotes.length) {
+    textParts.push("", "SAMPLE TALKING (CORE & IMPORTANT)");
+    keyQuotes.forEach((quote, index) => {
+      textParts.push(`  ${index + 1}. "${quote}"`);
+    });
+  } else {
+    textParts.push("", "SAMPLE TALKING (CORE & IMPORTANT)", "  No core talking samples were captured.");
+  }
+
+  if (hasValue(analysis.notes)) {
+    textParts.push("", "STAFF NOTES", `  ${String(analysis.notes).trim()}`);
+  }
+
+  textParts.push(
     "",
     "COMPLIANCE NOTE",
-    "  No patient name, phone, raw transcript, quotes, notes, or free-text medical narrative is included in this message.",
+    "  Patient name and phone numbers are not included.",
+    "  This message contains de-identified operational analysis and sample talking only.",
     "",
     "—",
     "Automated call analysis notification.",
     "Recipients were BCC'd for privacy. Do not reply to this email."
-  ].join("\n");
+  );
+
+  const text = textParts.join("\n");
 
   const callTable = callRows.map(([label, value]) => detailRow(label, value)).join("");
-  const intelligenceTable = intelligenceRows.map(([label, value]) => detailRow(label, value)).join("");
+  const intelligenceTable = [
+    detailRow("Reason for Call", analysis.reasonForCall, { multiline: true }),
+    detailRow("Symptoms / Conditions", analysis.symptomsConditions, { multiline: true }),
+    detailRow("Requested Help Categories", helpRequestedText),
+    detailRow("Outcome / Next Step", analysis.outcomeNextStep, { multiline: true })
+  ].join("");
+
+  const helpTags = (Array.isArray(analysis.helpRequested) ? analysis.helpRequested : [])
+    .filter((item) => hasValue(item))
+    .map(
+      (item) => `
+      <span style="display:inline-block;margin:0 8px 8px 0;padding:6px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:999px;font-size:12px;font-weight:700;color:#4338ca;">
+        ${escapeHtml(titleCase(String(item).replace(/_/g, " ")))}
+      </span>`
+    )
+    .join("");
+
+  const quotesHtml = keyQuotes.length
+    ? keyQuotes
+        .map(
+          (quote, index) => `
+      <div style="margin:0 0 ${index === keyQuotes.length - 1 ? "0" : "12px"};padding:14px 16px;background:#ffffff;border-left:4px solid #4f46e5;border-radius:10px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6366f1;margin-bottom:6px;">Sample ${index + 1}</div>
+        <div style="font-size:14px;line-height:1.65;color:#334155;font-style:italic;">“${escapeHtml(quote)}”</div>
+      </div>`
+        )
+        .join("")
+    : `<div style="font-size:14px;color:#64748b;">No core or important talking samples were captured for this call.</div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -167,18 +232,24 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
           <tr>
             <td style="background:linear-gradient(135deg,#4f46e5 0%,#312e81 100%);padding:30px 32px;">
               <div style="font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.82);margin-bottom:8px;">Call Analysis Notification</div>
-              <div style="font-size:28px;line-height:1.25;font-weight:700;color:#ffffff;margin:0;">HIPAA-Safe Email</div>
+              <div style="font-size:28px;line-height:1.25;font-weight:700;color:#ffffff;margin:0;">Inbound Call Analysis</div>
               <div style="font-size:15px;line-height:1.6;color:rgba(255,255,255,0.92);margin-top:10px;">
-                This email is de-identified and excludes personal patient information.
+                Structured analysis with core talking samples. Patient identifiers are excluded.
               </div>
             </td>
           </tr>
           <tr>
-            <td style="padding:20px 32px 8px;">
-              <div style="padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;font-size:14px;line-height:1.7;color:#334155;">
-                Detailed call content is available only in secure internal records.
-                This email contains operational metadata and risk-level indicators only.
-              </div>
+            <td style="padding:24px 32px 8px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:14px;">
+                <tr>
+                  <td style="padding:20px 22px;">
+                    <div style="font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6366f1;margin-bottom:10px;">Executive Summary</div>
+                    <div style="font-size:16px;line-height:1.7;color:#1e1b4b;font-weight:600;">
+                      ${escapeHtml(summary)}
+                    </div>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
           <tr>
@@ -215,7 +286,7 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
           </tr>
           <tr>
             <td style="padding:16px 32px 8px;">
-              <div style="font-size:13px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">Analysis Snapshot</div>
+              <div style="font-size:13px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">Clinical &amp; Operational Details</div>
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;">
                 <tr>
                   <td style="padding:8px 18px 4px;">
@@ -223,8 +294,33 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
                   </td>
                 </tr>
               </table>
+              ${helpTags ? `<div style="margin-top:14px;">${helpTags}</div>` : ""}
             </td>
           </tr>
+          <tr>
+            <td style="padding:16px 32px 8px;">
+              <div style="font-size:13px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin-bottom:8px;">Sample Talking</div>
+              <div style="font-size:13px;line-height:1.6;color:#64748b;margin-bottom:12px;">
+                Core and important statements from the caller that matter for follow-up.
+              </div>
+              <div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:14px;padding:16px 18px;">
+                ${quotesHtml}
+              </div>
+            </td>
+          </tr>
+          ${
+            hasValue(analysis.notes)
+              ? `
+          <tr>
+            <td style="padding:16px 32px 8px;">
+              <div style="font-size:13px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">Staff Notes</div>
+              <div style="padding:16px 18px;background:#fffbeb;border:1px solid #fde68a;border-radius:14px;font-size:14px;line-height:1.7;color:#78350f;white-space:pre-wrap;">
+                ${escapeHtml(String(analysis.notes).trim())}
+              </div>
+            </td>
+          </tr>`
+              : ""
+          }
           <tr>
             <td style="padding:16px 32px 28px;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:14px;">
@@ -232,7 +328,8 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
                   <td style="padding:16px 18px;">
                     <div style="font-size:14px;font-weight:700;color:#155e75;margin-bottom:6px;">Compliance Note</div>
                     <div style="font-size:14px;line-height:1.7;color:#0e7490;">
-                      No patient name, phone number, transcript, quotes, notes, or free-text clinical narrative is included in this email.
+                      Patient name and phone numbers are not included in this email.
+                      Review full call records only in secure internal systems when identifiers are required.
                     </div>
                   </td>
                 </tr>

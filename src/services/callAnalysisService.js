@@ -149,6 +149,8 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
     }
 
     const { clinic, clinicLabel } = await loadClinicDetails(clinicId);
+    // Email stays identifier-safe: no patient name / phone. Include clinical
+    // details and core/important sample talking for staff follow-up.
     const emailPayload = {
       call: {
         id: call.id,
@@ -160,6 +162,12 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
         urgency: analysisResult.urgency,
         sentiment: analysisResult.sentiment,
         helpRequested: analysisResult.helpRequested,
+        reasonForCall: analysisResult.reasonForCall,
+        symptomsConditions: analysisResult.symptomsConditions,
+        outcomeNextStep: analysisResult.outcomeNextStep,
+        summary: analysisResult.summary,
+        keyQuotes: analysisResult.keyQuotes,
+        notes: analysisResult.notes,
         createdAt: analysisRow.createdAt
       },
       clinic,
