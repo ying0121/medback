@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -33,24 +34,40 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-hero flex items-center justify-center p-6">
-      <div className="w-full max-w-md">
+    <div className="relative min-h-screen bg-gradient-hero flex items-center justify-center p-6 overflow-hidden">
+      <motion.div
+        className="pointer-events-none absolute inset-0"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.8 }}
+      />
+      <motion.div
+        className="w-full max-w-md relative"
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+      >
         <div className="flex flex-col items-center text-center mb-8">
           <div className="relative mb-5">
-            <div className="absolute inset-0 bg-gradient-accent blur-2xl opacity-40 rounded-full" />
-            <img
+            <div className="absolute inset-0 bg-primary/15 blur-2xl opacity-50 rounded-full" />
+            <motion.img
               src={botLogo}
               alt="MedBot logo"
               width={96}
               height={96}
-              className="relative h-24 w-24 drop-shadow-xl"
+              className="relative h-24 w-24 drop-shadow-xl animate-float-soft"
             />
           </div>
           <h1 className="text-3xl font-semibold tracking-tight">Welcome to MedBot Admin</h1>
           <p className="text-muted-foreground mt-2">Sign in to manage clinics, users and conversations.</p>
         </div>
 
-        <div className="bg-card border border-border rounded-2xl p-8 shadow-elegant">
+        <motion.div
+          className="bg-card/90 backdrop-blur-sm border border-border rounded-2xl p-8 shadow-elegant"
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.4, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+        >
           <form onSubmit={onSubmit} className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -100,12 +117,12 @@ export default function Login() {
           <p className="text-xs text-muted-foreground mt-6 text-center">
             Tip: use an email containing <span className="font-mono text-foreground">admin</span> to sign in as an Administrator.
           </p>
-        </div>
+        </motion.div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
           Sessions automatically expire after 60 minutes of inactivity.
         </p>
-      </div>
+      </motion.div>
     </div>
   );
 }

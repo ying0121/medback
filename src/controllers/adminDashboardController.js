@@ -1,6 +1,6 @@
 const axios = require("axios");
 const { Op } = require("sequelize");
-const { Conversation, Message, User, Clinic, Call, IncomingMessage } = require("../db");
+const { Conversation, Message, User, Clinic, Call, IncomingMessage, CallAnalysis, Appointment } = require("../db");
 const { generateSpeechFromText } = require("../services/openaiService");
 const {
   listOpenAiVoicesForAdmin,
@@ -15,6 +15,16 @@ const {
 } = require("../services/greetingService");
 const { normalizeThemeColor } = require("../constants/themeColors");
 const { parseClinicAvatar } = require("../utils/clinicAvatar");
+const { listAppointments: listAppointmentRows, cancelAppointment: cancelAppointmentRow } = require("../services/appointmentService");
+const {
+  APP_TIMEZONE,
+  pad,
+  getZonedParts,
+  addDaysCivil,
+  zonedCivilToUtcDate,
+  zonedDateKey,
+  formatInTimeZone
+} = require("../utils/appTimeZone");
 
 function normalizeAudioPayload(rawAudio) {
   if (!rawAudio) return { audioUrl: undefined, audioMimeType: undefined };
@@ -33,6 +43,33 @@ function normalizeAudioPayload(rawAudio) {
   };
 }
 
+const MEETING_PROVIDERS = new Set(["google", "ecw", "azul"]);
+
+function normalizeMeetingProvider(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  return MEETING_PROVIDERS.has(provider) ? provider : "google";
+}
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isMeetingConfigured(row) {
+  const provider = normalizeMeetingProvider(row?.meetingProvider);
+  if (provider === "ecw") return Boolean(String(row?.ecwApiEndpoint || "").trim());
+  if (provider === "azul") return Boolean(String(row?.azulApiEndpoint || "").trim());
+  return Boolean(
+    String(row?.googleClientId || "").trim() &&
+      String(row?.googleClientSecret || "").trim() &&
+      String(row?.googleRefreshToken || "").trim()
+  );
+}
+
 function makeClinicSummary(clinicId) {
   return {
     id: String(clinicId),
@@ -41,6 +78,8 @@ function makeClinicSummary(clinicId) {
     acronym: `C${clinicId}`,
     city: "",
     twilioConfigured: false,
+    googleConfigured: false,
+    meetingProvider: "google",
     botVoiceConfigured: false,
     openaiVoice: null
   };
@@ -71,6 +110,8 @@ function mapClinicRowToApi(row) {
         row.twilioApiKeySecret &&
         row.twilioTwimlAppSid
     ),
+    meetingProvider: normalizeMeetingProvider(row.meetingProvider),
+    googleConfigured: isMeetingConfigured(row),
     botVoiceConfigured: Boolean(row.openaiVoice),
     openaiVoice: row.openaiVoice ? String(row.openaiVoice) : null,
     greetingConfigured: Boolean(String(row.inboundGreeting || "").trim()),
@@ -124,6 +165,25 @@ function parseConversationUserInfo(rawUserInfo) {
   } catch {
     return { name: "", email: "" };
   }
+}
+
+function truncateText(value, max = 120) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trim()}…`;
+}
+
+function lastMessagePreview(row) {
+  if (!row) return "";
+  const text = String(row.message || "").trim();
+  if (text.startsWith("[Appointment request]")) {
+    return "Appointment request submitted";
+  }
+  if (row.messageType === "voice") {
+    return text ? truncateText(text, 90) : "Voice message";
+  }
+  return truncateText(text, 110);
 }
 
 async function listClinics(req, res, next) {
@@ -196,8 +256,15 @@ async function listConversationsByClinic(req, res, next) {
     const clinicId = Number(req.params.clinicId);
     if (!clinicId) return res.status(400).json({ error: "Invalid clinic id." });
 
+    const clinic = await Clinic.findByPk(clinicId);
+    const clinicIds = new Set([clinicId]);
+    const businessId = Number(clinic?.clinicId);
+    if (Number.isFinite(businessId) && businessId > 0) {
+      clinicIds.add(businessId);
+    }
+
     const conversations = await Conversation.findAll({
-      where: { clinicId },
+      where: { clinicId: { [Op.in]: [...clinicIds] } },
       order: [["updatedAt", "DESC"]]
     });
 
@@ -208,17 +275,21 @@ async function listConversationsByClinic(req, res, next) {
           where: { conversationId: conversation.id }
         });
         const lastMessage = await Message.findOne({
-          attributes: ["createdAt"],
+          attributes: ["createdAt", "message", "messageType", "userType"],
           where: { conversationId: conversation.id },
           order: [["createdAt", "DESC"]]
         });
+        const displayName = userInfo.name || `Visitor #${conversation.id}`;
         return {
           id: String(conversation.id),
           clinicId: String(conversation.clinicId),
-          title: `Conversation #${conversation.id}`,
+          title: displayName,
           userName: userInfo.name,
           userEmail: userInfo.email,
           messageCount,
+          lastMessagePreview: lastMessagePreview(lastMessage),
+          lastMessageType: lastMessage?.messageType === "voice" ? "voice" : "text",
+          lastMessageRole: lastMessage?.userType === "bot" ? "assistant" : "user",
           lastMessageAt:
             lastMessage?.createdAt?.toISOString?.() ||
             conversation.updatedAt?.toISOString?.() ||
@@ -267,53 +338,176 @@ async function listConversationMessages(req, res, next) {
   }
 }
 
+const STATS_DAYS = 60;
+
+function localDateKey(value) {
+  return zonedDateKey(value, APP_TIMEZONE);
+}
+
+function makeDayBuckets(days, now = new Date()) {
+  const bucket = new Map();
+  const today = getZonedParts(now, APP_TIMEZONE);
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const civil = addDaysCivil(today, -i);
+    const key = `${civil.year}-${pad(civil.month)}-${pad(civil.day)}`;
+    const noon = zonedCivilToUtcDate(
+      { year: civil.year, month: civil.month, day: civil.day, hour: 12, minute: 0, second: 0 },
+      APP_TIMEZONE
+    );
+    bucket.set(key, {
+      date: key,
+      day: formatInTimeZone(noon, { month: "short", day: "numeric" }, APP_TIMEZONE),
+      conversations: 0,
+      phoneCalls: 0,
+      webChats: 0,
+      appointments: 0
+    });
+  }
+  return bucket;
+}
+
+function bumpDay(bucket, value, field) {
+  const key = localDateKey(value);
+  if (!key || !bucket.has(key)) return;
+  bucket.get(key)[field] += 1;
+}
+
+function sumSeries(rows, field) {
+  return rows.reduce((total, row) => total + Number(row[field] || 0), 0);
+}
+
+function resolveClinicPk(rawId, clinics) {
+  const n = Number(rawId);
+  const match = clinics.find(
+    (clinic) => Number(clinic.id) === n || Number(clinic.clinicId) === n
+  );
+  return match ? String(match.id) : String(rawId);
+}
+
 async function getStats(req, res, next) {
   try {
     const now = new Date();
-    const start = new Date(now);
-    start.setDate(start.getDate() - 6);
-    start.setHours(0, 0, 0, 0);
+    const todayNy = getZonedParts(now, APP_TIMEZONE);
+    const startCivil = addDaysCivil(todayNy, -(STATS_DAYS - 1));
+    const start = zonedCivilToUtcDate(
+      {
+        year: startCivil.year,
+        month: startCivil.month,
+        day: startCivil.day,
+        hour: 0,
+        minute: 0,
+        second: 0
+      },
+      APP_TIMEZONE
+    );
 
-    const [conversations, messages, users, clinicCount, clinicRows] = await Promise.all([
+    const [
+      clinicRows,
+      totalConversations,
+      totalMessages,
+      totalWebChats,
+      totalVoiceMessages,
+      totalUsers,
+      totalPhoneCalls,
+      totalCallSeconds,
+      totalAppointments,
+      recentConversations,
+      recentCalls,
+      recentWebChats,
+      recentAppointments,
+      conversationCounts,
+      appointmentCounts,
+      callCounts
+    ] = await Promise.all([
+      Clinic.findAll({ attributes: ["id", "clinicId"] }),
       Conversation.count(),
       Message.count(),
+      Message.count({ where: { messageType: "chat" } }),
+      Message.count({ where: { messageType: "voice" } }),
       User.count(),
-      Clinic.count(),
+      Call.count(),
+      Call.sum("seconds"),
+      Appointment.count(),
       Conversation.findAll({
-        attributes: ["clinicId"],
-        group: ["clinicId"]
-      })
+        attributes: ["createdAt", "clinicId"],
+        where: { createdAt: { [Op.gte]: start } }
+      }),
+      Call.findAll({
+        attributes: ["createdAt"],
+        where: { createdAt: { [Op.gte]: start } }
+      }),
+      Message.findAll({
+        attributes: ["createdAt"],
+        where: { createdAt: { [Op.gte]: start }, messageType: "chat" }
+      }),
+      Appointment.findAll({
+        attributes: ["createdAt", "clinicId"],
+        where: { createdAt: { [Op.gte]: start } }
+      }),
+      Conversation.count({ group: ["clinicId"] }),
+      Appointment.count({ group: ["clinicId"] }),
+      CallAnalysis.count({ group: ["clinicId"] })
     ]);
 
-    const recentMessages = await Message.findAll({
-      attributes: ["createdAt"],
-      where: { createdAt: { [Op.gte]: start } }
-    });
+    const bucket = makeDayBuckets(STATS_DAYS, now);
+    recentConversations.forEach((row) => bumpDay(bucket, row.createdAt, "conversations"));
+    recentCalls.forEach((row) => bumpDay(bucket, row.createdAt, "phoneCalls"));
+    recentWebChats.forEach((row) => bumpDay(bucket, row.createdAt, "webChats"));
+    recentAppointments.forEach((row) => bumpDay(bucket, row.createdAt, "appointments"));
 
-    const bucket = new Map();
-    for (let i = 6; i >= 0; i -= 1) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      bucket.set(key, {
-        day: d.toLocaleDateString(undefined, { weekday: "short" }),
-        count: 0
-      });
-    }
+    const perDay = Array.from(bucket.values());
+    const thisWeek = perDay.slice(-7);
+    const previousWeek = perDay.slice(0, Math.max(0, perDay.length - 7)).slice(-7);
 
-    recentMessages.forEach((row) => {
-      const key = row.createdAt?.toISOString?.().slice(0, 10);
-      if (key && bucket.has(key)) {
-        bucket.get(key).count += 1;
+    const byClinicMap = new Map();
+    const ensureClinic = (rawId) => {
+      const clinicId = resolveClinicPk(rawId, clinicRows);
+      if (!byClinicMap.has(clinicId)) {
+        byClinicMap.set(clinicId, {
+          clinicId,
+          conversations: 0,
+          phoneCalls: 0,
+          appointments: 0
+        });
       }
+      return byClinicMap.get(clinicId);
+    };
+
+    (conversationCounts || []).forEach((row) => {
+      ensureClinic(row.clinicId).conversations += Number(row.count || 0);
+    });
+    (callCounts || []).forEach((row) => {
+      if (row.clinicId == null) return;
+      ensureClinic(row.clinicId).phoneCalls += Number(row.count || 0);
+    });
+    (appointmentCounts || []).forEach((row) => {
+      ensureClinic(row.clinicId).appointments += Number(row.count || 0);
     });
 
     return res.status(200).json({
-      totalClinics: clinicCount || clinicRows.length,
-      totalConversations: conversations,
-      totalMessages: messages,
-      totalUsers: users,
-      perDay: Array.from(bucket.values())
+      totalClinics: clinicRows.length,
+      totalConversations,
+      totalMessages,
+      totalWebChats,
+      totalVoiceMessages,
+      totalUsers,
+      totalPhoneCalls,
+      totalCallSeconds: Number(totalCallSeconds || 0),
+      totalAppointments,
+      week: {
+        conversations: sumSeries(thisWeek, "conversations"),
+        phoneCalls: sumSeries(thisWeek, "phoneCalls"),
+        webChats: sumSeries(thisWeek, "webChats"),
+        appointments: sumSeries(thisWeek, "appointments")
+      },
+      previousWeek: {
+        conversations: sumSeries(previousWeek, "conversations"),
+        phoneCalls: sumSeries(previousWeek, "phoneCalls"),
+        webChats: sumSeries(previousWeek, "webChats"),
+        appointments: sumSeries(previousWeek, "appointments")
+      },
+      perDay,
+      byClinic: Array.from(byClinicMap.values())
     });
   } catch (err) {
     return next(err);
@@ -468,6 +662,95 @@ async function getClinicTwilioConfig(req, res, next) {
       twilioApiKeySid: clinic.twilioApiKeySid ? String(clinic.twilioApiKeySid) : "",
       twilioApiKeySecret: clinic.twilioApiKeySecret ? String(clinic.twilioApiKeySecret) : "",
       twilioTwimlAppSid: clinic.twilioTwimlAppSid ? String(clinic.twilioTwimlAppSid) : ""
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function updateClinicGoogleConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const meetingProvider = normalizeMeetingProvider(req.body?.meetingProvider);
+    const googleClientId = String(req.body?.googleClientId || "").trim();
+    const googleClientSecret = String(req.body?.googleClientSecret || "").trim();
+    const googleRefreshToken = String(req.body?.googleRefreshToken || "").trim();
+    const googleCreateMeet = Boolean(req.body?.googleCreateMeet);
+    const ecwApiEndpoint = String(req.body?.ecwApiEndpoint || "").trim();
+    const azulApiEndpoint = String(req.body?.azulApiEndpoint || "").trim();
+
+    if (meetingProvider === "google" && (!googleClientId || !googleClientSecret || !googleRefreshToken)) {
+      return res.status(400).json({
+        error: "googleClientId, googleClientSecret and googleRefreshToken are required for Google Calendar."
+      });
+    }
+    if (meetingProvider === "ecw" && !isHttpUrl(ecwApiEndpoint)) {
+      return res.status(400).json({ error: "A valid ECW API endpoint URL is required." });
+    }
+    if (meetingProvider === "azul" && !isHttpUrl(azulApiEndpoint)) {
+      return res.status(400).json({ error: "A valid Azul API endpoint URL is required." });
+    }
+
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    const nextValues = { meetingProvider };
+    if (meetingProvider === "google") {
+      nextValues.googleClientId = googleClientId;
+      nextValues.googleClientSecret = googleClientSecret;
+      nextValues.googleRefreshToken = googleRefreshToken;
+      nextValues.googleCreateMeet = googleCreateMeet;
+    } else if (meetingProvider === "ecw") {
+      nextValues.ecwApiEndpoint = ecwApiEndpoint;
+    } else {
+      nextValues.azulApiEndpoint = azulApiEndpoint;
+    }
+
+    await clinic.update(nextValues);
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function getClinicGoogleConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+
+    const clinic = await Clinic.findByPk(id, {
+      attributes: [
+        "id",
+        "meetingProvider",
+        "googleClientId",
+        "googleClientSecret",
+        "googleRefreshToken",
+        "googleCreateMeet",
+        "ecwApiEndpoint",
+        "azulApiEndpoint"
+      ]
+    });
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    return res.status(200).json({
+      meetingProvider: normalizeMeetingProvider(clinic.meetingProvider),
+      googleClientId: clinic.googleClientId ? String(clinic.googleClientId) : "",
+      googleClientSecret: clinic.googleClientSecret ? String(clinic.googleClientSecret) : "",
+      googleRefreshToken: clinic.googleRefreshToken ? String(clinic.googleRefreshToken) : "",
+      googleCreateMeet: Boolean(clinic.googleCreateMeet),
+      ecwApiEndpoint: clinic.ecwApiEndpoint ? String(clinic.ecwApiEndpoint) : "",
+      azulApiEndpoint: clinic.azulApiEndpoint ? String(clinic.azulApiEndpoint) : ""
     });
   } catch (err) {
     return next(err);
@@ -780,6 +1063,48 @@ async function listIncomingCallMessages(req, res, next) {
   }
 }
 
+async function listAppointments(req, res, next) {
+  try {
+    const clinicIdRaw = String(req.query?.clinicId || "").trim();
+    const clinicId =
+      clinicIdRaw && clinicIdRaw !== "all" && clinicIdRaw !== "0"
+        ? Number(clinicIdRaw)
+        : null;
+    const from = String(req.query?.from || "").trim() || null;
+    const to = String(req.query?.to || "").trim() || null;
+    const appointments = await listAppointmentRows({
+      clinicId: Number.isFinite(clinicId) && clinicId > 0 ? clinicId : null,
+      from,
+      to
+    });
+    return res.status(200).json({ appointments });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function cancelAppointment(req, res, next) {
+  try {
+    const appointmentId = Number(req.params.appointmentId);
+    if (!appointmentId) {
+      return res.status(400).json({ error: "Invalid appointment id." });
+    }
+
+    const result = await cancelAppointmentRow(appointmentId);
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ error: result.error || "Could not cancel appointment." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      appointment: result.appointment,
+      calendarCancelled: Boolean(result.calendarCancelled)
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 module.exports = {
   listClinics,
   createClinic,
@@ -788,6 +1113,8 @@ module.exports = {
   getClinicBotVoice,
   updateClinicTwilioConfig,
   getClinicTwilioConfig,
+  updateClinicGoogleConfig,
+  getClinicGoogleConfig,
   listClinicBotVoices,
   previewClinicBotVoice,
   listConversationsByClinic,
@@ -800,5 +1127,7 @@ module.exports = {
   deleteAllIncomingCalls,
   getClinicGreeting,
   updateClinicGreeting,
-  previewClinicGreeting
+  previewClinicGreeting,
+  listAppointments,
+  cancelAppointment
 };

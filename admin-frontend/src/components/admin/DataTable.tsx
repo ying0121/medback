@@ -1,5 +1,6 @@
 import { ReactNode, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { motion } from "framer-motion";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -44,7 +45,7 @@ export function DataTable<T>({
   const pageData = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   return (
-    <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-card border border-border/80 rounded-2xl overflow-hidden shadow-soft">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between p-4 border-b border-border">
         <div className="relative w-full sm:max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -70,14 +71,20 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {pageData.map((row) => (
-              <tr key={rowKey(row)} className="border-t border-border hover:bg-muted/30 transition-colors">
+            {pageData.map((row, index) => (
+              <motion.tr
+                key={rowKey(row)}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.28, delay: Math.min(index, 12) * 0.03, ease: [0.22, 1, 0.36, 1] }}
+                className="border-t border-border hover:bg-muted/40 transition-colors duration-200"
+              >
                 {columns.map((c) => (
-                  <td key={c.key} className={cn("px-4 py-3 align-middle", c.className)}>
+                  <td key={c.key} className={cn("px-4 py-3.5 align-middle", c.className)}>
                     {c.render(row)}
                   </td>
                 ))}
-              </tr>
+              </motion.tr>
             ))}
             {pageData.length === 0 && (
               <tr>

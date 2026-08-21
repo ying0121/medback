@@ -1,52 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { motion, useInView, useScroll, useTransform } from "framer-motion";
-import {
-  ArrowRight,
-  Bot,
-  Headphones,
-  MessageSquare,
-  Phone,
-  Shield,
-  Sparkles,
-  Zap
-} from "lucide-react";
-import AnimatedBackground from "@/components/AnimatedBackground";
-import VoiceWaveDemo from "@/components/VoiceWaveDemo";
+import { motion, AnimatePresence, useInView, useScroll, useTransform } from "framer-motion";
+import { ArrowDown, ArrowUp, CalendarDays, MessageSquareText, PhoneCall, ShieldCheck } from "lucide-react";
+import ImageCarousel, { type CarouselSlide } from "@/components/ImageCarousel";
+import botLogo from "@/assets/bot-logo.png";
+import heroImage from "@/assets/landing/hero-clinic-ai.png";
+import imgWebChat from "@/assets/landing/carousel-web-chat.png";
+import imgVoice from "@/assets/landing/carousel-voice-ai.png";
+import imgAppointments from "@/assets/landing/carousel-appointments.png";
+import imgKnowledge from "@/assets/landing/carousel-knowledge.png";
+import imgMultiClinic from "@/assets/landing/carousel-multi-clinic.png";
+import imgIntake from "@/assets/landing/carousel-intake.png";
+import imgFollowup from "@/assets/landing/carousel-followup.png";
+import imgTrust from "@/assets/landing/carousel-trust.png";
+import imgWorkflow from "@/assets/landing/carousel-workflow.png";
 
-const fadeUp = {
-  hidden: { opacity: 0, y: 28 },
-  visible: (i: number) => ({
-    opacity: 1,
-    y: 0,
-    transition: { delay: i * 0.08, duration: 0.65, ease: [0.22, 1, 0.36, 1] }
-  })
-};
-
-const features = [
-  {
-    icon: Phone,
-    title: "Inbound voice AI",
-    desc: "Answer clinic lines with streaming speech — Deepgram, OpenAI, and ElevenLabs in one low-latency pipeline."
-  },
-  {
-    icon: MessageSquare,
-    title: "Web chat & voice",
-    desc: "Patients chat in the browser with text or voice turns, knowledge-aware replies, and live Socket.IO updates."
-  },
-  {
-    icon: Bot,
-    title: "Clinic knowledge base",
-    desc: "Train per-clinic content so every assistant stays on-brand, accurate, and scoped to your organization."
-  },
-  {
-    icon: Shield,
-    title: "Admin control",
-    desc: "Manage clinics, staff, call history, and integrations from a unified dashboard."
-  }
-];
-
-function RevealSection({
+function Reveal({
   children,
   className = "",
   id
@@ -56,12 +25,12 @@ function RevealSection({
   id?: string;
 }) {
   const ref = useRef(null);
-  const inView = useInView(ref, { once: true, margin: "-80px" });
+  const inView = useInView(ref, { once: true, margin: "-72px" });
   return (
     <motion.section
       id={id}
       ref={ref}
-      initial={{ opacity: 0, y: 40 }}
+      initial={{ opacity: 0, y: 36 }}
       animate={inView ? { opacity: 1, y: 0 } : {}}
       transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
       className={className}
@@ -71,226 +40,497 @@ function RevealSection({
   );
 }
 
+function SectionHeading({
+  eyebrow,
+  title,
+  copy
+}: {
+  eyebrow: string;
+  title: string;
+  copy: string;
+}) {
+  return (
+    <div className="max-w-2xl">
+      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sage">{eyebrow}</p>
+      <h2 className="mt-3 font-display text-3xl font-bold tracking-tight text-ink md:text-4xl">{title}</h2>
+      <p className="mt-4 text-base leading-relaxed text-ink/65 md:text-lg">{copy}</p>
+    </div>
+  );
+}
+
+const introSlides: CarouselSlide[] = [
+  {
+    src: imgWebChat,
+    alt: "Web chat assistant on phone and laptop",
+    title: "A clinic-ready conversation partner",
+    caption:
+      "Patients ask about hours, services, directions, and preparation — and get clear answers grounded in your clinic knowledge."
+  },
+  {
+    src: imgVoice,
+    alt: "Voice AI phone assistant for clinics",
+    title: "Natural voice on the clinic line",
+    caption:
+      "Inbound callers speak with an AI front desk that listens, responds in real time, and keeps the conversation moving."
+  },
+  {
+    src: imgKnowledge,
+    alt: "Clinic knowledge training for the assistant",
+    title: "Trained on your clinic content",
+    caption:
+      "Upload policies, FAQs, and service details so every reply stays accurate, local, and consistent across locations."
+  }
+];
+
+const workflowSlides: CarouselSlide[] = [
+  {
+    src: imgWorkflow,
+    alt: "End-to-end chatbot workflow stages",
+    title: "Greet → Understand → Resolve",
+    caption:
+      "From the first hello to a confirmed next step, the assistant follows a structured clinic workflow instead of free-form guessing."
+  },
+  {
+    src: imgIntake,
+    alt: "Digital patient intake on a tablet",
+    title: "Collect only what booking needs",
+    caption:
+      "Name, contact details, preferred time, and visit reason are gathered conversationally — then confirmed before anything is booked."
+  },
+  {
+    src: imgFollowup,
+    alt: "Staff reviewing AI-assisted conversation summary",
+    title: "Leave a clear trail for staff",
+    caption:
+      "Transcripts and appointment context stay available so your team can review what happened after the call or chat ends."
+  }
+];
+
+const channelSlides: CarouselSlide[] = [
+  {
+    src: imgWebChat,
+    alt: "Patient chatting with healthcare assistant",
+    title: "Browser chat that feels human",
+    caption:
+      "Text turns with live updates help patients get answers without waiting on hold — ideal for after-hours and mobile visitors."
+  },
+  {
+    src: imgVoice,
+    alt: "Clinic inbound voice AI visualization",
+    title: "Inbound phone assistance",
+    caption:
+      "Streaming speech handles greetings, FAQs, and booking intent with low-latency voice so callers are never left in silence."
+  },
+  {
+    src: imgTrust,
+    alt: "Secure healthcare AI trust shield visual",
+    title: "Scoped to each clinic",
+    caption:
+      "Each assistant stays tied to clinic identity, knowledge, and routing — so answers never drift into another location’s content."
+  }
+];
+
+const appointmentSlides: CarouselSlide[] = [
+  {
+    src: imgAppointments,
+    alt: "Appointment booking calendar interface",
+    title: "Book visits through conversation",
+    caption:
+      "When a patient wants to schedule, the bot collects required fields, confirms Eastern Time preferences, and completes the request."
+  },
+  {
+    src: imgIntake,
+    alt: "Patient intake details being collected",
+    title: "Smart intake, fewer back-and-forths",
+    caption:
+      "Missing details are asked only when needed. Information already provided is remembered for the rest of the booking flow."
+  },
+  {
+    src: imgFollowup,
+    alt: "Confirmed appointment follow-up on desktop",
+    title: "Confirmations patients can trust",
+    caption:
+      "After booking, patients can receive meeting details and schedule confirmation so the visit is clear before they arrive."
+  }
+];
+
+const clinicSlides: CarouselSlide[] = [
+  {
+    src: imgMultiClinic,
+    alt: "Multi-clinic network connected to AI assistant",
+    title: "Built for multi-location groups",
+    caption:
+      "Operate one platform across clinics while keeping each location’s voice, content, and appointments correctly scoped."
+  },
+  {
+    src: imgKnowledge,
+    alt: "Knowledge documents feeding clinic AI",
+    title: "Knowledge that stays current",
+    caption:
+      "Refresh training materials as services change — the assistant adapts so front-desk answers stay aligned with reality."
+  },
+  {
+    src: imgTrust,
+    alt: "Secure clinic AI trust visual",
+    title: "Designed for clinical operations",
+    caption:
+      "From call handling to appointment coordination, the experience is tuned for healthcare front desks — not generic chatbots."
+  }
+];
+
 export default function Landing() {
   const { scrollY } = useScroll();
-  const heroY = useTransform(scrollY, [0, 400], [0, 80]);
-  const heroOpacity = useTransform(scrollY, [0, 300], [1, 0.3]);
-  const [typed, setTyped] = useState("");
+  const heroImageY = useTransform(scrollY, [0, 480], [0, 48]);
+  const [scrolled, setScrolled] = useState(false);
+  const [showTop, setShowTop] = useState(false);
 
-  const phrase = "that never misses a patient.";
   useEffect(() => {
-    let i = 0;
-    const id = window.setInterval(() => {
-      i += 1;
-      setTyped(phrase.slice(0, i));
-      if (i >= phrase.length) window.clearInterval(id);
-    }, 42);
-    return () => window.clearInterval(id);
+    const onScroll = () => {
+      const y = window.scrollY;
+      setScrolled(y > 24);
+      setShowTop(y > 420);
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   return (
     <div className="relative min-h-screen overflow-x-hidden">
-      <AnimatedBackground />
+      <div className="pointer-events-none fixed inset-0 -z-10" aria-hidden>
+        <div className="absolute -left-24 top-16 h-[28rem] w-[28rem] animate-float rounded-full bg-navy/[0.06] blur-3xl" />
+        <div className="absolute -right-20 top-40 h-[26rem] w-[26rem] animate-float-delayed rounded-full bg-sage/[0.08] blur-3xl" />
+      </div>
 
-      <header className="sticky top-0 z-50 border-b border-white/50 bg-white/60 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <Link to="/" className="flex items-center gap-2 font-display text-lg font-bold tracking-tight text-ink">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo to-teal text-white shadow-lg shadow-teal/25">
-              <Sparkles className="h-4 w-4" />
-            </span>
-            Healthcare Chat Bot 
+      <header
+        className={`sticky top-0 z-50 border-b transition-colors ${
+          scrolled ? "border-line/80 bg-soft/95 backdrop-blur-xl" : "border-line/40 bg-soft/80 backdrop-blur-md"
+        }`}
+      >
+        <div className="section-shell flex h-[4.25rem] items-center justify-between">
+          <Link to="/" className="flex items-center gap-3">
+            <img src={botLogo} alt="" className="h-10 w-10 rounded-xl object-cover" />
+            <span className="font-display text-lg font-bold tracking-tight text-ink">Healthcare Chat Bot</span>
           </Link>
           <nav className="hidden items-center gap-8 text-sm font-medium text-ink/70 md:flex">
-            <a href="#features" className="transition-colors hover:text-ink">Features</a>
-            <a href="#how" className="transition-colors hover:text-ink">How it works</a>
+            <a href="#introduction" className="transition-colors hover:text-ink">
+              Introduction
+            </a>
+            <a href="#workflow" className="transition-colors hover:text-ink">
+              Workflow
+            </a>
+            <a href="#channels" className="transition-colors hover:text-ink">
+              Channels
+            </a>
+            <a href="#appointments" className="transition-colors hover:text-ink">
+              Appointments
+            </a>
+            <a href="#clinics" className="transition-colors hover:text-ink">
+              Clinics
+            </a>
           </nav>
           <a
-            href="/admin/login"
-            className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo/20 transition hover:bg-indigo hover:shadow-teal/30"
+            href="#introduction"
+            className="inline-flex items-center gap-2 rounded-xl bg-navy px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-ink"
           >
-            Admin login
-            <ArrowRight className="h-4 w-4" />
+            Learn more
+            <ArrowDown className="h-3.5 w-3.5" />
           </a>
         </div>
       </header>
 
-      <motion.main style={{ y: heroY, opacity: heroOpacity }} className="mx-auto max-w-6xl px-6 pb-24 pt-16 md:pt-24">
-        <div className="grid items-center gap-14 lg:grid-cols-2">
-          <div>
+      {/* 1. Hero — split composition: copy left, product visual right */}
+      <section className="relative grid min-h-[calc(100vh-4.25rem)] lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        <div className="relative flex flex-col justify-center overflow-hidden bg-[#0f1b2d] px-6 py-16 sm:px-10 lg:px-14 xl:px-20">
+          <div
+            className="pointer-events-none absolute inset-0 opacity-80"
+            aria-hidden
+            style={{
+              background:
+                "radial-gradient(ellipse 80% 60% at 0% 0%, rgba(61,107,122,0.28), transparent 55%), radial-gradient(ellipse 70% 50% at 100% 100%, rgba(27,58,92,0.45), transparent 50%)"
+            }}
+          />
+          <div
+            className="pointer-events-none absolute inset-0 opacity-[0.07]"
+            aria-hidden
+            style={{
+              backgroundImage:
+                "linear-gradient(rgba(255,255,255,0.7) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.7) 1px, transparent 1px)",
+              backgroundSize: "48px 48px"
+            }}
+          />
+
+          <div className="relative max-w-xl">
             <motion.div
-              custom={0}
-              variants={fadeUp}
-              initial="hidden"
-              animate="visible"
-              className="mb-6 inline-flex items-center gap-2 rounded-full border border-teal/30 bg-teal/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-teal"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.65, ease: [0.22, 1, 0.36, 1] }}
+              className="flex items-center gap-4"
             >
-              <Zap className="h-3.5 w-3.5" />
-              Clinic AI platform
+              <img
+                src={botLogo}
+                alt=""
+                className="h-16 w-16 rounded-2xl object-cover shadow-[0_12px_40px_-16px_rgba(0,0,0,0.55)] sm:h-[4.5rem] sm:w-[4.5rem]"
+              />
+              <div>
+                <p className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
+                  Healthcare Chat Bot
+                </p>
+                <p className="mt-1 text-sm font-medium tracking-wide text-white/55">Clinic AI assistant</p>
+              </div>
             </motion.div>
 
             <motion.h1
-              custom={1}
-              variants={fadeUp}
-              initial="hidden"
-              animate="visible"
-              className="font-display text-4xl font-bold leading-[1.08] tracking-tight text-ink md:text-5xl lg:text-6xl"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+              className="mt-10 font-display text-[2rem] font-bold leading-[1.12] tracking-tight text-white sm:text-4xl lg:text-[2.65rem] xl:text-[2.85rem]"
             >
-              Intelligent front desk{" "}
-              <span className="text-gradient">{typed}</span>
-              <span className="inline-block w-[2px] animate-pulse bg-teal align-middle" style={{ height: "0.9em" }} />
+              The front desk that answers every patient — day or night.
             </motion.h1>
 
             <motion.p
-              custom={2}
-              variants={fadeUp}
-              initial="hidden"
-              animate="visible"
-              className="mt-6 max-w-lg text-lg leading-relaxed text-ink/65"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.65, delay: 0.18, ease: [0.22, 1, 0.36, 1] }}
+              className="mt-5 max-w-md text-base leading-relaxed text-white/70 sm:text-lg"
             >
-              Healthcare Chat Bot  powers real-time chat, inbound phone assistants, and staff tools — built for multi-clinic healthcare teams.
+              An AI assistant for clinics that chats, takes calls, books appointments, and answers from your own
+              knowledge.
             </motion.p>
 
             <motion.div
-              custom={3}
-              variants={fadeUp}
-              initial="hidden"
-              animate="visible"
-              className="mt-10 flex flex-wrap gap-4"
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.65, delay: 0.26, ease: [0.22, 1, 0.36, 1] }}
+              className="mt-10 flex flex-wrap gap-3"
             >
               <a
-                href="#features"
-                className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo to-teal px-7 py-3.5 text-sm font-semibold text-white shadow-xl shadow-teal/25 transition hover:scale-[1.02] hover:shadow-2xl"
+                href="#workflow"
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-semibold text-ink transition hover:bg-mist"
               >
-                Explore features
-                <ArrowRight className="h-4 w-4" />
+                See the workflow
               </a>
               <a
-                href="/admin/login"
-                className="inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white px-7 py-3.5 text-sm font-semibold text-ink transition hover:border-teal/40 hover:bg-teal/5"
+                href="#channels"
+                className="inline-flex items-center gap-2 rounded-xl border border-white/25 bg-white/5 px-6 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
               >
-                Open admin console
+                Explore capabilities
               </a>
             </motion.div>
           </div>
-
-          <motion.div
-            initial={{ opacity: 0, scale: 0.92, rotateY: -8 }}
-            animate={{ opacity: 1, scale: 1, rotateY: 0 }}
-            transition={{ duration: 0.9, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="relative"
-          >
-            <div className="absolute -inset-4 rounded-[2rem] bg-gradient-to-br from-teal/30 to-indigo/20 blur-2xl" />
-            <div className="glass relative overflow-hidden rounded-[2rem] p-6 shadow-2xl shadow-indigo/10">
-              <div className="absolute -right-8 -top-8 h-32 w-32 animate-pulse-ring rounded-full border-2 border-teal/40" />
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm font-semibold text-ink">
-                  <Headphones className="h-4 w-4 text-teal" />
-                  Live call preview
-                </div>
-                <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-700">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                  Active
-                </span>
-              </div>
-              <VoiceWaveDemo />
-              <div className="mt-5 space-y-3">
-                {[
-                  { role: "Patient", text: "Hi, I'd like to schedule a follow-up visit." },
-                  { role: "Healthcare Chat Bot ", text: "Of course — I can help with that. Which clinic location works best for you?" }
-                ].map((line, i) => (
-                  <motion.div
-                    key={line.role}
-                    initial={{ opacity: 0, x: i === 0 ? -16 : 16 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.8 + i * 0.35 }}
-                    className={`rounded-2xl px-4 py-3 text-sm ${
-                      i === 0 ? "mr-8 bg-slate-100 text-ink/80" : "ml-8 bg-gradient-to-r from-indigo/10 to-teal/10 text-ink"
-                    }`}
-                  >
-                    <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-ink/45">{line.role}</div>
-                    {line.text}
-                  </motion.div>
-                ))}
-              </div>
-            </div>
-          </motion.div>
         </div>
-      </motion.main>
 
-      <RevealSection id="features" className="mx-auto max-w-6xl px-6 py-20">
-        <div className="mb-12 text-center">
-          <h2 className="font-display text-3xl font-bold text-ink md:text-4xl">Everything your clinic needs</h2>
-          <p className="mx-auto mt-3 max-w-xl text-ink/60">One backend. Chat, voice, alerts, and administration — orchestrated for healthcare workflows.</p>
-        </div>
-        <div className="grid gap-6 sm:grid-cols-2">
-          {features.map((f, i) => (
-            <motion.article
-              key={f.title}
-              initial={{ opacity: 0, y: 24 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ delay: i * 0.1, duration: 0.5 }}
-              whileHover={{ y: -4, transition: { duration: 0.2 } }}
-              className="glass group rounded-2xl p-6 shadow-lg shadow-indigo/5 transition-shadow hover:shadow-xl"
-            >
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-indigo/15 to-teal/15 text-indigo transition group-hover:scale-110">
-                <f.icon className="h-6 w-6" />
-              </div>
-              <h3 className="font-display text-lg font-semibold text-ink">{f.title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-ink/60">{f.desc}</p>
-            </motion.article>
-          ))}
-        </div>
-      </RevealSection>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.9, delay: 0.12, ease: [0.22, 1, 0.36, 1] }}
+          className="relative min-h-[42vh] overflow-hidden bg-mist lg:min-h-full"
+        >
+          <motion.img
+            style={{ y: heroImageY }}
+            src={heroImage}
+            alt="Healthcare Chat Bot scheduling an appointment in chat"
+            className="absolute inset-0 h-[112%] w-full object-cover object-center"
+            fetchPriority="high"
+          />
+          <div
+            className="pointer-events-none absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-[#0f1b2d]/45 to-transparent lg:w-24"
+            aria-hidden
+          />
+        </motion.div>
+      </section>
 
-      <RevealSection id="how" className="mx-auto max-w-6xl px-6 py-20">
-        <div className="glass overflow-hidden rounded-3xl p-8 md:p-12">
-          <div className="grid gap-10 md:grid-cols-3">
-            {[
-              { step: "01", title: "Connect", desc: "Link Twilio numbers, ElevenLabs voices, and clinic knowledge per location." },
-              { step: "02", title: "Assist", desc: "Patients call or chat — AI handles intake with real-time speech and context." },
-              { step: "03", title: "Review", desc: "Staff monitor transcripts, audio waveforms, and analytics in the admin console." }
-            ].map((item, i) => (
-              <motion.div
-                key={item.step}
-                initial={{ opacity: 0, x: -20 }}
-                whileInView={{ opacity: 1, x: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.15 }}
-              >
-                <div className="font-display text-4xl font-bold text-teal/30">{item.step}</div>
-                <h3 className="mt-2 font-display text-xl font-semibold text-ink">{item.title}</h3>
-                <p className="mt-2 text-sm text-ink/60">{item.desc}</p>
-              </motion.div>
-            ))}
+      {/* 2. Introduction */}
+      <Reveal id="introduction" className="section-shell py-20 md:py-28">
+        <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr]">
+          <div>
+            <SectionHeading
+              eyebrow="Introduction"
+              title="Meet the clinic assistant built for real patient conversations."
+              copy="Healthcare Chat Bot is not a generic chatbot template. It is a clinic-scoped assistant that understands your services, speaks with patients in chat or voice, and guides them from a question to a booked visit."
+            />
+            <ul className="mt-8 space-y-4 text-sm leading-relaxed text-ink/70 md:text-base">
+              <li className="flex gap-3">
+                <MessageSquareText className="mt-0.5 h-5 w-5 shrink-0 text-navy" />
+                <span>Answers common questions using clinic-specific knowledge instead of generic web content.</span>
+              </li>
+              <li className="flex gap-3">
+                <PhoneCall className="mt-0.5 h-5 w-5 shrink-0 text-navy" />
+                <span>Supports inbound voice so after-hours callers still reach a capable front desk experience.</span>
+              </li>
+              <li className="flex gap-3">
+                <CalendarDays className="mt-0.5 h-5 w-5 shrink-0 text-navy" />
+                <span>Turns scheduling intent into structured appointment intake with confirmation steps.</span>
+              </li>
+            </ul>
+          </div>
+          <ImageCarousel slides={introSlides} />
+        </div>
+      </Reveal>
+
+      {/* 3. Workflow */}
+      <Reveal id="workflow" className="border-y border-line/70 bg-white/55 py-20 md:py-28">
+        <div className="section-shell grid items-center gap-12 lg:grid-cols-[0.95fr_1.05fr]">
+          <ImageCarousel slides={workflowSlides} autoPlayMs={5600} />
+          <div>
+            <SectionHeading
+              eyebrow="Workflow"
+              title="How a patient conversation becomes completed work."
+              copy="Every interaction follows a practical clinic path: greet the patient, understand the need, use clinic knowledge, collect booking details when needed, and leave staff with a clear record."
+            />
+            <ol className="mt-8 space-y-5">
+              {[
+                {
+                  step: "01",
+                  title: "Welcome & intent",
+                  text: "The assistant greets the patient and detects whether they need information, scheduling, or follow-up help."
+                },
+                {
+                  step: "02",
+                  title: "Knowledge-aware answers",
+                  text: "Responses stay grounded in the clinic’s trained content — services, policies, hours, and location details."
+                },
+                {
+                  step: "03",
+                  title: "Structured booking",
+                  text: "If an appointment is needed, required fields are collected conversationally and confirmed before booking."
+                },
+                {
+                  step: "04",
+                  title: "Handoff & continuity",
+                  text: "Transcripts and appointment context remain available so your team can continue care without starting over."
+                }
+              ].map((item) => (
+                <li key={item.step} className="grid grid-cols-[auto_1fr] gap-4">
+                  <span className="font-display text-sm font-bold text-sage">{item.step}</span>
+                  <div>
+                    <p className="font-display text-base font-semibold text-ink">{item.title}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-ink/65">{item.text}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
           </div>
         </div>
-      </RevealSection>
+      </Reveal>
 
-      <RevealSection className="mx-auto max-w-6xl px-6 pb-24">
-        <motion.div
-          whileInView={{ scale: [0.98, 1] }}
-          viewport={{ once: true }}
-          className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo via-indigo to-teal px-8 py-14 text-center text-white shadow-2xl shadow-indigo/30 md:px-16"
-        >
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.15),transparent_50%)]" />
-          <h2 className="relative font-display text-3xl font-bold md:text-4xl">Ready to modernize your clinic line?</h2>
-          <p className="relative mx-auto mt-4 max-w-lg text-white/80">
-            Sign in to configure clinics, train assistants, and review every conversation.
-          </p>
-          <a
-            href="/admin/login"
-            className="relative mt-8 inline-flex items-center gap-2 rounded-full bg-white px-8 py-3.5 text-sm font-bold text-indigo shadow-xl transition hover:scale-[1.03]"
-          >
-            Go to admin console
-            <ArrowRight className="h-4 w-4" />
-          </a>
-        </motion.div>
-      </RevealSection>
+      {/* 4. Channels */}
+      <Reveal id="channels" className="section-shell py-20 md:py-28">
+        <div className="mb-12 max-w-3xl">
+          <SectionHeading
+            eyebrow="Channels"
+            title="One assistant across chat and voice."
+            copy="Patients reach you the way they prefer. Healthcare Chat Bot keeps the same clinic knowledge and booking logic whether the conversation starts in the browser or on the phone."
+          />
+        </div>
+        <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr]">
+          <ImageCarousel slides={channelSlides} />
+          <div className="space-y-8 self-center">
+            <div>
+              <h3 className="font-display text-xl font-semibold text-ink">Web chat</h3>
+              <p className="mt-2 text-sm leading-relaxed text-ink/65 md:text-base">
+                Embeddable conversations for website visitors who want quick answers, prep guidance, or help choosing a visit time without calling.
+              </p>
+            </div>
+            <div>
+              <h3 className="font-display text-xl font-semibold text-ink">Inbound voice</h3>
+              <p className="mt-2 text-sm leading-relaxed text-ink/65 md:text-base">
+                A speaking front desk for clinic phone lines — listening, responding, and guiding callers through FAQs or appointment requests in real time.
+              </p>
+            </div>
+            <div>
+              <h3 className="font-display text-xl font-semibold text-ink">Shared clinic brain</h3>
+              <p className="mt-2 text-sm leading-relaxed text-ink/65 md:text-base">
+                Both channels pull from the same knowledge and intake rules, so patients get consistent answers no matter how they contact you.
+              </p>
+            </div>
+          </div>
+        </div>
+      </Reveal>
 
-      <footer className="border-t border-ink/10 py-8 text-center text-sm text-ink/50">
-        © {new Date().getFullYear()} Healthcare Chat Bot  · Clinic AI Platform
+      {/* 5. Appointments */}
+      <Reveal id="appointments" className="border-y border-line/70 bg-navy text-white py-20 md:py-28">
+        <div className="section-shell grid items-center gap-12 lg:grid-cols-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">Appointments</p>
+            <h2 className="mt-3 font-display text-3xl font-bold tracking-tight md:text-4xl">
+              From “I’d like to book” to a confirmed visit.
+            </h2>
+            <p className="mt-4 text-base leading-relaxed text-white/70 md:text-lg">
+              Scheduling is where most clinic chatbots fall short. Healthcare Chat Bot treats appointment intake as a first-class workflow — collecting the right details, confirming time zone context, and completing the booking path.
+            </p>
+            <div className="mt-8 grid gap-4 sm:grid-cols-2">
+              {[
+                "Conversational intake for required patient fields",
+                "Preferred date and time collection in Eastern Time",
+                "Confirmation before the appointment is finalized",
+                "Meeting and schedule details for the patient"
+              ].map((item) => (
+                <p key={item} className="rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm leading-relaxed text-white/80">
+                  {item}
+                </p>
+              ))}
+            </div>
+          </div>
+          <ImageCarousel slides={appointmentSlides} autoPlayMs={5400} tone="dark" />
+        </div>
+      </Reveal>
+
+      {/* 6. Clinics & knowledge */}
+      <Reveal id="clinics" className="section-shell py-20 md:py-28">
+        <div className="grid items-center gap-12 lg:grid-cols-[1fr_1fr]">
+          <div>
+            <SectionHeading
+              eyebrow="Clinics & knowledge"
+              title="Accurate for every location you operate."
+              copy="Healthcare groups rarely run one identical front desk. This assistant is designed around clinic identity — separate knowledge, separate voice configuration, and consistent operations across your network."
+            />
+            <div className="mt-8 flex items-start gap-3 rounded-2xl border border-line bg-white/80 px-5 py-4">
+              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-navy" />
+              <p className="text-sm leading-relaxed text-ink/70">
+                Keep answers local and trustworthy: each clinic’s assistant stays aligned to that location’s services, hours, and booking rules.
+              </p>
+            </div>
+          </div>
+          <ImageCarousel slides={clinicSlides} autoPlayMs={5800} />
+        </div>
+      </Reveal>
+
+      <footer className="border-t border-line/80 bg-white/70">
+        <div className="section-shell flex flex-col gap-4 py-10 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <img src={botLogo} alt="" className="h-9 w-9 rounded-lg object-cover" />
+            <div>
+              <p className="font-display text-sm font-semibold text-ink">Healthcare Chat Bot</p>
+              <p className="text-xs text-ink/55">Clinic AI for chat, voice, and appointments</p>
+            </div>
+          </div>
+          <p className="text-sm text-ink/50">© {new Date().getFullYear()} Healthcare Chat Bot. All rights reserved.</p>
+        </div>
       </footer>
+
+      <AnimatePresence>
+        {showTop ? (
+          <motion.button
+            key="scroll-top"
+            type="button"
+            aria-label="Scroll to top"
+            onClick={scrollToTop}
+            initial={{ opacity: 0, y: 12, scale: 0.92 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.92 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed bottom-6 right-6 z-50 inline-flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-navy text-white shadow-soft transition hover:bg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40 focus-visible:ring-offset-2"
+          >
+            <ArrowUp className="h-4 w-4" />
+          </motion.button>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }

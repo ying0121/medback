@@ -8,7 +8,17 @@
 
 const { Call, IncomingMessage, CallAnalysis, Clinic } = require("../db");
 const { analyzeInboundCallTranscript } = require("./openaiService");
-const { sendCallAnalysisEmail } = require("./emailService");
+const { sendCallAnalysisEmail, sendPatientMeetingNotificationEmail } = require("./emailService");
+const {
+  tryCreateGoogleMeetForAppointment,
+  helpRequestedIncludesAppointment
+} = require("./googleMeetService");
+const { createAppointmentFromIntake } = require("./appointmentService");
+const {
+  mergePatientInfo,
+  isAppointmentComplete,
+  normalizePatientInfo
+} = require("./appointmentIntakeService");
 
 const inFlightCallIds = new Set();
 
@@ -149,6 +159,46 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
     }
 
     const { clinic, clinicLabel } = await loadClinicDetails(clinicId);
+    let googleMeet = null;
+    let appointmentIntake = null;
+    if (helpRequestedIncludesAppointment(analysisResult.helpRequested)) {
+      const intake = mergePatientInfo(
+        {
+          name: analysisResult.patientName,
+          phone: analysisResult.patientPhoneSpoken || call.phone
+        },
+        analysisResult.appointmentIntake || {}
+      );
+      appointmentIntake = normalizePatientInfo(intake);
+      if (isAppointmentComplete(intake)) {
+        googleMeet = await tryCreateGoogleMeetForAppointment({
+          clinicId,
+          clinicName: clinicLabel,
+          patientInfo: appointmentIntake,
+          summary: `Phone appointment · ${clinicLabel}`,
+          description: [
+            `Inbound phone appointment request.`,
+            analysisResult.reasonForCall ? `Reason: ${analysisResult.reasonForCall}` : "",
+            analysisResult.summary ? `Summary: ${analysisResult.summary}` : ""
+          ]
+            .filter(Boolean)
+            .join("\n")
+        });
+        await createAppointmentFromIntake({
+          clinicId,
+          callId: call.id,
+          source: "phone",
+          patientInfo: appointmentIntake,
+          meetResult: googleMeet
+        });
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[CallAnalysis] appointment intake incomplete callId=${call.id}; Google Meet skipped`
+        );
+      }
+    }
+
     // Email stays identifier-safe: no patient name / phone. Include clinical
     // details and core/important sample talking for staff follow-up.
     const emailPayload = {
@@ -171,7 +221,8 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
         createdAt: analysisRow.createdAt
       },
       clinic,
-      clinicLabel
+      clinicLabel,
+      googleMeet
     };
 
     const emailResult = await sendCallAnalysisEmail(emailPayload);
@@ -180,14 +231,36 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
         emailStatus: "failed",
         emailError: emailResult.reason || "Failed to send call analysis email."
       });
-      return analysisRow;
     }
 
-    await analysisRow.update({
-      emailStatus: "sent",
-      emailMessageId: emailResult.messageId || null,
-      emailError: null
-    });
+    if (appointmentIntake) {
+      const patientEmailResult = await sendPatientMeetingNotificationEmail({
+        clinicName: clinicLabel,
+        clinic,
+        patientInfo: appointmentIntake,
+        googleMeet: googleMeet || {},
+        source: "phone"
+      });
+      if (!patientEmailResult.sent) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[CallAnalysis] patient meeting email failed callId=${call.id}: ${patientEmailResult.reason || "unknown"}`
+        );
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[CallAnalysis] patient meeting email sent callId=${call.id} to ${patientEmailResult.to}`
+        );
+      }
+    }
+
+    if (emailResult.sent) {
+      await analysisRow.update({
+        emailStatus: "sent",
+        emailMessageId: emailResult.messageId || null,
+        emailError: null
+      });
+    }
 
     // eslint-disable-next-line no-console
     console.log(

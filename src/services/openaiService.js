@@ -19,8 +19,10 @@ const {
   parseInboundMergedTurn,
   parseEndCallFlag,
   parseEndCallTurn,
-  parseCallAnalysis
+  parseCallAnalysis,
+  parseAppointmentIntake
 } = require("./openaiParseService");
+const { APP_TIMEZONE, nowLabelNy } = require("../utils/appTimeZone");
 
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
 const openaiModel = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -88,6 +90,14 @@ async function generateAssistantReply(messages, options = {}) {
       content: String(options.languageConstraint)
     });
   }
+  systemMessages.push({
+    role: "system",
+    content: [
+      "If the user wants to book an appointment, you must collect: full name, phone number, email, date of birth,",
+      "whether they are a new or existing patient, and the appointment date and time.",
+      "If any of those is missing, ask for the next missing item. Do not say the appointment is booked until all are provided."
+    ].join(" ")
+  });
 
   const completion = await client.chat.completions.create({
     model,
@@ -120,7 +130,9 @@ const inboundMergedJsonPrompt = [
   "- end_call: boolean. Set true ONLY when the caller clearly wants to finish the call",
   "  (e.g. goodbye, bye, hang up, end call, I'm done, 끊을게요, 통화 종료, 終わります, etc.).",
   "  When end_call is true, set reply to a warm short farewell in the caller's language.",
-  "  Otherwise always set end_call to false."
+  "  Otherwise always set end_call to false.",
+  "If the caller is booking an appointment, collect full name, phone, email, date of birth,",
+  "new vs existing patient, and appointment date and time. Ask for the next missing item before confirming."
 ].join("\n");
 
 /**
@@ -430,13 +442,18 @@ const callAnalysisSystemPrompt = [
   "Do not invent details. When information was not mentioned, use empty string or empty array.",
   "Output exactly one JSON object (no markdown, no code fences) with keys:",
   "patient_name, patient_phone, reason_for_call, symptoms_conditions, help_requested,",
-  "urgency, sentiment, outcome_next_step, summary, key_quotes, notes",
+  "urgency, sentiment, outcome_next_step, summary, key_quotes, notes,",
+  "appointment_name, appointment_email, appointment_phone, appointment_dob, appointment_datetime, appointment_patient_type",
   "Field rules:",
   "- patient_name: caller's name if they stated it, else \"\".",
   "- patient_phone: phone number the caller gave verbally, else \"\".",
   "- reason_for_call: why they called / primary goal in 1-3 sentences.",
   "- symptoms_conditions: symptoms, diseases, or conditions mentioned, else \"\".",
   "- help_requested: JSON array of specific help types (e.g. appointment, refill, callback, directions, billing, test results, insurance, hours, other).",
+  "- If help_requested includes appointment, also fill: appointment_name, appointment_email, appointment_phone, appointment_dob, appointment_datetime, appointment_patient_type.",
+  "  appointment_datetime should be ISO-like (YYYY-MM-DDTHH:mm) in America/New_York when both date and time were spoken. appointment_patient_type is new or existing.",
+  "  appointment_email must be the caller's own email from the transcript, never a clinic or bot address.",
+  "  Use empty string when a booking field was not clearly stated. Do not invent.",
   "- urgency: one of low, medium, high, emergency, unknown.",
   "- sentiment: one of positive, neutral, negative, distressed, unknown.",
   "- outcome_next_step: what was resolved, promised, or should happen next.",
@@ -463,7 +480,15 @@ async function analyzeInboundCallTranscript({ transcript = [], callerPhone = nul
     outcomeNextStep: "",
     summary: "Insufficient conversation data to analyze this call.",
     keyQuotes: [],
-    notes: ""
+    notes: "",
+    appointmentIntake: {
+      name: "",
+      email: "",
+      phone: "",
+      dob: "",
+      datetime: "",
+      type: ""
+    }
   };
 
   const turns = (transcript || []).filter((turn) => String(turn?.text || "").trim());
@@ -484,6 +509,7 @@ async function analyzeInboundCallTranscript({ transcript = [], callerPhone = nul
       {
         role: "user",
         content: [
+          `Current date and time (${APP_TIMEZONE}): ${nowLabelNy()}`,
           callerPhone ? `Caller ID on file: ${callerPhone}` : "Caller ID on file: unknown",
           "",
           "Call transcript:",
@@ -495,6 +521,113 @@ async function analyzeInboundCallTranscript({ transcript = [], callerPhone = nul
 
   const raw = String(completion.choices?.[0]?.message?.content || "").trim();
   return parseCallAnalysis(raw) || empty;
+}
+
+function appointmentIntakeExtractPrompt() {
+  return [
+    "Extract appointment booking fields from a medical clinic conversation.",
+    "Output exactly one JSON object (no markdown) with keys:",
+    "name, email, phone, dob, datetime, type, date, time",
+    "Rules:",
+    "- Use empty string when a value was not clearly given. Do not invent.",
+    "- Only extract values the person actually said in the conversation.",
+    "- Ignore widget/profile placeholders such as name \"Medical Bot\" or email addresses like medibot@...",
+    "- name: the person's full name as they stated it.",
+    "- email: the person's own email address as they stated it. Never use a clinic, bot, or noreply address.",
+    "- phone: the person's phone number as they stated it. Ignore placeholder numbers like 1234567890.",
+    "- dob: date of birth as YYYY-MM-DD if possible.",
+    `- datetime: appointment start as YYYY-MM-DDTHH:mm in ${APP_TIMEZONE}. Convert today/tomorrow and clock times (for example tomorrow 10:00 AM) using America/New_York. Current Eastern time: ${nowLabelNy()}.`,
+    "- date / time: split values if datetime cannot be formed.",
+    "- type: exactly \"new\" or \"existing\" if the person said they are a new or existing/returning patient, else \"\"."
+  ].join("\n");
+}
+
+/**
+ * Pull structured appointment intake fields from free-text conversation.
+ * @returns {Promise<object>}
+ */
+async function extractAppointmentIntakeFromText(text) {
+  const empty = {
+    name: "",
+    email: "",
+    phone: "",
+    dob: "",
+    datetime: "",
+    type: "",
+    date: "",
+    time: ""
+  };
+  const source = String(text || "").trim();
+  if (!source || !openaiApiKey) return empty;
+
+  const completion = await client.chat.completions.create({
+    model: openaiModel,
+    temperature: 0,
+    max_completion_tokens: 220,
+    messages: [
+      { role: "system", content: appointmentIntakeExtractPrompt() },
+      { role: "user", content: source.slice(0, 8000) }
+    ]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  return parseAppointmentIntake(raw) || empty;
+}
+
+function knowledgeDocumentSystemPrompt(clinicName = "") {
+  const clinicLabel = String(clinicName || "").trim() || "the clinic";
+  return [
+    "You are a medical clinic knowledge engineer.",
+    `Convert uploaded documents into durable training knowledge for ${clinicLabel}'s AI assistant.`,
+    "Write clear, factual, staff-ready knowledge text the chatbot can quote.",
+    "Requirements:",
+    "- Preserve important clinical/admin facts (services, hours, locations, insurance, policies, procedures, contacts, FAQs).",
+    "- Organize with short headings and bullet points when helpful.",
+    "- Remove fluff, ads, page numbers, headers/footers, and repeated boilerplate.",
+    "- Do not invent facts that are not in the source.",
+    "- If the source is incomplete, note what is missing briefly.",
+    "- Output plain text only (no markdown code fences).",
+    "- Aim for thorough but concise coverage suitable to paste into a knowledge base."
+  ].join("\n");
+}
+
+/**
+ * Turn raw document text into polished clinic knowledge for Training.
+ */
+async function analyzeDocumentForKnowledge({ sourceText, filename = "", clinicName = "" }) {
+  if (!openaiApiKey) {
+    throw new Error("Missing OPENAI_API_KEY");
+  }
+  const source = String(sourceText || "").trim();
+  if (!source) {
+    throw new Error("No document text to analyze.");
+  }
+
+  const completion = await client.chat.completions.create({
+    model: openaiModel,
+    temperature: 0.2,
+    max_completion_tokens: Math.max(openaiMaxCompletionTokens, 1600),
+    messages: [
+      { role: "system", content: knowledgeDocumentSystemPrompt(clinicName) },
+      {
+        role: "user",
+        content: [
+          `Filename: ${String(filename || "document").trim() || "document"}`,
+          clinicName ? `Clinic: ${String(clinicName).trim()}` : "",
+          "Source document text:",
+          source.slice(0, 48000)
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      }
+    ]
+  });
+
+  const knowledge = String(completion.choices?.[0]?.message?.content || "").trim();
+  if (!knowledge) {
+    throw new Error("AI returned empty knowledge text.");
+  }
+  return knowledge;
 }
 
 module.exports = {
@@ -509,5 +642,7 @@ module.exports = {
   mightBeInboundEndCall,
   transcribeAudioBase64,
   generateSpeechFromText,
-  analyzeInboundCallTranscript
+  analyzeInboundCallTranscript,
+  extractAppointmentIntakeFromText,
+  analyzeDocumentForKnowledge
 };

@@ -1,5 +1,5 @@
 /**
- * Tiny ANSI-coloured logger used by the Socket.IO layer.
+ * Tiny ANSI-coloured logger used by the realtime WebSocket layer.
  *
  * Kept dedicated (not pulled into a global logger) because:
  *   - Realtime traffic is high-volume; we want a debug toggle (`WS_DEBUG_LOGS`)

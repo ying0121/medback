@@ -7,6 +7,7 @@ const CallAnalysis = require("../models/callAnalysis");
 const User = require("../models/user");
 const Clinic = require("../models/clinic");
 const Knowledge = require("../models/knowledge");
+const Appointment = require("../models/appointment");
 
 Conversation.hasMany(Message, {
   foreignKey: "conversationId",
@@ -39,6 +40,17 @@ Call.hasOne(CallAnalysis, {
 CallAnalysis.belongsTo(Call, {
   foreignKey: "callId",
   targetKey: "id"
+});
+
+Clinic.hasMany(Appointment, {
+  foreignKey: "clinicId",
+  sourceKey: "id"
+});
+
+Appointment.belongsTo(Clinic, {
+  foreignKey: "clinicId",
+  targetKey: "id",
+  as: "clinic"
 });
 
 async function connectDatabase() {
@@ -113,6 +125,27 @@ async function ensureClinicTwilioColumns() {
   }
 }
 
+async function ensureClinicGoogleColumns() {
+  const statements = [
+    "ALTER TABLE clinics ADD COLUMN google_client_id VARCHAR(255) NULL",
+    "ALTER TABLE clinics ADD COLUMN google_client_secret TEXT NULL",
+    "ALTER TABLE clinics ADD COLUMN google_refresh_token TEXT NULL",
+    "ALTER TABLE clinics ADD COLUMN google_create_meet TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE clinics ADD COLUMN meeting_provider VARCHAR(32) NOT NULL DEFAULT 'google'",
+    "ALTER TABLE clinics ADD COLUMN ecw_api_endpoint TEXT NULL",
+    "ALTER TABLE clinics ADD COLUMN azul_api_endpoint TEXT NULL"
+  ];
+
+  for (const sql of statements) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      if (!/duplicate column name/i.test(msg)) throw err;
+    }
+  }
+}
+
 async function syncDatabase() {
   await sequelize.sync();
   await ensureClinicElevenlabsColumn();
@@ -123,6 +156,7 @@ async function syncDatabase() {
   await ensureClinicThemeColorColumn();
   await ensureClinicAvatarColumn();
   await ensureClinicChatGreetingColumn();
+  await ensureClinicGoogleColumns();
   await migrateThemeColorLegacyIds();
 }
 
@@ -170,6 +204,7 @@ module.exports = {
   User,
   Clinic,
   Knowledge,
+  Appointment,
   connectDatabase,
   syncDatabase,
   initializeDatabase

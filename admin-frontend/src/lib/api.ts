@@ -12,6 +12,8 @@ import {
 export type { ClinicThemeColor };
 export { CLINIC_THEME_COLORS, DEFAULT_CLINIC_THEME_COLOR, THEME_COLOR_OPTIONS };
 
+export type ClinicMeetingProvider = "google" | "ecw" | "azul";
+
 export interface Clinic {
   id: string;
   clinicId: string;
@@ -30,15 +32,18 @@ export interface Clinic {
   web?: string;
   portal?: string;
   twilioConfigured?: boolean;
+  /** Google Calendar / ECW / Azul configured for this clinic. */
+  googleConfigured?: boolean;
+  meetingProvider?: ClinicMeetingProvider;
   /** OpenAI Realtime / TTS voice configured for this clinic. */
   botVoiceConfigured?: boolean;
   /** Saved OpenAI voice id (e.g. marin, alloy). */
   openaiVoice?: string | null;
   /** Per-clinic inbound phone greeting (may use placeholders). */
   greetingConfigured?: boolean;
-  /** Per-clinic web chat greeting (Socket.IO connect). */
+  /** Per-clinic web chat greeting (WebSocket connect). */
   chatGreetingConfigured?: boolean;
-  /** Chat frontend theme token (Socket.IO connect). */
+  /** Chat frontend theme token (WebSocket connect). */
   themeColor?: ClinicThemeColor;
 }
 
@@ -114,6 +119,9 @@ export interface Conversation {
   userEmail?: string;
   messageCount: number;
   lastMessageAt: string;
+  lastMessagePreview?: string;
+  lastMessageType?: MessageType;
+  lastMessageRole?: "user" | "assistant";
 }
 
 export interface IncomingCall {
@@ -230,6 +238,84 @@ export async function updateClinicTwilioConfig(clinicId: string, payload: Clinic
 
 export async function getClinicTwilioConfig(clinicId: string): Promise<ClinicTwilioConfigInput> {
   return request<ClinicTwilioConfigInput>(`/api/admin/dashboard/clinics/${clinicId}/twilio`);
+}
+
+export interface ClinicGoogleConfigInput {
+  meetingProvider: ClinicMeetingProvider;
+  googleClientId: string;
+  googleClientSecret: string;
+  googleRefreshToken: string;
+  googleCreateMeet: boolean;
+  ecwApiEndpoint: string;
+  azulApiEndpoint: string;
+}
+
+export async function updateClinicGoogleConfig(clinicId: string, payload: ClinicGoogleConfigInput) {
+  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/google`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getClinicGoogleConfig(clinicId: string): Promise<ClinicGoogleConfigInput> {
+  return request<ClinicGoogleConfigInput>(`/api/admin/dashboard/clinics/${clinicId}/google`);
+}
+
+export interface AppointmentClinic {
+  id: string;
+  name: string;
+  acronym: string;
+  themeColor?: ClinicThemeColor;
+}
+
+export interface Appointment {
+  id: string;
+  clinicId: string;
+  conversationId?: string | null;
+  callId?: string | null;
+  source: "chat" | "voice" | "phone" | string;
+  patientName: string;
+  patientEmail: string;
+  patientPhone: string;
+  patientDob: string;
+  patientType: "new" | "existing" | string;
+  startsAt: string;
+  endsAt: string;
+  meetLink?: string | null;
+  googleEventId?: string | null;
+  status: string;
+  createdAt?: string | null;
+  clinic?: AppointmentClinic | null;
+}
+
+export async function listAppointments(params: {
+  clinicId?: string;
+  from?: string;
+  to?: string;
+} = {}): Promise<Appointment[]> {
+  const query = new URLSearchParams();
+  if (params.clinicId && params.clinicId !== "all") query.set("clinicId", params.clinicId);
+  if (params.from) query.set("from", params.from);
+  if (params.to) query.set("to", params.to);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const data = await request<{ appointments: Appointment[] }>(
+    `/api/admin/dashboard/appointments${suffix}`
+  );
+  return data.appointments;
+}
+
+export async function cancelAppointment(appointmentId: string): Promise<{
+  success: boolean;
+  calendarCancelled: boolean;
+}> {
+  const data = await request<{ success: boolean; calendarCancelled?: boolean }>(
+    `/api/admin/dashboard/appointments/${appointmentId}/cancel`,
+    { method: "POST" }
+  );
+  return {
+    success: Boolean(data.success),
+    calendarCancelled: Boolean(data.calendarCancelled)
+  };
 }
 
 export async function getClinicGreetings(clinicId: string): Promise<ClinicGreetingsConfig> {
@@ -476,40 +562,112 @@ export async function deleteAllIncomingCalls() {
   );
 }
 
+export interface DashboardDayStat {
+  date: string;
+  day: string;
+  conversations: number;
+  phoneCalls: number;
+  webChats: number;
+  appointments: number;
+  /** @deprecated Use conversations / phoneCalls / webChats */
+  count?: number;
+}
+
+export interface DashboardClinicStat {
+  clinicId: string;
+  conversations: number;
+  phoneCalls: number;
+  appointments: number;
+}
+
+export interface DashboardPeriodStat {
+  conversations: number;
+  phoneCalls: number;
+  webChats: number;
+  appointments: number;
+}
+
+export interface DashboardStats {
+  totalClinics: number;
+  totalConversations: number;
+  totalMessages: number;
+  totalWebChats: number;
+  totalVoiceMessages: number;
+  totalUsers: number;
+  totalPhoneCalls: number;
+  totalCallSeconds: number;
+  totalAppointments: number;
+  week: DashboardPeriodStat;
+  previousWeek: DashboardPeriodStat;
+  perDay: DashboardDayStat[];
+  byClinic: DashboardClinicStat[];
+}
+
+function emptyPeriod(): DashboardPeriodStat {
+  return { conversations: 0, phoneCalls: 0, webChats: 0, appointments: 0 };
+}
+
+function normalizeDashboardStats(data: Partial<DashboardStats> & { perDay?: Array<DashboardDayStat & { count?: number }> }): DashboardStats {
+  const perDay = (data.perDay || []).map((row) => ({
+    date: row.date || "",
+    day: row.day,
+    conversations: Number(row.conversations ?? row.count ?? 0),
+    phoneCalls: Number(row.phoneCalls ?? 0),
+    webChats: Number(row.webChats ?? 0),
+    appointments: Number(row.appointments ?? 0),
+  }));
+  return {
+    totalClinics: Number(data.totalClinics ?? 0),
+    totalConversations: Number(data.totalConversations ?? 0),
+    totalMessages: Number(data.totalMessages ?? 0),
+    totalWebChats: Number(data.totalWebChats ?? 0),
+    totalVoiceMessages: Number(data.totalVoiceMessages ?? 0),
+    totalUsers: Number(data.totalUsers ?? 0),
+    totalPhoneCalls: Number(data.totalPhoneCalls ?? 0),
+    totalCallSeconds: Number(data.totalCallSeconds ?? 0),
+    totalAppointments: Number(data.totalAppointments ?? 0),
+    week: data.week || emptyPeriod(),
+    previousWeek: data.previousWeek || emptyPeriod(),
+    perDay,
+    byClinic: data.byClinic || [],
+  };
+}
+
 // ---------- Stats ----------
 export const getStats = async (allowedClinicIds?: string[]) => {
   try {
-    const data = await request<{
-      totalClinics: number;
-      totalConversations: number;
-      totalMessages: number;
-      totalUsers: number;
-      perDay: { day: string; count: number }[];
-    }>("/api/admin/dashboard/stats");
-    if (!allowedClinicIds) return data;
-    // If clinic staff, frontend keeps allowed clinic filtering behavior for cards/chart fallback.
-    return data;
+    const data = await request<Partial<DashboardStats>>("/api/admin/dashboard/stats");
+    const stats = normalizeDashboardStats(data);
+    if (!allowedClinicIds) return stats;
+    return {
+      ...stats,
+      byClinic: stats.byClinic.filter((row) => allowedClinicIds.includes(row.clinicId)),
+    };
   } catch {
     const cs = allowedClinicIds ? clinics.filter((c) => allowedClinicIds.includes(c.id)) : clinics;
     const allowedIds = new Set(cs.map((c) => c.id));
     const cvs = conversations.filter((c) => allowedIds.has(c.clinicId));
     const msgs = messages.filter((m) => cvs.some((c) => c.id === m.conversationId));
-    const days: { day: string; count: number }[] = [];
-    for (let i = 6; i >= 0; i--) {
+    const perDay: DashboardDayStat[] = [];
+    for (let i = 13; i >= 0; i--) {
       const d = new Date(Date.now() - i * 86400000);
-      const key = d.toISOString().slice(0, 10);
-      days.push({
-        day: d.toLocaleDateString(undefined, { weekday: "short" }),
-        count: msgs.filter((m) => m.createdAt.slice(0, 10) === key).length || Math.floor(Math.random() * 30 + 10),
+      perDay.push({
+        date: d.toISOString().slice(0, 10),
+        day: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        conversations: 0,
+        phoneCalls: 0,
+        webChats: msgs.filter((m) => m.createdAt.slice(0, 10) === d.toISOString().slice(0, 10)).length,
+        appointments: 0,
       });
     }
-    return delay({
+    return delay(normalizeDashboardStats({
       totalClinics: cs.length,
       totalConversations: cvs.length,
       totalMessages: msgs.length,
+      totalWebChats: msgs.length,
       totalUsers: users.length,
-      perDay: days,
-    });
+      perDay,
+    }));
   }
 };
 
@@ -733,5 +891,26 @@ export async function deleteKnowledge(id: string) {
     knowledgeItems = knowledgeItems.filter((x) => x.id !== id);
     return delay(true);
   }
+}
+
+export async function analyzeKnowledgeDocument(file: File, options?: { clinicId?: string; clinicName?: string }) {
+  const form = new FormData();
+  form.append("file", file);
+  if (options?.clinicId) form.append("clinicId", options.clinicId);
+  if (options?.clinicName) form.append("clinicName", options.clinicName);
+
+  const res = await fetch(`${API_BASE_URL}/api/admin/knowledge/analyze`, {
+    method: "POST",
+    body: form,
+    credentials: "include"
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || "Failed to analyze document");
+  return data as {
+    knowledge: string;
+    filename: string;
+    truncated?: boolean;
+    characterCount?: number;
+  };
 }
 

@@ -187,6 +187,43 @@ function parseCallAnalysis(rawText) {
     return null;
   }
 
+  const appointmentName = readStringField(parsed, [
+    "appointment_name",
+    "appointmentName",
+    "patient_name",
+    "patientName"
+  ]);
+  const appointmentEmail = readStringField(parsed, [
+    "appointment_email",
+    "appointmentEmail",
+    "email"
+  ]);
+  const appointmentPhone = readStringField(parsed, [
+    "appointment_phone",
+    "appointmentPhone",
+    "patient_phone",
+    "patientPhone"
+  ]);
+  const appointmentDob = readStringField(parsed, [
+    "appointment_dob",
+    "appointmentDob",
+    "date_of_birth",
+    "dateOfBirth",
+    "dob"
+  ]);
+  const appointmentDatetime = readStringField(parsed, [
+    "appointment_datetime",
+    "appointmentDatetime",
+    "appointment_date_time",
+    "appointmentDateTime"
+  ]);
+  const appointmentPatientType = readStringField(parsed, [
+    "appointment_patient_type",
+    "appointmentPatientType",
+    "patient_type",
+    "patientType"
+  ]);
+
   return {
     patientName,
     patientPhoneSpoken,
@@ -198,7 +235,36 @@ function parseCallAnalysis(rawText) {
     outcomeNextStep,
     summary,
     keyQuotes,
-    notes
+    notes,
+    appointmentIntake: {
+      name: appointmentName,
+      email: appointmentEmail,
+      phone: appointmentPhone,
+      dob: appointmentDob,
+      datetime: appointmentDatetime,
+      type: appointmentPatientType
+    }
+  };
+}
+
+function parseAppointmentIntake(rawText) {
+  const parsed = extractJsonObject(rawText);
+  if (!parsed) return null;
+  return {
+    name: readStringField(parsed, ["name", "full_name", "fullName", "patient_name", "patientName"]),
+    email: readStringField(parsed, ["email", "email_address", "emailAddress"]),
+    phone: readStringField(parsed, ["phone", "phone_number", "phoneNumber"]),
+    dob: readStringField(parsed, ["dob", "date_of_birth", "dateOfBirth", "birth_date", "birthDate"]),
+    datetime: readStringField(parsed, [
+      "datetime",
+      "date_time",
+      "dateTime",
+      "appointment_datetime",
+      "appointmentDatetime"
+    ]),
+    type: readStringField(parsed, ["type", "patient_type", "patientType"]),
+    date: readStringField(parsed, ["date", "appointment_date", "appointmentDate"]),
+    time: readStringField(parsed, ["time", "appointment_time", "appointmentTime"])
   };
 }
 
@@ -211,5 +277,6 @@ module.exports = {
   parseInboundMergedTurn,
   parseEndCallFlag,
   parseEndCallTurn,
-  parseCallAnalysis
+  parseCallAnalysis,
+  parseAppointmentIntake
 };

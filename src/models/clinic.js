@@ -118,6 +118,43 @@ const Clinic = sequelize.define(
     avatar: {
       type: DataTypes.TEXT("long"),
       allowNull: true
+    },
+    googleClientId: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      field: "google_client_id"
+    },
+    googleClientSecret: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "google_client_secret"
+    },
+    googleRefreshToken: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "google_refresh_token"
+    },
+    googleCreateMeet: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "google_create_meet"
+    },
+    meetingProvider: {
+      type: DataTypes.STRING(32),
+      allowNull: false,
+      defaultValue: "google",
+      field: "meeting_provider"
+    },
+    ecwApiEndpoint: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "ecw_api_endpoint"
+    },
+    azulApiEndpoint: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "azul_api_endpoint"
     }
   },
   {

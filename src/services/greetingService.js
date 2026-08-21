@@ -117,7 +117,7 @@ function buildGreetingPanel(clinic, kind) {
 }
 
 /**
- * Socket.IO connect payload — uses chat greeting only.
+ * WebSocket connect payload — uses chat greeting only.
  */
 function getClinicConnectFields(clinic) {
   const ctx = buildPlaceholderContext(clinic);

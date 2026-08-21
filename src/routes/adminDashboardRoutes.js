@@ -7,6 +7,8 @@ const {
   updateClinicBotVoice,
   getClinicTwilioConfig,
   updateClinicTwilioConfig,
+  getClinicGoogleConfig,
+  updateClinicGoogleConfig,
   listClinicBotVoices,
   previewClinicBotVoice,
   listConversationsByClinic,
@@ -19,7 +21,9 @@ const {
   deleteAllIncomingCalls,
   getClinicGreeting,
   updateClinicGreeting,
-  previewClinicGreeting
+  previewClinicGreeting,
+  listAppointments,
+  cancelAppointment
 } = require("../controllers/adminDashboardController");
 
 const router = express.Router();
@@ -34,12 +38,16 @@ router.get("/clinics/:id/bot-voice", getClinicBotVoice);
 router.patch("/clinics/:id/bot-voice", updateClinicBotVoice);
 router.get("/clinics/:id/twilio", getClinicTwilioConfig);
 router.patch("/clinics/:id/twilio", updateClinicTwilioConfig);
+router.get("/clinics/:id/google", getClinicGoogleConfig);
+router.patch("/clinics/:id/google", updateClinicGoogleConfig);
 router.get("/clinics/:id/greeting", getClinicGreeting);
 router.patch("/clinics/:id/greeting", updateClinicGreeting);
 router.post("/clinics/:id/greeting/preview", previewClinicGreeting);
 router.post("/clinics/sync-external", syncClinicsFromExternalApi);
 router.get("/clinics/:clinicId/conversations", listConversationsByClinic);
 router.get("/conversations/:conversationId/messages", listConversationMessages);
+router.get("/appointments", listAppointments);
+router.post("/appointments/:appointmentId/cancel", cancelAppointment);
 router.get("/calls", listIncomingCalls);
 router.delete("/calls", deleteAllIncomingCalls);
 router.get("/calls/:callId/messages", listIncomingCallMessages);

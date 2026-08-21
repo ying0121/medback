@@ -1,5 +1,5 @@
 /**
- * Chat service — orchestrates persistent text and voice turns over Socket.IO.
+ * Chat service — orchestrates persistent text and voice turns over WebSocket.
  *
  * Responsibilities:
  *   - Conversation lifecycle (create / resolve on connect)
@@ -15,33 +15,95 @@ const { Conversation, Message, Clinic } = require("../db");
 const {
   generateAssistantReply,
   analyzeChatIntent,
-  transcribeAudioBase64
+  transcribeAudioBase64,
+  extractAppointmentIntakeFromText
 } = require("./openaiService");
 const { getCallStatus, endCall } = require("./twilioService");
 const { generateSpeechFromText } = require("./openaiService");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
 const { buildClinicContextByBusinessClinicId } = require("./contextPromptService");
 const { getClinicConnectFields } = require("./greetingService");
-const { sendAppointmentRequestEmail } = require("./emailService");
+const { sendAppointmentRequestEmail, sendPatientMeetingNotificationEmail } = require("./emailService");
+const { tryCreateGoogleMeetForAppointment } = require("./googleMeetService");
+const { createAppointmentFromIntake } = require("./appointmentService");
+const {
+  mergePatientInfo,
+  getMissingAppointmentFields,
+  isAppointmentComplete,
+  buildMissingFieldsQuestion,
+  isAppointmentIntakeQuestion,
+  isAppointmentCancelRequest,
+  extractAppointmentIntakeHeuristic,
+  conversationTextFromMessages,
+  normalizePatientInfo,
+  parseUserInfoBlob,
+  firstSpokenEmail,
+  coercePatientForm
+} = require("./appointmentIntakeService");
+
+function serializeUserInfo(userInfo) {
+  if (userInfo == null || userInfo === "") return "";
+  if (typeof userInfo === "string") return userInfo;
+  try {
+    return JSON.stringify(userInfo);
+  } catch {
+    return "";
+  }
+}
+
+function isNewConversationRequest(conversationId) {
+  if (conversationId == null || conversationId === "") return true;
+  const n = Number(conversationId);
+  return !Number.isFinite(n) || n <= 0;
+}
+
+function incomingFormPatientInfo(...parts) {
+  return mergePatientInfo(
+    ...parts.map((part) => {
+      if (part == null || part === "") return {};
+      return coercePatientForm(part);
+    })
+  );
+}
+
+async function persistFormPatientInfo(conversation, incoming) {
+  const form = incomingFormPatientInfo(
+    ...(Array.isArray(incoming) ? incoming : [incoming])
+  );
+  if (!form.name && !form.email && !form.phone && !form.dob && !form.type && !form.datetime) {
+    return form;
+  }
+
+  const current = incomingFormPatientInfo(conversation?.userInfo);
+  const merged = { ...current, ...form };
+  const next = serializeUserInfo(merged);
+  const prev = serializeUserInfo(current) || "{}";
+  if (conversation && next && next !== prev) {
+    await conversation.update({ userInfo: next });
+    conversation.userInfo = next;
+  }
+  return form;
+}
 
 async function createConversation({ clinicId, userInfo }) {
+  const form = incomingFormPatientInfo(userInfo);
   const created = await Conversation.create({
     clinicId,
-    userInfo
+    userInfo: serializeUserInfo(form) || "{}"
   });
 
   return created.id;
 }
 
 async function ensureConversationExists(conversationId, { clinicId = null, userInfo = "" } = {}) {
-  if (!conversationId) {
+  if (isNewConversationRequest(conversationId)) {
     throw new Error("conversationId is required.");
   }
 
   const existing = await Conversation.findByPk(conversationId);
   if (!existing) {
-    if (!clinicId || !userInfo) {
-      throw new Error("Conversation not found. clinicId and userInfo are required to create a new conversation.");
+    if (!clinicId) {
+      throw new Error("Conversation not found. clinicId is required to create a new conversation.");
     }
 
     const createdConversationId = await createConversation({ clinicId, userInfo });
@@ -75,17 +137,31 @@ async function getClinicDetailsForEmail(businessClinicId) {
   });
 }
 
-async function resolveConversationOnConnect({ conversationId, clinicId, userInfo }) {
-  if (conversationId) {
-    const existing = await ensureConversationExists(conversationId, { clinicId, userInfo });
-    return existing.id;
+async function resolveConversationOnConnect({ conversationId, clinicId, userInfo, patientInfo = null }) {
+  const formPayload = [userInfo, patientInfo];
+  if (isNewConversationRequest(conversationId)) {
+    if (!clinicId) {
+      throw new Error("clinicId is required to start a new conversation.");
+    }
+
+    const createdId = await createConversation({
+      clinicId,
+      userInfo: incomingFormPatientInfo(...formPayload)
+    });
+    const form = incomingFormPatientInfo(...formPayload);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Chat] new conversation created id=${createdId} clinicId=${clinicId} form name=${form.name ? "yes" : "no"} email=${form.email ? "yes" : "no"} phone=${form.phone ? "yes" : "no"} dob=${form.dob ? "yes" : "no"} type=${form.type || "-"}`
+    );
+    return createdId;
   }
 
-  if (!clinicId || !userInfo) {
-    throw new Error("clinicId and userInfo are required when conversationId is not provided.");
-  }
-
-  return createConversation({ clinicId, userInfo });
+  const existing = await ensureConversationExists(conversationId, {
+    clinicId,
+    userInfo: incomingFormPatientInfo(...formPayload)
+  });
+  await persistFormPatientInfo(existing, formPayload);
+  return existing.id;
 }
 
 /**
@@ -156,16 +232,127 @@ async function createMessage({
   return created.id;
 }
 
+function missingPreview(patientInfo) {
+  return getMissingAppointmentFields(patientInfo).map((field) => field.key).join(",") || "-";
+}
+
+function lastBotMessageText(dbMessages = []) {
+  for (let i = dbMessages.length - 1; i >= 0; i -= 1) {
+    if (dbMessages[i]?.userType === "bot" && String(dbMessages[i].message || "").trim()) {
+      return String(dbMessages[i].message);
+    }
+  }
+  return "";
+}
+
+async function continueAppointmentIntake({
+  conversationId,
+  clinicId,
+  chatIntent,
+  dbMessages,
+  currentText,
+  replyType,
+  isTopic,
+  formPatientInfo = {}
+}) {
+  if (isAppointmentCancelRequest(currentText)) return null;
+
+  const followUp = isAppointmentIntakeQuestion(lastBotMessageText(dbMessages));
+  if (chatIntent !== "appointment" && !followUp) return null;
+
+  const conversation = await Conversation.findByPk(conversationId, { attributes: ["id", "userInfo"] });
+  const historyText = conversationTextFromMessages(dbMessages);
+  const spokenEmail = firstSpokenEmail(
+    [historyText, currentText].filter(Boolean).join("\n")
+  );
+  let draft = mergePatientInfo(
+    incomingFormPatientInfo(conversation?.userInfo),
+    formPatientInfo,
+    extractAppointmentIntakeHeuristic(historyText),
+    extractAppointmentIntakeHeuristic(currentText),
+    spokenEmail ? { email: spokenEmail } : {}
+  );
+
+  if (!isAppointmentComplete(draft)) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Appointment] intake incomplete conversationId=${conversationId} missing=${missingPreview(draft)} form name=${draft.name ? "yes" : "no"} email=${draft.email ? "yes" : "no"} phone=${draft.phone ? "yes" : "no"} dob=${draft.dob ? "yes" : "no"} type=${draft.type || "-"} datetime=${draft.datetime ? "yes" : "no"}`
+    );
+    const extracted = await extractAppointmentIntakeFromText(
+      `${historyText}\nCaller: ${String(currentText || "").trim()}`.trim()
+    );
+    draft = mergePatientInfo(draft, extracted);
+  }
+
+  if (isAppointmentComplete(draft)) {
+    return processAppointmentRequest({
+      conversationId,
+      clinicId,
+      patientInfo: draft,
+      isTopic,
+      replyType,
+      persistUserRequest: false
+    });
+  }
+
+  const missing = getMissingAppointmentFields(draft);
+  const question = buildMissingFieldsQuestion(missing, { voice: replyType === "voice" });
+  const normalizedReplyType = replyType === "voice" ? "voice" : "chat";
+  const lastBot = lastBotMessageText(dbMessages);
+  const skipDuplicateQuestion = lastBot === question || (
+    isAppointmentIntakeQuestion(lastBot) &&
+    missing[0] &&
+    lastBot.includes(missing[0].label)
+  );
+
+  let audioBase64 = null;
+  let audioMimeType = null;
+  if (normalizedReplyType === "voice") {
+    const voice = await getClinicOpenAiVoice(clinicId);
+    const speech = await generateSpeechFromText({ text: question, voice });
+    audioBase64 = speech.audioBase64;
+    audioMimeType = speech.audioMimeType;
+  }
+
+  if (!skipDuplicateQuestion) {
+    await createMessage({
+      conversationId,
+      userType: "bot",
+      message: question,
+      audio: audioBase64,
+      messageType: normalizedReplyType,
+      isTopic,
+      status: "success"
+    });
+  }
+
+  return {
+    conversationId,
+    status: "success",
+    responseType: "appointment",
+    twilioIntent: false,
+    assistantReply: question,
+    confirmationMessage: question,
+    missingFields: missing.map((field) => field.key),
+    audioBase64,
+    audioMimeType,
+    transcriptText: currentText || null
+  };
+}
+
 async function processIncomingMessage({
   conversationId,
   text,
   type = "chat",
   audioBase64 = null,
   audioMimeType = null,
-  isTopic = false
+  isTopic = false,
+  userInfo = null,
+  patientInfo = null
 }) {
   const conversation = await ensureConversationExists(conversationId);
   const ensuredConversationId = conversation.id;
+  const formPatientInfo = await persistFormPatientInfo(conversation, [userInfo, patientInfo]);
   const contextPrompts = await buildContextPrompts(conversation.clinicId);
 
   const dbMessages = await listMessages(ensuredConversationId);
@@ -214,17 +401,18 @@ async function processIncomingMessage({
         };
       }
 
-      if (chatIntent === "appointment") {
-        return {
-          conversationId: ensuredConversationId,
-          status: "success",
-          responseType: "appointment",
-          twilioIntent: false,
-          transcriptText,
-          audioBase64: null,
-          audioMimeType: null
-        };
-      }
+      const voiceMessages = await listMessages(ensuredConversationId);
+      const intake = await continueAppointmentIntake({
+        conversationId: ensuredConversationId,
+        clinicId: conversation.clinicId,
+        chatIntent,
+        dbMessages: voiceMessages,
+        currentText: transcriptText,
+        replyType: "voice",
+        isTopic,
+        formPatientInfo
+      });
+      if (intake) return intake;
 
       const assistantText = await generateAssistantReply(
         [...aiMessages, { role: "user", content: transcriptText }],
@@ -324,14 +512,17 @@ async function processIncomingMessage({
       };
     }
 
-    if (chatIntent === "appointment") {
-      return {
-        conversationId: ensuredConversationId,
-        status: "success",
-        responseType: "appointment",
-        twilioIntent: false
-      };
-    }
+    const intake = await continueAppointmentIntake({
+      conversationId: ensuredConversationId,
+      clinicId: conversation.clinicId,
+      chatIntent,
+      dbMessages: updatedDbMessages,
+      currentText: text,
+      replyType: "chat",
+      isTopic,
+      formPatientInfo
+    });
+    if (intake) return intake;
 
     const assistantReply = await generateAssistantReply(updatedAiMessages, {
       clinicPrompt: contextPrompts.clinicPrompt,
@@ -374,11 +565,15 @@ async function processIncomingMessage({
 }
 
 function summarizePatientInfo(patientInfo = {}) {
+  const normalized = normalizePatientInfo(patientInfo);
   const parts = [
-    patientInfo.name,
-    patientInfo.phone,
-    patientInfo.email
-  ].filter((value) => value != null && String(value).trim() !== "");
+    normalized.name,
+    normalized.phone,
+    normalized.email,
+    normalized.dob,
+    normalized.type,
+    normalized.datetime
+  ].filter(Boolean);
   return parts.join(" · ") || "Appointment request";
 }
 
@@ -388,7 +583,8 @@ async function processAppointmentRequest({
   patientInfo,
   userInfo = null,
   isTopic = 0,
-  replyType = "chat"
+  replyType = "chat",
+  persistUserRequest = true
 }) {
   const conversation = await ensureConversationExists(conversationId);
   const businessClinicId = clinicId || conversation.clinicId;
@@ -397,48 +593,138 @@ async function processAppointmentRequest({
     getClinicDetailsForEmail(businessClinicId)
   ]);
   const normalizedReplyType = replyType === "voice" ? "voice" : "chat";
+  const normalizedPatient = mergePatientInfo(
+    incomingFormPatientInfo(conversation.userInfo, userInfo, patientInfo),
+    patientInfo
+  );
+  const missing = getMissingAppointmentFields(normalizedPatient);
 
-  const patientSummary = summarizePatientInfo(patientInfo);
+  if (missing.length) {
+    const question = buildMissingFieldsQuestion(missing, { voice: normalizedReplyType === "voice" });
+    const recent = await listMessages(conversationId);
+    const lastBot = lastBotMessageText(recent);
+    const skipDuplicateQuestion = lastBot === question || (
+      isAppointmentIntakeQuestion(lastBot) &&
+      missing[0] &&
+      lastBot.includes(missing[0].label)
+    );
 
-  await createMessage({
-    conversationId,
-    userType: "user",
-    message: `[Appointment request] ${patientSummary}`,
-    messageType: normalizedReplyType,
-    isTopic,
-    status: "success"
+    let audioBase64 = null;
+    let audioMimeType = null;
+    if (normalizedReplyType === "voice") {
+      const voice = await getClinicOpenAiVoice(businessClinicId);
+      const speech = await generateSpeechFromText({ text: question, voice });
+      audioBase64 = speech.audioBase64;
+      audioMimeType = speech.audioMimeType;
+    }
+
+    if (!skipDuplicateQuestion) {
+      await createMessage({
+        conversationId,
+        userType: "bot",
+        message: question,
+        audio: audioBase64,
+        messageType: normalizedReplyType,
+        isTopic,
+        status: "success"
+      });
+    }
+
+    return {
+      conversationId,
+      status: "incomplete",
+      replyType: normalizedReplyType,
+      responseType: "appointment",
+      confirmationMessage: question,
+      missingFields: missing.map((field) => field.key),
+      audioBase64,
+      audioMimeType
+    };
+  }
+
+  const patientSummary = summarizePatientInfo(normalizedPatient);
+
+  if (persistUserRequest) {
+    await createMessage({
+      conversationId,
+      userType: "user",
+      message: `[Appointment request] ${patientSummary}`,
+      messageType: normalizedReplyType,
+      isTopic,
+      status: "success"
+    });
+  }
+
+  const meetResult = await tryCreateGoogleMeetForAppointment({
+    clinicId: businessClinicId,
+    patientInfo: normalizedPatient,
+    clinicName,
+    description: [
+      `Appointment request via ${normalizedReplyType === "voice" ? "phone / voice assistant" : "web chat"}.`,
+      `Case: ${conversationId}`,
+      patientSummary
+    ].join("\n")
   });
+
+  if (!meetResult?.created) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[GoogleMeet] not created clinicId=${businessClinicId}: ${meetResult?.reason || "unknown"}`
+    );
+  }
+
+  const appointment = await createAppointmentFromIntake({
+    clinicId: businessClinicId,
+    conversationId,
+    source: normalizedReplyType === "voice" ? "voice" : "chat",
+    patientInfo: normalizedPatient,
+    meetResult
+  });
+  if (!appointment) {
+    // eslint-disable-next-line no-console
+    console.error(`[Appointment] persist returned null clinicId=${businessClinicId} conversationId=${conversationId}`);
+  }
 
   const emailResult = await sendAppointmentRequestEmail({
     clinicName,
     clinicAcronym,
     clinic: clinicDetails,
     conversationId,
-    patientInfo,
-    replyType: normalizedReplyType
+    patientInfo: normalizedPatient,
+    replyType: normalizedReplyType,
+    googleMeet: meetResult
   });
 
   if (!emailResult.sent) {
-    await createMessage({
-      conversationId,
-      userType: "bot",
-      message: `Appointment notification could not be sent: ${emailResult.reason}`,
-      messageType: normalizedReplyType,
-      isTopic,
-      status: "error"
-    });
-
-    return {
-      conversationId,
-      status: "error",
-      replyType: normalizedReplyType,
-      error: emailResult.reason || "Failed to send appointment notification."
-    };
+    // eslint-disable-next-line no-console
+    console.error(`[Appointment] staff email failed: ${emailResult.reason || "unknown"}`);
   }
 
-  const confirmationMessage =
+  const patientEmailResult = await sendPatientMeetingNotificationEmail({
+    clinicName,
+    clinic: clinicDetails,
+    patientInfo: normalizedPatient,
+    googleMeet: meetResult || {},
+    source: normalizedReplyType === "voice" ? "voice" : "chat"
+  });
+  if (!patientEmailResult.sent) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[Appointment] patient meeting email failed: ${patientEmailResult.reason || "unknown"} conversationId=${conversationId}`
+    );
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Appointment] patient meeting email sent to ${patientEmailResult.to} conversationId=${conversationId}`
+    );
+  }
+
+  let confirmationMessage =
     process.env.APPOINTMENT_CONFIRMATION_MESSAGE ||
     "Your request has been sent to the clinic. They will respond as soon as possible.";
+  if (meetResult?.created && meetResult.meetLink) {
+    confirmationMessage = `${confirmationMessage} Your Google Meet link is ${meetResult.meetLink}`;
+  }
 
   let audioBase64 = null;
   let audioMimeType = null;

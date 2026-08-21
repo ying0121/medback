@@ -21,14 +21,13 @@ async function sendMessage(req, res, next) {
       isTopic: value.isTopic === true
     });
 
-    const isAppointment = result.responseType === "appointment";
-
     return res.status(200).json({
       conversationId: result.conversationId,
       type: result.responseType || (value.messageType || "chat"),
       status: result.status,
       twilioIntent: result.twilioIntent === true,
-      ...(isAppointment ? {} : { assistantReply: result.assistantReply || null }),
+      assistantReply: result.assistantReply || result.confirmationMessage || null,
+      missingFields: result.missingFields || null,
       error: result.error || null
     });
   } catch (err) {

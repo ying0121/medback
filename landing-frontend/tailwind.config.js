@@ -6,39 +6,29 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        ink: "#0c1224",
-        mist: "#eef3fb",
-        teal: "#14b8a6",
-        indigo: "#2d3a8c",
-        glow: "#5eead4"
+        ink: "#0f1b2d",
+        navy: "#1b3a5c",
+        mist: "#e8eef5",
+        line: "#d5dee8",
+        surface: "#ffffff",
+        sage: "#3d6b7a",
+        soft: "#f7f9fc"
       },
       fontFamily: {
-        display: ['"DM Sans"', "system-ui", "sans-serif"],
+        display: ['"Outfit"', "system-ui", "sans-serif"],
         body: ['"Source Sans 3"', "system-ui", "sans-serif"]
       },
+      boxShadow: {
+        soft: "0 18px 50px -28px rgba(15, 27, 45, 0.35)"
+      },
       animation: {
-        float: "float 8s ease-in-out infinite",
-        "float-delayed": "float 8s ease-in-out 2s infinite",
-        shimmer: "shimmer 3s linear infinite",
-        "wave-bar": "waveBar 1.2s ease-in-out infinite",
-        "pulse-ring": "pulseRing 2.4s ease-out infinite"
+        float: "float 9s ease-in-out infinite",
+        "float-delayed": "float 9s ease-in-out 1.8s infinite"
       },
       keyframes: {
         float: {
           "0%, 100%": { transform: "translateY(0px)" },
-          "50%": { transform: "translateY(-18px)" }
-        },
-        shimmer: {
-          "0%": { backgroundPosition: "200% center" },
-          "100%": { backgroundPosition: "-200% center" }
-        },
-        waveBar: {
-          "0%, 100%": { transform: "scaleY(0.35)" },
-          "50%": { transform: "scaleY(1)" }
-        },
-        pulseRing: {
-          "0%": { transform: "scale(0.85)", opacity: "0.6" },
-          "100%": { transform: "scale(1.35)", opacity: "0" }
+          "50%": { transform: "translateY(-14px)" }
         }
       }
     }

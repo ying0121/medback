@@ -1,23 +1,22 @@
 /**
- * Socket.IO handler for the user-facing chat channel.
+ * Native WebSocket handler for the user-facing chat channel.
  *
- * The wire protocol is a single `message` event carrying a typed JSON object:
+ * Wire protocol: JSON text frames (same payload shapes as before).
  *   - `connect`     : establish/restore a Conversation row; returns conversationId,
  *                     clinicName, clinicAcronym, chat greeting, themeColor, avatar
  *   - `chat`        : a text turn, returns assistant reply
  *   - `voice`       : an audio turn, returns transcript + assistant reply + TTS
  *   - `appointment` : client submits booking details after bot signals intent;
  *                     server emails staff and replies as a chat or voice turn
- *   - `pong`        : keepalive (silently ignored)
+ *   - `pong`        : application-level keepalive (silently ignored)
  *
- * Responses are emitted with the helper-built payload shape so all client
- * branches see the same field set regardless of which sub-message they used.
+ * Clients connect with: `new WebSocket("ws(s)://HOST/ws/chat")`
+ * and send/receive JSON objects (no Socket.IO event wrapper).
  *
- * This module owns ONLY the per-socket lifecycle. Connection-pool concerns
- * (CORS, ping intervals, transports) stay in `server.js` because they are
- * tied to the HTTP server bootstrap.
+ * This module owns ONLY the per-socket lifecycle. Bootstrap stays in `server.js`.
  */
 
+const { WebSocketServer, WebSocket } = require("ws");
 const {
   processIncomingMessage,
   processAppointmentRequest,
@@ -26,6 +25,11 @@ const {
 } = require("../services/chatService");
 const { Conversation } = require("../db");
 const { logOk, logInfo, logErr, logDbg } = require("./socketLogger");
+
+const configuredChatPath = String(process.env.WEBSOCKET_CHAT_URL || "/ws/chat").trim();
+const CHAT_WS_PATH = configuredChatPath.startsWith("/") ? configuredChatPath : `/${configuredChatPath}`;
+const PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS) || 25000;
+const MAX_MISSED_PONGS = Number(process.env.WS_MAX_MISSED_PONGS) || 3;
 
 /** Allowed top-level message types from clients. `pong` is keepalive only. */
 const HANDLED_TYPES = ["connect", "chat", "voice", "appointment"];
@@ -52,26 +56,46 @@ function makePayload(fields) {
     themeColor:     fields.themeColor     ?? null,
     avatar:         fields.avatar         ?? null,
     callSid:        fields.callSid        ?? null,
-    duration:       fields.duration       ?? null
+    duration:       fields.duration       ?? null,
+    missingFields:  fields.missingFields  ?? null
   };
 }
 
-function send(socket, payload) {
+function send(ws, payload) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   logDbg(`send type=${payload.type} status=${payload.status || "-"} cid=${payload.conversationId || "-"}`);
-  socket.emit("message", payload);
+  ws.send(JSON.stringify(payload));
 }
 
 /**
- * Parse incoming Socket.IO frame: the client may emit a JSON string OR a
- * pre-parsed object (depending on the socket.io-client version). Returns
- * either the parsed object or null when the payload is unusable.
+ * Parse an incoming WebSocket frame: JSON string (typical) or already-parsed object.
  */
-function coerceFrame(parsed) {
-  if (typeof parsed === "string") {
-    try { return JSON.parse(parsed); } catch { return null; }
+function coerceFrame(raw) {
+  if (Buffer.isBuffer(raw)) {
+    try {
+      return JSON.parse(raw.toString("utf8"));
+    } catch {
+      return null;
+    }
   }
-  if (parsed && typeof parsed === "object") return parsed;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (raw && typeof raw === "object") return raw;
   return null;
+}
+
+function isOriginAllowed(origin) {
+  const allowedOrigins = process.env.ALLOWED_WS_ORIGINS
+    ? process.env.ALLOWED_WS_ORIGINS.split(",").map((o) => o.trim().toLowerCase().replace(/\/$/, ""))
+    : [];
+  if (!origin || allowedOrigins.length === 0) return true;
+  const normalizedOrigin = String(origin).toLowerCase().replace(/\/$/, "");
+  return allowedOrigins.includes(normalizedOrigin);
 }
 
 /**
@@ -79,15 +103,21 @@ function coerceFrame(parsed) {
  * row and stores its id on the socket so subsequent chat/voice frames can
  * reference it implicitly.
  */
-async function handleConnect(socket, parsed) {
+async function handleConnect(ws, parsed) {
   const clinicId = Number(parsed.clinicId) || null;
-  const userInfo = parsed.userInfo ? JSON.stringify(parsed.userInfo) : "";
+  const requestedId = parsed.conversationId ?? parsed.conversation_id;
   const conversationId = await resolveConversationOnConnect({
-    conversationId: parsed.conversationId,
+    conversationId: requestedId,
     clinicId,
-    userInfo
+    userInfo: parsed.userInfo || parsed.user || "",
+    patientInfo: parsed.patientInfo || parsed.patient || parsed.form || null
   });
-  socket.conversationId = conversationId;
+  ws.conversationId = conversationId;
+  ws.lastTurnType = null;
+  if (parsed.userInfo) ws.userInfo = parsed.userInfo;
+  if (parsed.patientInfo || parsed.patient || parsed.form) {
+    ws.patientInfo = parsed.patientInfo || parsed.patient || parsed.form;
+  }
 
   let businessClinicId = clinicId;
   if (!businessClinicId) {
@@ -101,9 +131,21 @@ async function handleConnect(socket, parsed) {
     await getClinicConnectInfoByBusinessClinicId(businessClinicId);
 
   logOk(
-    `[SOCKET.IO] session ready #${socket.wsId} conversationId=${conversationId} clinic=${clinicName || "-"} theme=${themeColor || "-"}`
+    `[WS] session ready #${ws.wsId} conversationId=${conversationId} clinic=${clinicName || "-"} theme=${themeColor || "-"}`
   );
-  return send(socket, makePayload({
+  const incomingKeys = Object.keys(parsed || {}).join(",");
+  const userInfoKeys =
+    parsed.userInfo && typeof parsed.userInfo === "object"
+      ? Object.keys(parsed.userInfo).join(",")
+      : typeof parsed.userInfo;
+  const patientInfoKeys =
+    parsed.patientInfo && typeof parsed.patientInfo === "object"
+      ? Object.keys(parsed.patientInfo).join(",")
+      : typeof parsed.patientInfo;
+  logOk(
+    `[WS] connect payload keys=${incomingKeys || "-"} userInfoKeys=${userInfoKeys || "-"} patientInfoKeys=${patientInfoKeys || "-"}`
+  );
+  return send(ws, makePayload({
     type: "connect",
     status: "success",
     conversationId,
@@ -115,10 +157,10 @@ async function handleConnect(socket, parsed) {
   }));
 }
 
-function resolveReplyType(parsed, socket) {
+function resolveReplyType(parsed, ws) {
   if (parsed.replyType === "chat" || parsed.replyType === "voice") return parsed.replyType;
   if (parsed.messageType === "chat" || parsed.messageType === "voice") return parsed.messageType;
-  if (socket.lastTurnType === "chat" || socket.lastTurnType === "voice") return socket.lastTurnType;
+  if (ws.lastTurnType === "chat" || ws.lastTurnType === "voice") return ws.lastTurnType;
   return "chat";
 }
 
@@ -126,10 +168,10 @@ function resolveReplyType(parsed, socket) {
  * Handle either a chat or voice turn; the only difference is which payload
  * field is required (`message` vs `audio`).
  */
-async function handleTurn(socket, parsed, msgType) {
-  const conversationId = Number(parsed.conversationId || socket.conversationId);
+async function handleTurn(ws, parsed, msgType) {
+  const conversationId = Number(parsed.conversationId || ws.conversationId);
   if (!conversationId) {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: msgType, status: "error", message: "Send connect first."
     }));
   }
@@ -138,10 +180,15 @@ async function handleTurn(socket, parsed, msgType) {
   const hasVoiceAudio  = typeof parsed.audio   === "string" && parsed.audio.trim().length > 0;
 
   if (msgType === "chat" && !hasChatMessage) {
-    return send(socket, makePayload({ type: "chat", status: "error", message: "message field is required." }));
+    return send(ws, makePayload({ type: "chat", status: "error", message: "message field is required." }));
   }
   if (msgType === "voice" && !hasVoiceAudio) {
-    return send(socket, makePayload({ type: "voice", status: "error", message: "audio field is required." }));
+    return send(ws, makePayload({ type: "voice", status: "error", message: "audio field is required." }));
+  }
+
+  if (parsed.userInfo) ws.userInfo = parsed.userInfo;
+  if (parsed.patientInfo || parsed.patient || parsed.form) {
+    ws.patientInfo = parsed.patientInfo || parsed.patient || parsed.form;
   }
 
   const result = await processIncomingMessage({
@@ -150,11 +197,13 @@ async function handleTurn(socket, parsed, msgType) {
     text:          hasChatMessage ? parsed.message : (parsed.text || ""),
     audioBase64:   parsed.audio    || null,
     audioMimeType: parsed.audioMimeType || parsed.mimeType || null,
-    isTopic:       parsed.isTopic  || 0
+    isTopic:       parsed.isTopic  || 0,
+    userInfo:      parsed.userInfo || parsed.user || ws.userInfo || null,
+    patientInfo:   parsed.patientInfo || parsed.patient || parsed.form || ws.patientInfo || null
   });
 
   if (result.status === "error") {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: msgType,
       status: "error",
       message: result.error || "Processing failed.",
@@ -163,17 +212,18 @@ async function handleTurn(socket, parsed, msgType) {
   }
 
   const isAppointment = result.responseType === "appointment";
-  if (isAppointment) socket.lastTurnType = msgType;
+  if (isAppointment) ws.lastTurnType = msgType;
 
-  return send(socket, makePayload({
+  return send(ws, makePayload({
     type:           result.responseType || msgType,
     status:         "success",
     twilioIntent:   result.twilioIntent === true,
-    response:       isAppointment ? null : (result.assistantReply || null),
+    response:       result.assistantReply || result.confirmationMessage || null,
     transcriptText: result.transcriptText  || null,
-    audio:          isAppointment ? null : (result.audioBase64 || null),
-    audioMimeType:  isAppointment ? null : (result.audioMimeType || null),
-    conversationId: result.conversationId
+    audio:          result.audioBase64 || null,
+    audioMimeType:  result.audioMimeType || null,
+    conversationId: result.conversationId,
+    missingFields:  result.missingFields || null
   }));
 }
 
@@ -182,23 +232,25 @@ async function handleTurn(socket, parsed, msgType) {
  * signals appointment intent). Sends staff notification email and replies
  * with a normal chat or voice turn containing the confirmation message.
  */
-async function handleAppointment(socket, parsed) {
-  const replyType = resolveReplyType(parsed, socket);
+async function handleAppointment(ws, parsed) {
+  const replyType = resolveReplyType(parsed, ws);
   const conversationId = Number(
-    parsed.conversationId || parsed.conversation_id || socket.conversationId
+    parsed.conversationId || parsed.conversation_id || ws.conversationId
   );
   if (!conversationId) {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: replyType, status: "error", message: "Send connect first."
     }));
   }
 
-  const patientInfo = parsed.patientInfo;
+  const patientInfo = parsed.patientInfo || parsed.patient || parsed.form || parsed.userInfo;
   if (!patientInfo || typeof patientInfo !== "object") {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: replyType, status: "error", message: "patientInfo is required."
     }));
   }
+  ws.patientInfo = patientInfo;
+  if (parsed.userInfo) ws.userInfo = parsed.userInfo;
 
   const result = await processAppointmentRequest({
     conversationId,
@@ -209,10 +261,10 @@ async function handleAppointment(socket, parsed) {
     replyType
   });
 
-  const responseType = result.replyType || replyType;
+  const responseType = result.responseType || result.replyType || replyType;
 
   if (result.status === "error") {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: responseType,
       status: "error",
       message: result.error || "Appointment request failed.",
@@ -220,42 +272,43 @@ async function handleAppointment(socket, parsed) {
     }));
   }
 
-  return send(socket, makePayload({
+  return send(ws, makePayload({
     type: responseType,
     status: "success",
     response: result.confirmationMessage || null,
     audio: result.audioBase64 || null,
     audioMimeType: result.audioMimeType || null,
-    conversationId: result.conversationId
+    conversationId: result.conversationId,
+    missingFields: result.missingFields || null
   }));
 }
 
 /** Per-socket message dispatcher. */
-async function dispatchMessage(socket, raw) {
+async function dispatchMessage(ws, raw) {
   const parsed = coerceFrame(raw);
   if (!parsed) {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: "connect", status: "error", message: "Invalid payload."
     }));
   }
 
   const msgType = parsed.type;
-  logDbg(`recv #${socket.wsId} type=${msgType || "-"}`);
+  logDbg(`recv #${ws.wsId} type=${msgType || "-"}`);
   if (msgType === "pong") return;
 
   if (!HANDLED_TYPES.includes(msgType)) {
-    return send(socket, makePayload({
+    return send(ws, makePayload({
       type: "connect", status: "error", message: "Unknown message type."
     }));
   }
 
   try {
-    if (msgType === "connect") return await handleConnect(socket, parsed);
-    if (msgType === "appointment") return await handleAppointment(socket, parsed);
-    return await handleTurn(socket, parsed, msgType);
+    if (msgType === "connect") return await handleConnect(ws, parsed);
+    if (msgType === "appointment") return await handleAppointment(ws, parsed);
+    return await handleTurn(ws, parsed, msgType);
   } catch (err) {
-    logErr(`[SOCKET.IO] handler error #${socket.wsId}: ${err.message}`);
-    return send(socket, makePayload({
+    logErr(`[WS] handler error #${ws.wsId}: ${err.message}`);
+    return send(ws, makePayload({
       type: HANDLED_TYPES.includes(msgType) ? msgType : "connect",
       status: "error",
       message: err.message || "Internal error."
@@ -264,44 +317,84 @@ async function dispatchMessage(socket, raw) {
 }
 
 /**
- * Wire up Socket.IO `connection` events on the supplied server.
- * Returns the same `io` instance for chaining.
+ * Attach a native WebSocketServer to the HTTP server for web chat.
+ * Must be called after http.createServer() but before server.listen().
+ * @param {import("http").Server} server
  */
-function attachChatSocket(io) {
+function attachChatSocket(server) {
   let connectionSeq = 0;
 
-  io.on("connection", (socket) => {
+  const wss = new WebSocketServer({
+    server,
+    path: CHAT_WS_PATH,
+    verifyClient(info) {
+      const origin = info.origin || info.req?.headers?.origin || "";
+      const ok = isOriginAllowed(origin);
+      if (!ok) logErr(`[WS] origin rejected: ${origin || "no-origin"}`);
+      return ok;
+    }
+  });
+
+  const pingTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.isAlive === false) {
+        client.missedPongs = (client.missedPongs || 0) + 1;
+        if (client.missedPongs >= MAX_MISSED_PONGS) {
+          logErr(`[WS] ping timeout #${client.wsId || "-"} — terminating`);
+          client.terminate();
+          continue;
+        }
+      } else {
+        client.missedPongs = 0;
+      }
+      client.isAlive = false;
+      try {
+        client.ping();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, PING_INTERVAL_MS);
+  if (typeof pingTimer.unref === "function") pingTimer.unref();
+
+  wss.on("connection", (ws, req) => {
     connectionSeq += 1;
-    socket.wsId   = connectionSeq;
-    socket.origin = socket.handshake?.headers?.origin || "no-origin";
-    socket.path   = socket.handshake?.url || "-";
-    logOk(`[SOCKET.IO] ⬆ CONNECTED #${socket.wsId} | origin=${socket.origin} | path=${socket.path} | sid=${socket.id}`);
+    ws.wsId = connectionSeq;
+    ws.origin = req?.headers?.origin || "no-origin";
+    ws.path = req?.url || CHAT_WS_PATH;
+    ws.isAlive = true;
+    ws.missedPongs = 0;
 
-    socket.on("error", (err) => {
-      logErr(`[SOCKET.IO] error #${socket.wsId}: ${err.message}`);
+    logOk(`[WS] ⬆ CONNECTED #${ws.wsId} | origin=${ws.origin} | path=${ws.path}`);
+
+    ws.on("pong", () => {
+      ws.isAlive = true;
+      ws.missedPongs = 0;
     });
 
-    socket.on("disconnect", (reason) => {
-      const msg = `[SOCKET.IO] ⬇ DISCONNECTED #${socket.wsId} | origin=${socket.origin} | sid=${socket.id} | reason=${reason}`;
-      const isClean = reason === "client namespace disconnect" || reason === "server namespace disconnect";
+    ws.on("error", (err) => {
+      logErr(`[WS] error #${ws.wsId}: ${err.message}`);
+    });
+
+    ws.on("close", (code, reasonBuffer) => {
+      const reason = reasonBuffer?.toString?.() || String(code);
+      const msg = `[WS] ⬇ DISCONNECTED #${ws.wsId} | origin=${ws.origin} | code=${code} | reason=${reason}`;
+      const isClean = code === 1000 || code === 1001;
       if (isClean) logInfo(msg);
-      else         logErr(msg);
+      else logErr(msg);
     });
 
-    socket.on("message", (raw) => dispatchMessage(socket, raw));
+    ws.on("message", (raw) => {
+      void dispatchMessage(ws, raw);
+    });
   });
 
-  io.engine.on("connection_error", (err) => {
-    const origin = err?.req?.headers?.origin || "no-origin";
-    const url    = err?.req?.url || "-";
-    const code   = err?.code ?? "-";
-    const ctx    = err?.context ? JSON.stringify(err.context) : "-";
-    logErr(
-      `[SOCKET.IO] connection error origin=${origin} url=${url} code=${code} message=${err.message} context=${ctx}`
-    );
+  wss.on("error", (err) => {
+    logErr(`[WS] server error: ${err.message}`);
   });
 
-  return io;
+  return wss;
 }
 
-module.exports = { attachChatSocket };
+module.exports = { attachChatSocket, CHAT_WS_PATH };

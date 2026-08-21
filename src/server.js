@@ -1,84 +1,58 @@
 const http = require("http");
-const { Server } = require("socket.io");
 require("dotenv").config();
 
 const app = require("./app");
 const { connectDatabase, syncDatabase } = require("./db");
-const { attachChatSocket } = require("./realtime/chatSocketHandler");
+const { attachChatSocket, CHAT_WS_PATH } = require("./realtime/chatSocketHandler");
 const { STREAM_PATH, attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
-require("./minized-chatbot-server");
+const { ensurePortFree } = require("./utils/ensurePortFree");
+const { startSignaling } = require("./signaling/signalingServer.source.js");
 
-// ─── Config ──────────────────────────────────────────────────────────────────
+const port = Number(process.env.PORT || 4000);
 
-const configuredSocketPath = process.env.WEBSOCKET_CHAT_URL || "/ws/chat";
-const socketPath = configuredSocketPath.startsWith("/") ? configuredSocketPath : `/${configuredSocketPath}`;
-const SOCKET_IO_PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS) || 25000;
-const SOCKET_IO_PING_TIMEOUT_MS  = Number(process.env.WS_PING_TIMEOUT_MS) || 60000;
-// When false, clients stay on HTTP long-polling (avoids TRANSPORT_MISMATCH behind proxies
-// that do not forward WebSocket Upgrade headers on /ws/chat).
-const SOCKET_IO_ALLOW_UPGRADES =
-  String(process.env.SOCKET_IO_ALLOW_UPGRADES ?? "1").trim() !== "0";
-
-// Comma-separated list, normalised to lowercase + no trailing slash for fast comparison.
-const allowedOrigins = process.env.ALLOWED_WS_ORIGINS
-  ? process.env.ALLOWED_WS_ORIGINS.split(",").map((o) => o.trim().toLowerCase().replace(/\/$/, ""))
-  : [];
-
-// ─── HTTP + Socket.IO server ─────────────────────────────────────────────────
+// Free leftover mediback servers from a previous crash / duplicate npm start.
+ensurePortFree(port, { log: (msg) => logInfo(msg) });
 
 const server = http.createServer(app);
 
-const io = new Server(server, {
-  path: socketPath,
-  transports: ["polling", "websocket"],
-  allowUpgrades: SOCKET_IO_ALLOW_UPGRADES,
-  pingInterval: SOCKET_IO_PING_INTERVAL_MS,
-  pingTimeout:  SOCKET_IO_PING_TIMEOUT_MS,
-  cors: {
-    // Allow listed origins only; an empty allow-list is treated as "open" so
-    // local development still works without configuring ALLOWED_WS_ORIGINS.
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.length === 0) return callback(null, true);
-      const normalizedOrigin = String(origin).toLowerCase().replace(/\/$/, "");
-      const ok = allowedOrigins.includes(normalizedOrigin);
-      if (!ok) logErr(`[SOCKET.IO] origin rejected: ${origin}`);
-      return callback(ok ? null : new Error("Origin not allowed"), ok);
-    },
-    methods: ["GET", "POST"],
-    credentials: true
-  }
-});
+// Native WebSocket chat (ws) — JSON frames at /ws/chat. Not Socket.IO.
+attachChatSocket(server);
 
-// All per-socket message handling is encapsulated in the realtime module so
-// this file remains a thin bootstrap.
-attachChatSocket(io);
-
-// Twilio Media Streams WebSocket for inbound PSTN voice bot.
+// Twilio Media Streams WebSocket — inbound calling logic unchanged.
 attachInboundStreamWS(server);
-server.on("upgrade", (req) => {
-  if (req.url?.startsWith(STREAM_PATH)) {
-    console.log(`[InboundStream] HTTP upgrade request path=${req.url}`);
-  }
-});
 
-// ─── Start ───────────────────────────────────────────────────────────────────
+server.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    logErr(`Port ${port} is already in use after cleanup. Another app may own it.`);
+    process.exit(1);
+  }
+  logErr(`HTTP server error: ${err && err.message ? err.message : err}`);
+  process.exit(1);
+});
 
 connectDatabase()
   .then(() => {
     logOk("Database connected successfully.");
     return syncDatabase();
   })
+  .then(() => new Promise((resolve, reject) => {
+    server.listen(port, () => resolve());
+    server.once("error", reject);
+  }))
   .then(() => {
-    const port = Number(process.env.PORT || 4000);
-    server.listen(port, () => {
-      logInfo(`Server listening on http://localhost:${port}`);
-      logOk(
-        `Socket.IO ready at http://localhost:${port}${socketPath} allowUpgrades=${SOCKET_IO_ALLOW_UPGRADES}`
-      );
-    });
+    logInfo(`Server listening on http://localhost:${port}`);
+    logOk(`Native WebSocket chat ready at ws://localhost:${port}${CHAT_WS_PATH}`);
+    logOk(`Inbound Media Stream ready at ${STREAM_PATH}`);
+    // Start signaling only AFTER the main API is up, so a busy 8765 cannot
+    // interfere with bringing the API online.
+    try {
+      startSignaling();
+    } catch (err) {
+      logErr(`Signaling server failed to start: ${err.message}`);
+    }
   })
   .catch((err) => {
-    logErr(`Database initialization failed: ${err.message}`);
+    logErr(`Server startup failed: ${err.message}`);
     process.exit(1);
   });

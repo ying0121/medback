@@ -10,6 +10,7 @@
 const WebSocket = require("ws");
 const { EventEmitter } = require("events");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
+const { APPOINTMENT_COLLECTION_INSTRUCTIONS } = require("./appointmentIntakeService");
 
 const DEFAULT_MODEL =
   String(process.env.OPENAI_REALTIME_MODEL || "").trim() || "gpt-realtime-1.5";
@@ -297,7 +298,7 @@ function buildRealtimeInstructions(ctx = {}) {
       "Keep replies under 3 sentences. Speak naturally — no markdown, no lists, no special characters. " +
       "When the caller wants to end the call, say a brief warm goodbye.";
 
-  const parts = [base];
+  const parts = [base, APPOINTMENT_COLLECTION_INSTRUCTIONS];
   if (ctx.clinicPrompt) parts.push(ctx.clinicPrompt);
   if (ctx.knowledgePrompt) parts.push(ctx.knowledgePrompt);
   return parts.join("\n\n");

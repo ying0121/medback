@@ -84,10 +84,15 @@ function finalizeInboundCallHistory(callSid, clinicId = null) {
 /**
  * Attach a WebSocketServer to the HTTP server for /api/twilio/voice/stream.
  * Must be called after http.createServer() but before server.listen().
+ *
+ * Uses `noServer` + an explicit path check so non-matching upgrades (e.g. web
+ * chat at /ws/chat) are left alone. Calling handleUpgrade on a mismatched path
+ * would abortHandshake and kill the other socket.
+ * Inbound Media Stream message / session logic is unchanged.
  * @param {import("http").Server} server
  */
 function attachInboundStreamWS(server) {
-  const wss = new WebSocketServer({ server, path: STREAM_PATH });
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws) => {
     let session = null;
@@ -183,6 +188,22 @@ function attachInboundStreamWS(server) {
 
     ws.on("error", (err) => {
       console.error(`[InboundStream] WS error: ${err.message}`);
+    });
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    let pathname = "/";
+    try {
+      pathname = new URL(req.url || "/", "http://localhost").pathname;
+    } catch {
+      pathname = String(req.url || "/").split("?")[0] || "/";
+    }
+
+    if (pathname !== STREAM_PATH) return;
+
+    console.log(`[InboundStream] HTTP upgrade request path=${req.url}`);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
     });
   });
 

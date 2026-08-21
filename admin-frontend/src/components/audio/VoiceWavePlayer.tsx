@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Languages, Mic, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface VoiceWavePlayerProps {
@@ -12,6 +12,8 @@ export interface VoiceWavePlayerProps {
   darkMode?: boolean;
 }
 
+const BAR_COUNT = 96;
+
 export default function VoiceWavePlayer({
   audioBase64,
   audioMimeType,
@@ -23,16 +25,22 @@ export default function VoiceWavePlayer({
 }: VoiceWavePlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const blobUrlRef = useRef<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [waveformBars, setWaveformBars] = useState<number[]>([]);
   const [hasAudio, setHasAudio] = useState(false);
   const [showFullTranscript, setShowFullTranscript] = useState(false);
+
+  const palette = useMemo(
+    () => playerPalette({ isUser, hasError, darkMode }),
+    [isUser, hasError, darkMode]
+  );
 
   useEffect(() => {
     if (blobUrlRef.current) {
@@ -71,13 +79,13 @@ export default function VoiceWavePlayer({
         const arr = await blob.arrayBuffer();
         if (cancelled) return;
         try {
-          const analysis = await analyzeWaveform(arr, 48);
+          const analysis = await analyzeWaveform(arr, BAR_COUNT);
           if (!cancelled) {
             setWaveformBars(analysis.bars);
             if (analysis.durationSec > 0) setDuration(analysis.durationSec);
           }
         } catch {
-          if (!cancelled) setWaveformBars(buildWaveformBarsFromBytes(parsed.audioBase64, 48));
+          if (!cancelled) setWaveformBars(buildWaveformBarsFromBytes(parsed.audioBase64, BAR_COUNT));
         }
       } catch {
         // no audio
@@ -97,7 +105,7 @@ export default function VoiceWavePlayer({
     if (!blobUrl) return;
     const el = new Audio(blobUrl);
     el.preload = "metadata";
-    el.volume = volume;
+    el.volume = 1;
     audioRef.current = el;
 
     const onMeta = () => {
@@ -127,7 +135,56 @@ export default function VoiceWavePlayer({
       el.removeEventListener("ended", onEnd);
       audioRef.current = null;
     };
-  }, [blobUrl, volume]);
+  }, [blobUrl]);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (el) el.volume = isMuted ? 0 : 1;
+  }, [isMuted]);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || waveformBars.length === 0) return;
+    const el = audioRef.current;
+    const t = el?.currentTime ?? currentTime;
+    const d = (el && isFinite(el.duration) && el.duration > 0 ? el.duration : duration) || 0;
+    const progress = d > 0 ? Math.min(1, Math.max(0, t / d)) : 0;
+    drawMirroredWaveform(canvas, waveformBars, progress, palette);
+  }, [waveformBars, currentTime, duration, palette]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    const canvas = canvasRef.current;
+    if (!wrap || !canvas) return;
+
+    const resize = () => {
+      const rect = wrap.getBoundingClientRect();
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const height = compact ? 36 : 44;
+      canvas.width = Math.max(1, Math.round(rect.width * dpr));
+      canvas.height = Math.round(height * dpr);
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${height}px`;
+      draw();
+    };
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, [draw, compact, waveformBars.length]);
+
+  useEffect(() => {
+    draw();
+    if (!isPlaying) return undefined;
+    let frame = 0;
+    const tick = () => {
+      draw();
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [isPlaying, draw]);
 
   const togglePlay = useCallback(() => {
     const el = audioRef.current;
@@ -136,227 +193,215 @@ export default function VoiceWavePlayer({
     else el.pause();
   }, []);
 
-  const seek = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+  const seekFromClientX = useCallback(
+    (clientX: number, target: HTMLElement) => {
       const el = audioRef.current;
-      if (!el || !duration) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      el.currentTime = ratio * duration;
-      setCurrentTime(ratio * duration);
+      const d = duration || el?.duration || 0;
+      if (!el || !d) return;
+      const rect = target.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      el.currentTime = ratio * d;
+      setCurrentTime(ratio * d);
+      draw();
     },
-    [duration]
+    [duration, draw]
   );
 
   const toggleMute = useCallback(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    const next = !isMuted;
-    el.muted = next;
-    setIsMuted(next);
-  }, [isMuted]);
-
-  const handleVolume = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value);
-    const el = audioRef.current;
-    if (el) el.volume = v;
-    setVolume(v);
-    if (v > 0) setIsMuted(false);
+    setIsMuted((prev) => !prev);
   }, []);
 
-  const progress = duration > 0 ? currentTime / duration : 0;
-  const playedBars = Math.round(progress * waveformBars.length);
-
   const text = transcript || "";
-  const isLong = text.length > 200;
-  const displayed = isLong && !showFullTranscript ? `${text.slice(0, 200)}...` : text;
-
-  const accent = hasError
-    ? "bg-red-500/70"
-    : darkMode
-      ? "bg-sky-300/90"
-      : isUser
-        ? "bg-white/70"
-        : "bg-primary/60";
-  const accentDim = hasError
-    ? "bg-red-500/25"
-    : darkMode
-      ? "bg-slate-500/80"
-      : isUser
-        ? "bg-white/25"
-        : "bg-primary/20";
-  const trackBg = hasError
-    ? "bg-red-200/70"
-    : darkMode
-      ? "bg-slate-700/90"
-      : isUser
-        ? "bg-white/20"
-        : "bg-muted";
-  const trackFill = hasError
-    ? "bg-red-600"
-    : darkMode
-      ? "bg-sky-300"
-      : isUser
-        ? "bg-white"
-        : "bg-primary";
+  const isLong = text.length > 220;
+  const displayed = isLong && !showFullTranscript ? `${text.slice(0, 220).trim()}…` : text;
 
   if (!audioBase64 && !text) return null;
 
   return (
-    <div className={cn("flex flex-col gap-2 w-full", compact && "gap-1.5")}>
+    <div className={cn("flex flex-col w-full min-w-[220px]", compact ? "gap-1.5" : "gap-2.5")}>
       {audioBase64 && (
-        <>
-          <div className="flex items-center gap-1.5">
-            <Mic className="h-3.5 w-3.5 shrink-0 opacity-70" />
-            <span className="text-[11px] font-semibold uppercase tracking-widest opacity-70">Voice</span>
-            {duration > 0 && (
-              <span className="ml-auto text-[11px] tabular-nums opacity-60">
-                {formatDuration(currentTime)} / {formatDuration(duration)}
-              </span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={togglePlay}
+            disabled={!hasAudio}
+            className={cn(
+              "h-9 w-9 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-95 disabled:opacity-40",
+              "shadow-sm"
             )}
+            style={{ background: palette.controlBg, color: palette.controlFg }}
+            aria-label={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? (
+              <Pause className="h-3.5 w-3.5 fill-current" />
+            ) : (
+              <Play className="h-3.5 w-3.5 fill-current translate-x-[1px]" />
+            )}
+          </button>
+
+          <div className="flex-1 min-w-0">
+            <div
+              ref={wrapRef}
+              className="w-full cursor-pointer"
+              onClick={(e) => seekFromClientX(e.clientX, e.currentTarget)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  togglePlay();
+                }
+              }}
+              role="slider"
+              tabIndex={0}
+              aria-label="Audio waveform"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(duration)}
+              aria-valuenow={Math.round(currentTime)}
+            >
+              <canvas ref={canvasRef} className="block w-full" />
+            </div>
           </div>
 
-          {waveformBars.length > 0 && (
-            <div
-              role="button"
-              tabIndex={0}
-              aria-label="Seek audio"
-              className={cn(
-                "flex items-end gap-[2px] px-1.5 rounded-xl cursor-pointer select-none",
-                compact ? "h-10" : "h-12"
-              )}
-              style={{
-                background: hasError
-                  ? "rgba(239,68,68,0.14)"
-                  : darkMode
-                    ? "rgba(15,23,42,0.88)"
-                    : isUser
-                    ? "rgba(255,255,255,0.08)"
-                    : "rgba(0,0,0,0.06)"
-              }}
-              onClick={seek}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") togglePlay();
-              }}
-            >
-              {waveformBars.map((height, idx) => (
-                <span
-                  key={idx}
-                  className={cn("flex-1 rounded-sm transition-all duration-75", idx < playedBars ? accent : accentDim)}
-                  style={{ height: `${height}%`, minWidth: 2 }}
-                />
-              ))}
-            </div>
-          )}
-
-          {hasAudio ? (
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col items-end shrink-0 gap-1">
+            <span className="text-[11px] tabular-nums font-medium opacity-70">
+              {duration > 0 ? `${formatDuration(currentTime)} / ${formatDuration(duration)}` : "—"}
+            </span>
+            {!compact && (
               <button
                 type="button"
-                onClick={togglePlay}
-                className={cn(
-                  "h-8 w-8 rounded-full flex items-center justify-center shrink-0 transition-opacity hover:opacity-90 active:scale-95",
-                  hasError
-                    ? "bg-red-600 text-white"
-                    : darkMode
-                      ? "bg-slate-900 text-sky-200 border border-slate-700"
-                    : isUser
-                      ? "bg-white text-primary"
-                      : "bg-primary text-primary-foreground"
-                )}
-                aria-label={isPlaying ? "Pause" : "Play"}
+                onClick={toggleMute}
+                className="opacity-50 hover:opacity-100 transition-opacity"
+                aria-label={isMuted ? "Unmute" : "Mute"}
               >
-                {isPlaying ? (
-                  <Pause className="h-3.5 w-3.5 fill-current" />
+                {isMuted ? (
+                  <VolumeX className="h-3.5 w-3.5" />
                 ) : (
-                  <Play className="h-3.5 w-3.5 fill-current translate-x-[1px]" />
+                  <Volume2 className="h-3.5 w-3.5" />
                 )}
-              </button>
-
-              <div
-                role="button"
-                tabIndex={-1}
-                aria-label="Seek"
-                className={cn("flex-1 h-1.5 rounded-full cursor-pointer relative overflow-hidden", trackBg)}
-                onClick={seek}
-              >
-                <div
-                  className={cn("absolute inset-y-0 left-0 rounded-full transition-all", trackFill)}
-                  style={{ width: `${progress * 100}%` }}
-                />
-              </div>
-
-              {!compact && (
-                <>
-                  <button
-                    type="button"
-                    onClick={toggleMute}
-                    className="opacity-60 hover:opacity-100 transition-opacity shrink-0"
-                    aria-label={isMuted ? "Unmute" : "Mute"}
-                  >
-                    {isMuted || volume === 0 ? (
-                      <VolumeX className="h-3.5 w-3.5" />
-                    ) : (
-                      <Volume2 className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={isMuted ? 0 : volume}
-                    onChange={handleVolume}
-                    className="w-14 h-1 accent-current cursor-pointer shrink-0"
-                    aria-label="Volume"
-                  />
-                </>
-              )}
-            </div>
-          ) : (
-            <div
-              className={cn(
-                "text-[11px] rounded-lg px-2.5 py-1.5 border text-muted-foreground",
-                darkMode ? "border-slate-700 bg-slate-900/50 text-slate-300" : "border-border"
-              )}
-            >
-              Unable to load audio.
-            </div>
-          )}
-        </>
-      )}
-
-      {text ? (
-        <div
-          className={cn(
-            "rounded-xl px-3 py-2 text-xs flex gap-2",
-            hasError
-              ? "bg-red-50 border border-red-200"
-              : darkMode
-                ? "bg-slate-900/70 border border-slate-700/80 text-slate-100"
-              : isUser
-                ? "bg-white/10"
-                : "bg-accent/10 border border-accent/20"
-          )}
-        >
-          <Languages className="h-3.5 w-3.5 shrink-0 mt-0.5 opacity-60" />
-          <div>
-            <div className="text-[10px] uppercase tracking-wider opacity-60 mb-1">Transcript</div>
-            <div className="leading-relaxed">{displayed}</div>
-            {isLong && (
-              <button
-                type="button"
-                className="mt-1.5 text-[11px] underline underline-offset-2 opacity-70 hover:opacity-100"
-                onClick={() => setShowFullTranscript((v) => !v)}
-              >
-                {showFullTranscript ? "Read less" : "Read more"}
               </button>
             )}
           </div>
         </div>
+      )}
+
+      {audioBase64 && !hasAudio && (
+        <div className="text-[11px] opacity-70">Unable to load audio.</div>
+      )}
+
+      {text ? (
+        <div className={cn("text-[13px] leading-relaxed", compact && "text-xs")}>
+          <p className="opacity-[0.92]">{displayed}</p>
+          {isLong && (
+            <button
+              type="button"
+              className="mt-1 text-[11px] font-medium opacity-70 hover:opacity-100 underline underline-offset-2"
+              onClick={() => setShowFullTranscript((v) => !v)}
+            >
+              {showFullTranscript ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
       ) : null}
     </div>
   );
+}
+
+function playerPalette({
+  isUser,
+  hasError,
+  darkMode
+}: {
+  isUser: boolean;
+  hasError: boolean;
+  darkMode: boolean;
+}) {
+  if (hasError) {
+    return {
+      played: "#ef4444",
+      rest: "rgba(239,68,68,0.28)",
+      playhead: "#b91c1c",
+      controlBg: "#dc2626",
+      controlFg: "#ffffff"
+    };
+  }
+  if (darkMode) {
+    return {
+      played: "#7dd3fc",
+      rest: "rgba(148,163,184,0.45)",
+      playhead: "#e0f2fe",
+      controlBg: "#0f172a",
+      controlFg: "#7dd3fc"
+    };
+  }
+  if (isUser) {
+    return {
+      played: "rgba(255,255,255,0.96)",
+      rest: "rgba(255,255,255,0.28)",
+      playhead: "#ffffff",
+      controlBg: "#ffffff",
+      controlFg: "hsl(235 65% 22%)"
+    };
+  }
+  return {
+    played: "hsl(222 40% 32%)",
+    rest: "hsl(230 12% 82%)",
+    playhead: "hsl(235 65% 28%)",
+    controlBg: "hsl(235 65% 22%)",
+    controlFg: "#ecfeff"
+  };
+}
+
+function drawMirroredWaveform(
+  canvas: HTMLCanvasElement,
+  bars: number[],
+  progress: number,
+  palette: ReturnType<typeof playerPalette>
+) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const { width, height } = canvas;
+  ctx.clearRect(0, 0, width, height);
+
+  const n = bars.length;
+  const gap = Math.max(1, width / n * 0.32);
+  const barW = Math.max(1.25, (width - gap * (n - 1)) / n);
+  const mid = height / 2;
+  const maxH = height * 0.42;
+  const playedUntil = progress * width;
+
+  for (let i = 0; i < n; i++) {
+    const x = i * (barW + gap);
+    const amp = Math.max(0.08, Math.min(1, bars[i] / 100));
+    const h = Math.max(height * 0.06, amp * maxH);
+    const played = x + barW * 0.5 <= playedUntil;
+    ctx.fillStyle = played ? palette.played : palette.rest;
+    roundRect(ctx, x, mid - h, barW, h * 2, Math.min(barW / 2, 2));
+    ctx.fill();
+  }
+
+  if (progress > 0 && progress < 1) {
+    ctx.fillStyle = palette.playhead;
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(playedUntil, height * 0.12, Math.max(1.5, width * 0.003), height * 0.76);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
 }
 
 function base64ToAudioBlob(audioBase64: string, mimeType: string): Blob | null {
@@ -386,7 +431,7 @@ function normalizeBase64(input: string) {
   return pad ? s + "=".repeat(pad) : s;
 }
 
-async function analyzeWaveform(arrayBuffer: ArrayBuffer, barsCount = 48) {
+async function analyzeWaveform(arrayBuffer: ArrayBuffer, barsCount = BAR_COUNT) {
   const Ctx = (window as Window & { webkitAudioContext?: typeof AudioContext }).AudioContext
     || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!Ctx) throw new Error("No AudioContext");
@@ -395,40 +440,72 @@ async function analyzeWaveform(arrayBuffer: ArrayBuffer, barsCount = 48) {
     const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
     const data = decoded.getChannelData(0);
     const chunk = Math.max(1, Math.floor(data.length / barsCount));
-    const bars: number[] = [];
+    const raw: number[] = [];
     for (let i = 0; i < barsCount; i++) {
       const s = i * chunk;
       const e = Math.min(data.length, s + chunk);
-      let sq = 0;
-      for (let j = s; j < e; j++) sq += data[j] * data[j];
-      bars.push(Math.max(8, Math.min(100, Math.sqrt(sq / (e - s)) * 260)));
+      let peak = 0;
+      let sumSq = 0;
+      for (let j = s; j < e; j++) {
+        const abs = Math.abs(data[j]);
+        if (abs > peak) peak = abs;
+        sumSq += data[j] * data[j];
+      }
+      const rms = Math.sqrt(sumSq / Math.max(1, e - s));
+      raw.push(peak * 0.72 + rms * 0.28);
     }
+    const bars = normalizeEnvelope(smoothEnvelope(raw));
     return { bars, durationSec: decoded.duration };
   } finally {
     ctx.close();
   }
 }
 
-function buildWaveformBarsFromBytes(audioBase64: string, barsCount = 48): number[] {
+function buildWaveformBarsFromBytes(audioBase64: string, barsCount = BAR_COUNT): number[] {
   try {
     const bytes = Uint8Array.from(window.atob(normalizeBase64(audioBase64)), (c) => c.charCodeAt(0));
     if (!bytes.length) return [];
     const chunk = Math.max(1, Math.floor(bytes.length / barsCount));
-    const bars: number[] = [];
+    const raw: number[] = [];
     for (let i = 0; i < barsCount; i++) {
       const s = i * chunk;
       const e = Math.min(bytes.length, s + chunk);
+      let peak = 0;
       let sum = 0;
-      for (let j = s; j < e; j++) sum += Math.abs(bytes[j] - 128);
-      bars.push(Math.max(8, Math.min(100, (sum / (e - s) / 128) * 100)));
+      for (let j = s; j < e; j++) {
+        const v = Math.abs(bytes[j] - 128) / 128;
+        if (v > peak) peak = v;
+        sum += v;
+      }
+      raw.push(peak * 0.7 + (sum / Math.max(1, e - s)) * 0.3);
     }
-    return bars;
+    return normalizeEnvelope(smoothEnvelope(raw));
   } catch {
     return [];
   }
 }
 
+function smoothEnvelope(values: number[], passes = 2) {
+  let out = values;
+  for (let p = 0; p < passes; p++) {
+    out = out.map((v, i, arr) => {
+      const left = arr[i - 1] ?? v;
+      const right = arr[i + 1] ?? v;
+      return (left + v * 2 + right) / 4;
+    });
+  }
+  return out;
+}
+
+function normalizeEnvelope(values: number[]) {
+  const max = Math.max(...values, 0.0001);
+  return values.map((v) => {
+    const norm = Math.sqrt(Math.max(0, v) / max);
+    return Math.max(10, Math.min(100, 10 + norm * 90));
+  });
+}
+
 function formatDuration(sec: number) {
-  const s = Math.round(sec);
+  const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { Pencil, Plus, Trash2, Building2, RefreshCw, AudioLines, Phone, Eye, EyeOff, MessageSquareText, Upload, X } from "lucide-react";
+import { Pencil, Plus, Trash2, Building2, RefreshCw, AudioLines, Phone, Eye, EyeOff, MessageSquareText, Upload, X, Video } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import VoicePickerDialog from "@/components/admin/VoicePickerDialog";
 import { DataTable, type Column } from "@/components/admin/DataTable";
@@ -22,12 +22,16 @@ import {
   syncClinicsFromExternalApi,
   getClinicTwilioConfig,
   updateClinicTwilioConfig,
+  getClinicGoogleConfig,
+  updateClinicGoogleConfig,
   updateClinicBotVoice,
   getClinicGreetings,
   updateClinicGreetings,
   previewClinicGreeting,
   type Clinic,
   type ClinicTwilioConfigInput,
+  type ClinicGoogleConfigInput,
+  type ClinicMeetingProvider,
   type GreetingPlaceholder,
   DEFAULT_CLINIC_THEME_COLOR,
   type ClinicThemeColor,
@@ -40,6 +44,8 @@ import {
 } from "@/lib/themeColors";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   processClinicAvatarFile,
   CLINIC_AVATAR_MAX_PX,
@@ -66,6 +72,22 @@ const EMPTY_TWILIO_FORM: ClinicTwilioConfigInput = {
   twilioApiKeySecret: "",
   twilioTwimlAppSid: ""
 };
+
+const EMPTY_GOOGLE_FORM: ClinicGoogleConfigInput = {
+  meetingProvider: "google",
+  googleClientId: "",
+  googleClientSecret: "",
+  googleRefreshToken: "",
+  googleCreateMeet: false,
+  ecwApiEndpoint: "",
+  azulApiEndpoint: ""
+};
+
+const MEETING_PROVIDER_OPTIONS: { value: ClinicMeetingProvider; label: string; hint: string }[] = [
+  { value: "google", label: "Google Calendar", hint: "Create Google Calendar events when patients book." },
+  { value: "ecw", label: "ECW", hint: "Send bookings to an eClinicalWorks API endpoint." },
+  { value: "azul", label: "Azul", hint: "Send bookings to an Azul API endpoint." }
+];
 
 function normalizeUsPhoneForSave(value: string) {
   const digits = String(value || "").replace(/[^\d]/g, "");
@@ -98,6 +120,10 @@ export default function Clinics() {
   const [twilioPhoneDisplay, setTwilioPhoneDisplay] = useState("+1");
   const [savingTwilio, setSavingTwilio] = useState(false);
   const [loadingTwilio, setLoadingTwilio] = useState(false);
+  const [googleClinic, setGoogleClinic] = useState<Clinic | null>(null);
+  const [googleForm, setGoogleForm] = useState<ClinicGoogleConfigInput>(EMPTY_GOOGLE_FORM);
+  const [savingGoogle, setSavingGoogle] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [voiceModalClinic, setVoiceModalClinic] = useState<Clinic | null>(null);
   const [savingVoice, setSavingVoice] = useState(false);
 
@@ -331,6 +357,64 @@ export default function Clinics() {
     }
   };
 
+  const openGoogle = async (c: Clinic) => {
+    setGoogleClinic(c);
+    setGoogleForm(EMPTY_GOOGLE_FORM);
+    try {
+      setLoadingGoogle(true);
+      const data = await getClinicGoogleConfig(c.id);
+      setGoogleForm({
+        meetingProvider: data.meetingProvider || "google",
+        googleClientId: data.googleClientId || "",
+        googleClientSecret: data.googleClientSecret || "",
+        googleRefreshToken: data.googleRefreshToken || "",
+        googleCreateMeet: Boolean(data.googleCreateMeet),
+        ecwApiEndpoint: data.ecwApiEndpoint || "",
+        azulApiEndpoint: data.azulApiEndpoint || ""
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load meeting provider settings";
+      toast.error(msg);
+    } finally {
+      setLoadingGoogle(false);
+    }
+  };
+
+  const saveGoogle = async () => {
+    if (!googleClinic) return;
+    const payload: ClinicGoogleConfigInput = {
+      meetingProvider: googleForm.meetingProvider || "google",
+      googleClientId: googleForm.googleClientId.trim(),
+      googleClientSecret: googleForm.googleClientSecret.trim(),
+      googleRefreshToken: googleForm.googleRefreshToken.trim(),
+      googleCreateMeet: Boolean(googleForm.googleCreateMeet),
+      ecwApiEndpoint: googleForm.ecwApiEndpoint.trim(),
+      azulApiEndpoint: googleForm.azulApiEndpoint.trim()
+    };
+    if (payload.meetingProvider === "google" && (!payload.googleClientId || !payload.googleClientSecret || !payload.googleRefreshToken)) {
+      return toast.error("All Google Calendar fields are required");
+    }
+    if (payload.meetingProvider === "ecw" && !payload.ecwApiEndpoint) {
+      return toast.error("ECW API endpoint is required");
+    }
+    if (payload.meetingProvider === "azul" && !payload.azulApiEndpoint) {
+      return toast.error("Azul API endpoint is required");
+    }
+    try {
+      setSavingGoogle(true);
+      await updateClinicGoogleConfig(googleClinic.id, payload);
+      toast.success("Meeting provider saved");
+      setGoogleClinic(null);
+      setGoogleForm(EMPTY_GOOGLE_FORM);
+      refresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to save meeting provider settings";
+      toast.error(msg);
+    } finally {
+      setSavingGoogle(false);
+    }
+  };
+
   const onSyncExternal = async () => {
     try {
       setSyncingExternal(true);
@@ -377,7 +461,7 @@ export default function Clinics() {
     { key: "web", header: "Web", searchable: (r) => r.web ?? "", render: (r) => r.web ? (
       <a href={r.web} target="_blank" rel="noreferrer" className="text-primary hover:underline text-sm truncate inline-block max-w-[180px]">{r.web}</a>
     ) : <span className="text-muted-foreground text-sm">—</span> },
-    { key: "actions", header: "", className: "w-64 text-right", searchable: () => "", render: (r) => (
+    { key: "actions", header: "", className: "w-72 text-right", searchable: () => "", render: (r) => (
       <div className="flex items-center justify-end gap-1">
         <Button
           size="icon"
@@ -408,6 +492,14 @@ export default function Clinics() {
           title={r.twilioConfigured ? "Twilio account — configured" : "Twilio account"}
         >
           <Phone className={`h-4 w-4 ${r.twilioConfigured ? "text-emerald-600" : "text-muted-foreground"}`} />
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={() => openGoogle(r)}
+          title={r.googleConfigured ? "Meeting provider — configured" : "Meeting provider"}
+        >
+          <Video className={`h-4 w-4 ${r.googleConfigured ? "text-blue-600" : "text-muted-foreground"}`} />
         </Button>
         <Button
           size="icon"
@@ -721,6 +813,139 @@ export default function Clinics() {
             </Button>
             <Button onClick={saveTwilio} disabled={savingTwilio || loadingTwilio} className="bg-gradient-primary text-primary-foreground">
               {loadingTwilio ? "Loading..." : savingTwilio ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!googleClinic}
+        onOpenChange={(o) => {
+          if (!o) {
+            setGoogleClinic(null);
+            setGoogleForm(EMPTY_GOOGLE_FORM);
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Meeting provider</DialogTitle>
+            <DialogDescription>
+              {googleClinic ? (
+                <>
+                  Choose how <strong>{googleClinic.name}</strong> creates video visits when patients book from web chat or phone.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-1 gap-4 py-1">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <RadioGroup
+                value={googleForm.meetingProvider}
+                onValueChange={(value) =>
+                  setGoogleForm({ ...googleForm, meetingProvider: value as ClinicMeetingProvider })
+                }
+                className="grid gap-2"
+              >
+                {MEETING_PROVIDER_OPTIONS.map((option) => (
+                  <label
+                    key={option.value}
+                    className={cn(
+                      "flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5",
+                      googleForm.meetingProvider === option.value
+                        ? "border-primary"
+                        : "border-border"
+                    )}
+                  >
+                    <RadioGroupItem value={option.value} className="mt-0.5" />
+                    <span>
+                      <span className="block text-sm font-medium">{option.label}</span>
+                      <span className="block text-xs text-muted-foreground">{option.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </RadioGroup>
+            </div>
+            {googleForm.meetingProvider === "google" ? (
+              <>
+                <Field label="Google client ID *">
+                  <SecretInput
+                    autoComplete="off"
+                    placeholder="xxxx.apps.googleusercontent.com"
+                    value={googleForm.googleClientId}
+                    onChange={(e) => setGoogleForm({ ...googleForm, googleClientId: e.target.value })}
+                  />
+                </Field>
+                <Field label="Google client secret *">
+                  <SecretInput
+                    autoComplete="off"
+                    value={googleForm.googleClientSecret}
+                    onChange={(e) => setGoogleForm({ ...googleForm, googleClientSecret: e.target.value })}
+                  />
+                </Field>
+                <Field label="Google refresh token *">
+                  <SecretInput
+                    autoComplete="off"
+                    value={googleForm.googleRefreshToken}
+                    onChange={(e) => setGoogleForm({ ...googleForm, googleRefreshToken: e.target.value })}
+                  />
+                </Field>
+                <label className="flex items-start gap-3 rounded-md border border-border px-3 py-2.5">
+                  <Checkbox
+                    checked={googleForm.googleCreateMeet}
+                    onCheckedChange={(checked) =>
+                      setGoogleForm({ ...googleForm, googleCreateMeet: checked === true })
+                    }
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium">Also create a Google Meet</span>
+                    <span className="block text-xs text-muted-foreground">
+                      When checked, a Google Meet conference is attached to the calendar event.
+                    </span>
+                  </span>
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  The refresh token must have Google Calendar access. Enable the checkbox above if you also want a Meet link on each booking.
+                </p>
+              </>
+            ) : null}
+            {googleForm.meetingProvider === "ecw" ? (
+              <Field label="ECW API endpoint *">
+                <Input
+                  type="url"
+                  autoComplete="off"
+                  placeholder="https://..."
+                  value={googleForm.ecwApiEndpoint}
+                  onChange={(e) => setGoogleForm({ ...googleForm, ecwApiEndpoint: e.target.value })}
+                />
+              </Field>
+            ) : null}
+            {googleForm.meetingProvider === "azul" ? (
+              <Field label="Azul API endpoint *">
+                <Input
+                  type="url"
+                  autoComplete="off"
+                  placeholder="https://..."
+                  value={googleForm.azulApiEndpoint}
+                  onChange={(e) => setGoogleForm({ ...googleForm, azulApiEndpoint: e.target.value })}
+                />
+              </Field>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setGoogleClinic(null);
+                setGoogleForm(EMPTY_GOOGLE_FORM);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={saveGoogle} disabled={savingGoogle || loadingGoogle} className="bg-gradient-primary text-primary-foreground">
+              {loadingGoogle ? "Loading..." : savingGoogle ? "Saving..." : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

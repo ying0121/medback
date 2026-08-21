@@ -20,12 +20,14 @@ function hasValue(value) {
 function formatDateTime(isoString) {
   try {
     return new Date(isoString).toLocaleString("en-US", {
+      timeZone: "America/New_York",
       weekday: "long",
       year: "numeric",
       month: "long",
       day: "numeric",
       hour: "numeric",
-      minute: "2-digit"
+      minute: "2-digit",
+      timeZoneName: "short"
     });
   } catch {
     return isoString;
@@ -105,7 +107,13 @@ function normalizeQuotes(keyQuotes = []) {
     .slice(0, 5);
 }
 
-function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicLabel = "Clinic" }) {
+function buildCallAnalysisEmail({
+  call = {},
+  analysis = {},
+  clinic = {},
+  clinicLabel = "Clinic",
+  googleMeet = null
+}) {
   const analyzedAt = analysis.createdAt || new Date().toISOString();
   const formattedAnalyzedAt = formatDateTime(analyzedAt);
   const formattedCallAt = formatDateTime(call.createdAt || analyzedAt);
@@ -121,6 +129,7 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
   const summary = hasValue(analysis.summary)
     ? String(analysis.summary).trim()
     : "No summary available.";
+  const meetLink = googleMeet?.created ? String(googleMeet.meetLink || "").trim() : "";
 
   const subject = `Call Analysis · ${clinicLabel} · ${caseNumber}`;
 
@@ -130,7 +139,8 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
     ["Call SID", call.callSid || "—"],
     ["Call Started", formattedCallAt],
     ["Duration", duration],
-    ["Analyzed At", formattedAnalyzedAt]
+    ["Analyzed At", formattedAnalyzedAt],
+    ...(meetLink ? [["Google Meet", meetLink]] : [])
   ];
 
   const intelligenceRows = [
@@ -295,6 +305,14 @@ function buildCallAnalysisEmail({ call = {}, analysis = {}, clinic = {}, clinicL
                 </tr>
               </table>
               ${helpTags ? `<div style="margin-top:14px;">${helpTags}</div>` : ""}
+              ${
+                meetLink
+                  ? `<div style="margin-top:14px;padding:14px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;font-size:14px;line-height:1.6;color:#1e3a8a;">
+                      <strong>Google Meet:</strong>
+                      <a href="${escapeHtml(meetLink)}" style="color:#0369a1;font-weight:700;text-decoration:none;">${escapeHtml(meetLink)}</a>
+                    </div>`
+                  : ""
+              }
             </td>
           </tr>
           <tr>

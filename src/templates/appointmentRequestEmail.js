@@ -37,12 +37,14 @@ function formatChannel(replyType) {
 function formatDateTime(isoString) {
   try {
     return new Date(isoString).toLocaleString("en-US", {
+      timeZone: "America/New_York",
       weekday: "long",
       year: "numeric",
       month: "long",
       day: "numeric",
       hour: "numeric",
-      minute: "2-digit"
+      minute: "2-digit",
+      timeZoneName: "short"
     });
   } catch {
     return isoString;
@@ -86,10 +88,21 @@ function buildPatientRows(patientInfo = {}, patientType) {
     ["Full Name", patientInfo.name],
     ["Date of Birth", patientInfo.dob],
     ["Phone", patientInfo.phone],
-    ["Email", patientInfo.email]
+    ["Email", patientInfo.email],
+    ["Appointment date & time", patientInfo.datetime]
   ];
 
-  const knownKeys = new Set(["type", "name", "dob", "phone", "email"]);
+  const knownKeys = new Set([
+    "type",
+    "name",
+    "dob",
+    "phone",
+    "email",
+    "datetime",
+    "dateTime",
+    "date",
+    "time"
+  ]);
   for (const [key, value] of Object.entries(patientInfo)) {
     if (knownKeys.has(key) || !hasValue(value)) continue;
     const label = key
@@ -138,6 +151,7 @@ function formatCaseNumber(conversationId, clinicAcronym) {
  * @param {number} params.conversationId
  * @param {object} params.patientInfo
  * @param {string} [params.replyType]
+ * @param {object} [params.googleMeet]
  */
 function buildAppointmentRequestEmail({
   clinicName,
@@ -145,7 +159,8 @@ function buildAppointmentRequestEmail({
   clinic = {},
   conversationId,
   patientInfo = {},
-  replyType = "chat"
+  replyType = "chat",
+  googleMeet = null
 }) {
   const submittedAt = new Date().toISOString();
   const clinicLabel = clinicName || clinicAcronym || clinic.name || clinic.acronym || "Clinic";
@@ -161,6 +176,7 @@ function buildAppointmentRequestEmail({
   const patientRows = buildPatientRows(patientInfo, patientType);
   const clinicRows = buildClinicRows(clinic, clinicLabel);
   const nextSteps = buildNextSteps(patientInfo);
+  const meetLink = googleMeet?.created ? String(googleMeet.meetLink || "").trim() : "";
 
   const subject = `New Appointment Request — ${patientInfo.name || "Patient"} @ ${clinicLabel}`;
 
@@ -176,6 +192,7 @@ function buildAppointmentRequestEmail({
     `  Case Number: ${caseNumber}`,
     `  Submitted: ${formattedSubmittedAt}`,
     `  Request Channel: ${channel}`,
+    meetLink ? `  Google Meet: ${meetLink}` : "",
     "",
     buildPlainSection("CLINIC DETAILS", clinicRows),
     buildPlainSection("PATIENT DETAILS", patientRows),
@@ -245,6 +262,7 @@ function buildAppointmentRequestEmail({
                       ${detailRow("Case Number", caseNumber)}
                       ${detailRow("Submitted", formattedSubmittedAt)}
                       ${detailRow("Request Channel", channel)}
+                      ${meetLink ? detailRow("Google Meet", meetLink, { link: meetLink }) : ""}
                     </table>
                   </td>
                 </tr>

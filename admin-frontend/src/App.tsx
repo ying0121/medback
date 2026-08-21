@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { MotionConfig } from "framer-motion";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -13,31 +14,35 @@ import Clinics from "./pages/Clinics.tsx";
 import Users from "./pages/Users.tsx";
 import Training from "./pages/Training.tsx";
 import Calls from "./pages/Calls.tsx";
+import Appointments from "./pages/Appointments.tsx";
 
 const queryClient = new QueryClient();
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter basename="/admin">
-        <AuthProvider>
-          <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/dashboard" element={<RequireAuth page="dashboard"><Dashboard /></RequireAuth>} />
-            <Route path="/clinics" element={<RequireAuth page="clinics"><Clinics /></RequireAuth>} />
-            <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
-            <Route path="/training" element={<RequireAuth page="training"><Training /></RequireAuth>} />
-            <Route path="/calls" element={<RequireAuth page="calls"><Calls /></RequireAuth>} />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+  <MotionConfig reducedMotion="user">
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter basename="/admin">
+          <AuthProvider>
+            <Routes>
+              <Route path="/" element={<Index />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/dashboard" element={<RequireAuth page="dashboard"><Dashboard /></RequireAuth>} />
+              <Route path="/clinics" element={<RequireAuth page="clinics"><Clinics /></RequireAuth>} />
+              <Route path="/appointments" element={<RequireAuth page="appointments"><Appointments /></RequireAuth>} />
+              <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
+              <Route path="/training" element={<RequireAuth page="training"><Training /></RequireAuth>} />
+              <Route path="/calls" element={<RequireAuth page="calls"><Calls /></RequireAuth>} />
+              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AuthProvider>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </MotionConfig>
 );
 
 export default App;

@@ -1,10 +1,14 @@
 const { Op } = require("sequelize");
-const { Knowledge } = require("../db");
+const { Knowledge, Clinic } = require("../db");
 const {
   createKnowledgeSchema,
   updateKnowledgeSchema,
   updateKnowledgeStatusSchema
 } = require("../utils/validators");
+const {
+  analyzeTrainingDocument,
+  MAX_FILE_BYTES
+} = require("../services/knowledgeDocumentService");
 
 function toKnowledgeDto(row) {
   return {
@@ -103,10 +107,50 @@ async function deleteKnowledge(req, res, next) {
   }
 }
 
+async function analyzeKnowledgeDocument(req, res, next) {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: "A document file is required." });
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return res.status(400).json({ error: "File is too large. Maximum size is 8 MB." });
+    }
+
+    const clinicId = Number(req.body?.clinicId || req.query?.clinicId || 0);
+    let clinicName = String(req.body?.clinicName || "").trim();
+    if (!clinicName && clinicId) {
+      const clinic = await Clinic.findByPk(clinicId, { attributes: ["name"] });
+      clinicName = clinic?.name ? String(clinic.name) : "";
+    }
+
+    const result = await analyzeTrainingDocument({
+      buffer: file.buffer,
+      filename: file.originalname,
+      mimeType: file.mimetype,
+      clinicName
+    });
+
+    return res.status(200).json({
+      knowledge: result.knowledge,
+      filename: result.filename,
+      truncated: result.truncated,
+      characterCount: result.characterCount
+    });
+  } catch (err) {
+    const message = err?.message || "Failed to analyze document.";
+    if (/unsupported|too large|empty|could not extract|legacy \.doc|missing openai/i.test(message)) {
+      return res.status(400).json({ error: message });
+    }
+    return next(err);
+  }
+}
+
 module.exports = {
   listKnowledge,
   createKnowledge,
   updateKnowledge,
   updateKnowledgeStatus,
-  deleteKnowledge
+  deleteKnowledge,
+  analyzeKnowledgeDocument
 };

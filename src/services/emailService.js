@@ -1,6 +1,12 @@
 const nodemailer = require("nodemailer");
 const { buildAppointmentRequestEmail } = require("../templates/appointmentRequestEmail");
 const { buildCallAnalysisEmail } = require("../templates/callAnalysisEmail");
+const {
+  buildPatientMeetingEmail,
+  buildPatientMeetingInviteIcs
+} = require("../templates/patientMeetingEmail");
+
+const { isNonPatientEmail } = require("./appointmentIntakeService");
 
 const smtpHost = process.env.SMTP_HOST || "";
 const smtpPort = Number(process.env.SMTP_PORT || 587);
@@ -35,65 +41,139 @@ const transporter = smtpConfigured
     })
   : null;
 
-async function sendAlertEmail(subject, text) {
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function resolvePatientEmail(patientInfo = {}) {
+  const candidates = [
+    patientInfo.email,
+    patientInfo.emailAddress,
+    patientInfo.patientEmail,
+    patientInfo.userEmail
+  ];
+  for (const candidate of candidates) {
+    const email = String(candidate || "").trim();
+    if (isValidEmail(email) && !isNonPatientEmail(email)) return email;
+  }
+  return "";
+}
+
+async function sendMailSafe(options, label) {
   if (!transporter) {
     return { sent: false, reason: "SMTP is not configured." };
   }
+  try {
+    const info = await transporter.sendMail(options);
+    const accepted = Array.isArray(info.accepted) ? info.accepted.join(", ") : "";
+    const rejected = Array.isArray(info.rejected) ? info.rejected.filter(Boolean) : [];
+    if (rejected.length) {
+      // eslint-disable-next-line no-console
+      console.error(`[Email] ${label} rejected=${rejected.join(", ")}`);
+      return { sent: false, reason: `SMTP rejected: ${rejected.join(", ")}`, messageId: info.messageId };
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[Email] ${label} sent messageId=${info.messageId || "-"} accepted=${accepted || options.to}`);
+    return { sent: true, messageId: info.messageId, to: options.to };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[Email] ${label} failed: ${err.message}`);
+    return { sent: false, reason: err.message };
+  }
+}
+
+async function sendAlertEmail(subject, text) {
   if (!alertEmail) {
     return { sent: false, reason: "ALERT_EMAIL is not configured." };
   }
-
-  const info = await transporter.sendMail({
-    from: smtpUser,
-    to: alertEmail,
-    subject,
-    text
-  });
-
-  return { sent: true, messageId: info.messageId };
+  return sendMailSafe(
+    {
+      from: smtpUser,
+      to: alertEmail,
+      subject,
+      text
+    },
+    "alert"
+  );
 }
 
 async function sendAppointmentRequestEmail(details) {
-  if (!transporter) {
-    return { sent: false, reason: "SMTP is not configured." };
-  }
   if (!appointmentNotifyEmails.length) {
     return { sent: false, reason: "APPOINTMENT_NOTIFY_EMAILS is not configured." };
   }
 
   const { subject, text, html } = buildAppointmentRequestEmail(details);
-
-  const info = await transporter.sendMail({
-    from: smtpUser,
-    to: appointmentNotifyEmails.join(", "),
-    subject,
-    text,
-    html
-  });
-
-  return { sent: true, messageId: info.messageId };
+  return sendMailSafe(
+    {
+      from: smtpUser,
+      to: appointmentNotifyEmails.join(", "),
+      subject,
+      text,
+      html
+    },
+    "staff appointment"
+  );
 }
 
 async function sendCallAnalysisEmail(details) {
-  if (!transporter) {
-    return { sent: false, reason: "SMTP is not configured." };
-  }
   if (!callAnalysisNotifyEmails.length) {
     return { sent: false, reason: "CALL_ANALYSIS_NOTIFY_EMAILS is not configured." };
   }
 
   const { subject, text, html } = buildCallAnalysisEmail(details);
+  return sendMailSafe(
+    {
+      from: smtpUser,
+      to: smtpUser,
+      bcc: callAnalysisNotifyEmails.join(", "),
+      subject,
+      text,
+      html
+    },
+    "call analysis"
+  );
+}
 
-  const info = await transporter.sendMail({
+async function sendPatientMeetingNotificationEmail(details) {
+  const patientEmail = resolvePatientEmail(details?.patientInfo || {});
+  if (!patientEmail) {
+    return { sent: false, reason: "Patient email is missing or invalid." };
+  }
+
+  const patientInfo = { ...(details.patientInfo || {}), email: patientEmail };
+  const { subject, text, html } = buildPatientMeetingEmail({ ...details, patientInfo });
+  const clinicName = details.clinicName || details.clinic?.name || "Clinic";
+  const ics = buildPatientMeetingInviteIcs({
+    ...details,
+    patientInfo,
+    organizerEmail: smtpUser
+  });
+
+  const mail = {
     from: smtpUser,
-    to: smtpUser,
-    bcc: callAnalysisNotifyEmails.join(", "),
+    to: patientEmail,
+    replyTo: details.clinic?.email || smtpUser,
     subject,
     text,
     html
-  });
+  };
 
-  return { sent: true, messageId: info.messageId };
+  if (ics) {
+    mail.icalEvent = {
+      method: "REQUEST",
+      filename: "invite.ics",
+      content: ics
+    };
+  }
+
+  const result = await sendMailSafe(mail, `patient meeting to ${patientEmail}`);
+  return { ...result, to: patientEmail };
 }
 
-module.exports = { sendAlertEmail, sendAppointmentRequestEmail, sendCallAnalysisEmail };
+module.exports = {
+  sendAlertEmail,
+  sendAppointmentRequestEmail,
+  sendCallAnalysisEmail,
+  sendPatientMeetingNotificationEmail,
+  resolvePatientEmail
+};

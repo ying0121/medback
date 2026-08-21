@@ -10,7 +10,10 @@ export default function RequireAuth({ page, children }: { page: string; children
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-hero">
-        <div className="text-muted-foreground">Loading…</div>
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-10 w-10 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+          <div className="text-sm text-muted-foreground">Loading workspace…</div>
+        </div>
       </div>
     );
   }

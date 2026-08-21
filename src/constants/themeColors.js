@@ -1,5 +1,5 @@
 /**
- * Chat frontend theme tokens (`themeColor` on Socket.IO connect).
+ * Chat frontend theme tokens (`themeColor` on WebSocket connect).
  * Each id maps to a primary → accent gradient on the client.
  */
 const THEME_COLOR_OPTIONS = [

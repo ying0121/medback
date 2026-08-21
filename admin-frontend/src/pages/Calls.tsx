@@ -214,7 +214,7 @@ export default function Calls() {
                     </div>
                     <div className="text-xs text-muted-foreground mt-1 truncate">SID: {c.callSid || "-"}</div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      {c.createdAt ? new Date(c.createdAt).toLocaleString() : "-"}{" "}
+                      {c.createdAt ? new Date(c.createdAt).toLocaleString("en-US", { timeZone: "America/New_York" }) : "-"}{" "}
                       {c.status ? `· ${c.status}` : ""}
                     </div>
                   </button>
@@ -328,7 +328,7 @@ export default function Calls() {
                         />
                       )}
                       <div className="text-[10px] text-muted-foreground">
-                        {m.createdAt ? new Date(m.createdAt).toLocaleString() : "-"}
+                        {m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", { timeZone: "America/New_York" }) : "-"}
                       </div>
                     </div>
                   </div>
