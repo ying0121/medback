@@ -317,23 +317,18 @@ async function dispatchMessage(ws, raw) {
 }
 
 /**
- * Attach a native WebSocketServer to the HTTP server for web chat.
- * Must be called after http.createServer() but before server.listen().
+ * Attach a native WebSocketServer for web chat (`/ws/chat` by default).
+ *
+ * Uses `noServer: true` + an explicit HTTP `upgrade` router so this path is
+ * unambiguously raw WebSocket JSON (not Socket.IO). Non-matching upgrades are
+ * left alone for other handlers.
+ *
  * @param {import("http").Server} server
  */
 function attachChatSocket(server) {
   let connectionSeq = 0;
 
-  const wss = new WebSocketServer({
-    server,
-    path: CHAT_WS_PATH,
-    verifyClient(info) {
-      const origin = info.origin || info.req?.headers?.origin || "";
-      const ok = isOriginAllowed(origin);
-      if (!ok) logErr(`[WS] origin rejected: ${origin || "no-origin"}`);
-      return ok;
-    }
-  });
+  const wss = new WebSocketServer({ noServer: true });
 
   const pingTimer = setInterval(() => {
     for (const client of wss.clients) {
@@ -392,6 +387,39 @@ function attachChatSocket(server) {
 
   wss.on("error", (err) => {
     logErr(`[WS] server error: ${err.message}`);
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    let pathname = "/";
+    try {
+      pathname = new URL(req.url || "/", "http://localhost").pathname;
+    } catch {
+      pathname = String(req.url || "/").split("?")[0] || "/";
+    }
+    // Normalize trailing slash so /ws/chat and /ws/chat/ both match.
+    if (pathname.length > 1 && pathname.endsWith("/")) {
+      pathname = pathname.slice(0, -1);
+    }
+    const chatPath =
+      CHAT_WS_PATH.length > 1 && CHAT_WS_PATH.endsWith("/")
+        ? CHAT_WS_PATH.slice(0, -1)
+        : CHAT_WS_PATH;
+
+    // Only claim the chat path. Leave all other upgrades alone.
+    if (pathname !== chatPath) return;
+
+    const origin = req.headers?.origin || "";
+    if (!isOriginAllowed(origin)) {
+      logErr(`[WS] origin rejected on upgrade: ${origin || "no-origin"}`);
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    logOk(`[WS] upgrade accepted path=${pathname} origin=${origin || "no-origin"}`);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
   });
 
   return wss;

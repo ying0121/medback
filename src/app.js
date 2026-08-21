@@ -128,6 +128,21 @@ if (hasAdminBuild) {
   });
 }
 
+// Webchat uses native WebSocket at /ws/chat. Plain HTTP (e.g. old Socket.IO
+// polling: ?EIO=4&transport=polling) must not be redirected to the HTML 404 page.
+const chatWsPath = String(process.env.WEBSOCKET_CHAT_URL || "/ws/chat").trim() || "/ws/chat";
+const chatWsPathNormalized = chatWsPath.startsWith("/") ? chatWsPath : `/${chatWsPath}`;
+app.get([chatWsPathNormalized, `${chatWsPathNormalized}/`], (req, res) => {
+  res.status(426).json({
+    error: "WebSocket upgrade required",
+    path: chatWsPathNormalized,
+    message:
+      "Webchat uses native WebSocket. Connect with ws(s)://HOST" +
+      chatWsPathNormalized +
+      " — Socket.IO polling is not supported."
+  });
+});
+
 // For browser navigation, route unknown non-API paths to the global 404 page.
 // API routes should keep returning JSON 404 responses instead of HTML redirects.
 app.get("/{*path}", (req, res, next) => {
@@ -135,6 +150,7 @@ app.get("/{*path}", (req, res, next) => {
   if (p.startsWith("/api/")) return next();
   if (p === "/" || p === "/404") return next();
   if (p.startsWith("/admin")) return next();
+  if (p === chatWsPathNormalized || p === `${chatWsPathNormalized}/`) return next();
   return res.redirect("/404");
 });
 
