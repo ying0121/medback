@@ -121,12 +121,14 @@ function buildGreetingPanel(clinic, kind) {
  */
 function getClinicConnectFields(clinic) {
   const ctx = buildPlaceholderContext(clinic);
+  const twilioPhoneNumber = String(clinic?.twilioPhoneNumber || "").trim() || null;
   return {
     clinicName: ctx.clinicName,
     clinicAcronym: ctx.clinicAcronym,
     greeting: resolveChatGreeting(clinic),
     themeColor: normalizeThemeColor(clinic?.themeColor),
-    avatar: clinic?.avatar ? String(clinic.avatar) : null
+    avatar: clinic?.avatar ? String(clinic.avatar) : null,
+    twilioPhoneNumber
   };
 }
 

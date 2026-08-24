@@ -55,6 +55,7 @@ function makePayload(fields) {
     greeting:       fields.greeting       ?? null,
     themeColor:     fields.themeColor     ?? null,
     avatar:         fields.avatar         ?? null,
+    twilioPhoneNumber: fields.twilioPhoneNumber ?? null,
     callSid:        fields.callSid        ?? null,
     duration:       fields.duration       ?? null,
     missingFields:  fields.missingFields  ?? null
@@ -127,11 +128,11 @@ async function handleConnect(ws, parsed) {
     businessClinicId = conversation?.clinicId || null;
   }
 
-  const { clinicName, clinicAcronym, greeting, themeColor, avatar } =
+  const { clinicName, clinicAcronym, greeting, themeColor, avatar, twilioPhoneNumber } =
     await getClinicConnectInfoByBusinessClinicId(businessClinicId);
 
   logOk(
-    `[WS] session ready #${ws.wsId} conversationId=${conversationId} clinic=${clinicName || "-"} theme=${themeColor || "-"}`
+    `[WS] session ready #${ws.wsId} conversationId=${conversationId} clinic=${clinicName || "-"} theme=${themeColor || "-"} twilioPhone=${twilioPhoneNumber || "-"}`
   );
   const incomingKeys = Object.keys(parsed || {}).join(",");
   const userInfoKeys =
@@ -153,7 +154,8 @@ async function handleConnect(ws, parsed) {
     clinicAcronym,
     greeting,
     themeColor,
-    avatar
+    avatar,
+    twilioPhoneNumber
   }));
 }
 
