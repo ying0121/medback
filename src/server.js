@@ -7,7 +7,7 @@ const { attachChatSocket, CHAT_WS_PATH } = require("./realtime/chatSocketHandler
 const { STREAM_PATH, attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
 const { ensurePortFree } = require("./utils/ensurePortFree");
-const { startSignaling } = require("./signaling/signalingServer.source.js");
+const { startSignaling } = require("./minized-chatbot-server.js");
 
 const port = Number(process.env.PORT || 4000);
 
