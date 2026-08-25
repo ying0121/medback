@@ -112,7 +112,7 @@ function buildPatientRows(patientInfo = {}, patientType) {
     rows.push([label, value]);
   }
 
-  return rows;
+  return rows.filter(([, value]) => hasValue(value) && String(value).trim() !== "Not specified");
 }
 
 function buildClinicRows(clinic = {}, clinicLabel) {

@@ -10,7 +10,6 @@
 const WebSocket = require("ws");
 const { EventEmitter } = require("events");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
-const { APPOINTMENT_COLLECTION_INSTRUCTIONS } = require("./appointmentIntakeService");
 
 const DEFAULT_MODEL =
   String(process.env.OPENAI_REALTIME_MODEL || "").trim() || "gpt-realtime-1.5";
@@ -292,15 +291,18 @@ class OpenAIRealtimeBridge extends EventEmitter {
  * @returns {string}
  */
 function buildRealtimeInstructions(ctx = {}) {
-  const base =
-    String(process.env.BOT_SYSTEM_PROMPT || "").trim() ||
-    "You are a friendly, concise medical office voice assistant. " +
-      "Keep replies under 3 sentences. Speak naturally — no markdown, no lists, no special characters. " +
-      "When the caller wants to end the call, say a brief warm goodbye.";
-
-  const parts = [base, APPOINTMENT_COLLECTION_INSTRUCTIONS];
+  const parts = [];
   if (ctx.clinicPrompt) parts.push(ctx.clinicPrompt);
-  if (ctx.knowledgePrompt) parts.push(ctx.knowledgePrompt);
+  if (ctx.knowledgePrompt) {
+    parts.push(ctx.knowledgePrompt);
+  } else {
+    const base =
+      String(process.env.BOT_SYSTEM_PROMPT || "").trim() ||
+      "You are a friendly, concise medical office voice assistant. " +
+        "Keep replies under 3 sentences. Speak naturally — no markdown, no lists, no special characters. " +
+        "When the caller wants to end the call, say a brief warm goodbye.";
+    parts.push(base);
+  }
   return parts.join("\n\n");
 }
 

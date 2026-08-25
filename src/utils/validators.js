@@ -64,15 +64,36 @@ const changePasswordSchema = Joi.object({
 });
 
 const createKnowledgeSchema = Joi.object({
-  clinicId: Joi.number().integer().positive().required(),
+  clinicId: Joi.number().integer().positive().optional(),
+  clinicIds: Joi.array().items(Joi.number().integer().positive()).min(1).optional(),
   knowledge: Joi.string().min(1).required(),
-  status: knowledgeStatusSchema.default("active")
-});
+  status: knowledgeStatusSchema.default("active"),
+  documentName: Joi.string().allow("", null).optional(),
+  documentPath: Joi.string().allow("", null).optional(),
+  documentMime: Joi.string().allow("", null).optional(),
+  documentSize: Joi.number().integer().min(0).allow(null).optional()
+})
+  .or("clinicId", "clinicIds")
+  .custom((value, helpers) => {
+    const ids = [];
+    if (Array.isArray(value.clinicIds)) ids.push(...value.clinicIds);
+    if (value.clinicId) ids.push(value.clinicId);
+    const unique = [...new Set(ids.map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!unique.length) {
+      return helpers.error("any.custom", { message: "At least one clinic is required." });
+    }
+    return { ...value, clinicIds: unique };
+  });
 
 const updateKnowledgeSchema = Joi.object({
   clinicId: Joi.number().integer().positive().optional(),
+  clinicIds: Joi.array().items(Joi.number().integer().positive()).min(1).optional(),
   knowledge: Joi.string().min(1).optional(),
-  status: knowledgeStatusSchema.optional()
+  status: knowledgeStatusSchema.optional(),
+  documentName: Joi.string().allow("", null).optional(),
+  documentPath: Joi.string().allow("", null).optional(),
+  documentMime: Joi.string().allow("", null).optional(),
+  documentSize: Joi.number().integer().min(0).allow(null).optional()
 }).min(1);
 
 const updateKnowledgeStatusSchema = Joi.object({

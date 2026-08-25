@@ -219,6 +219,10 @@ async function createClinic(req, res, next) {
     if (payload.avatar === undefined) payload.avatar = null;
 
     const created = await Clinic.create(payload);
+    if (created.clinicId) {
+      const { seedDefaultKnowledgeForClinic } = require("../services/knowledgeSeedService");
+      await seedDefaultKnowledgeForClinic(created.clinicId);
+    }
     return res.status(201).json({ clinic: mapClinicRowToApi(created) });
   } catch (err) {
     return next(err);

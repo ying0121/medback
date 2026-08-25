@@ -19,6 +19,8 @@
  */
 
 const { Clinic, Knowledge } = require("../db");
+const { PROMPT_KEY_ORDER } = require("../constants/defaultKnowledgePrompts");
+const { rowMatchesClinic } = require("../utils/clinicIds");
 
 /** Allowed clinic profile fields exposed to the LLM (do not add PII). */
 const CLINIC_PROMPT_FIELDS = ["name", "acronym", "web"];
@@ -37,13 +39,34 @@ function formatClinicPrompt(clinic) {
   return lines.join("\n");
 }
 
+function sortKnowledgeRows(knowledgeRows) {
+  const orderIndex = new Map(PROMPT_KEY_ORDER.map((key, idx) => [key, idx]));
+  return [...(knowledgeRows || [])].sort((a, b) => {
+    const aKey = a.promptKey || "";
+    const bKey = b.promptKey || "";
+    const aOrder = orderIndex.has(aKey) ? orderIndex.get(aKey) : 100;
+    const bOrder = orderIndex.has(bKey) ? orderIndex.get(bKey) : 100;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return Number(b.id || 0) - Number(a.id || 0);
+  });
+}
+
 /** Format the active knowledge rows as a numbered list, or return null when empty. */
 function formatKnowledgePrompt(knowledgeRows) {
-  const text = (knowledgeRows || [])
+  const sorted = sortKnowledgeRows(knowledgeRows);
+  const hasCustomKnowledge = sorted.some(
+    (row) => !PROMPT_KEY_ORDER.includes(String(row.promptKey || ""))
+  );
+  const rows = hasCustomKnowledge
+    ? sorted.filter((row) => row.promptKey !== "appointment-booking")
+    : sorted;
+  const text = rows
     .map((row, idx) => `${idx + 1}. ${String(row.knowledge || "").trim()}`)
     .filter(Boolean)
     .join("\n");
-  return text ? `Product Knowledge:\n${text}` : null;
+  return text
+    ? `CLINIC KNOWLEDGE — this is the source of truth for bot handling.\nYou MUST follow these instructions and facts for every reply, including appointment booking:\n${text}`
+    : null;
 }
 
 /**
@@ -53,10 +76,11 @@ function formatKnowledgePrompt(knowledgeRows) {
 async function loadActiveKnowledge(businessClinicId) {
   const id = Number(businessClinicId);
   if (!Number.isFinite(id) || id <= 0) return [];
-  return Knowledge.findAll({
-    where: { clinicId: id, status: "active" },
+  const rows = await Knowledge.findAll({
+    where: { status: "active" },
     order: [["id", "DESC"]]
   });
+  return rows.filter((row) => rowMatchesClinic(row, id));
 }
 
 /**

@@ -232,7 +232,7 @@ export default function Users() {
           <DialogHeader>
             <DialogTitle>{editing ? "Edit user" : "Add new user"}</DialogTitle>
             <DialogDescription>
-              Admins have full access. Clinic Staff can only access Dashboard, Topics & Training for their assigned clinics.
+              Admins have full access. Clinic Staff can only access Dashboard, Topics & Knowledge for their assigned clinics.
             </DialogDescription>
           </DialogHeader>
           <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">

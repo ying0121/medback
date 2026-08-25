@@ -12,7 +12,7 @@ const NAV = [
   { to: "/clinics", label: "Clinics", icon: Building2, key: "clinics" },
   { to: "/appointments", label: "Appointments", icon: CalendarClock, key: "appointments" },
   { to: "/users", label: "Users", icon: Users, key: "users" },
-  { to: "/training", label: "Training", icon: Sparkles, key: "training" },
+  { to: "/training", label: "Knowledge", icon: Sparkles, key: "training" },
   { to: "/calls", label: "Calls", icon: PhoneCall, key: "calls" },
 ];
 

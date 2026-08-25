@@ -53,6 +53,9 @@ app.use(
         "img-src": ["'self'", "data:", "blob:"],
         // Allow blob: worker scripts used by some audio libs
         "worker-src": ["'self'", "blob:"],
+        // Helmet defaults include upgrade-insecure-requests, which forces
+        // http://localhost CSS/JS onto https:// and breaks the entire admin UI.
+        "upgrade-insecure-requests": null,
       },
     },
   })

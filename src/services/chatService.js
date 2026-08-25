@@ -35,6 +35,7 @@ const {
   isAppointmentCancelRequest,
   extractAppointmentIntakeHeuristic,
   conversationTextFromMessages,
+  conversationCallerTextFromMessages,
   normalizePatientInfo,
   parseUserInfoBlob,
   firstSpokenEmail,
@@ -49,6 +50,49 @@ function serializeUserInfo(userInfo) {
   } catch {
     return "";
   }
+}
+
+function readUserInfoObject(raw) {
+  if (raw == null || raw === "") return {};
+  if (typeof raw === "object") return { ...raw };
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function isAppointmentIntakeActive(raw) {
+  return Boolean(readUserInfoObject(raw).appointmentIntakeActive);
+}
+
+async function setAppointmentIntakeActive(conversation, active) {
+  if (!conversation) return;
+  const current = readUserInfoObject(conversation.userInfo);
+  const nextFlag = Boolean(active);
+  if (Boolean(current.appointmentIntakeActive) === nextFlag) return;
+  const next = { ...current, appointmentIntakeActive: nextFlag };
+  const serialized = serializeUserInfo(next);
+  await conversation.update({ userInfo: serialized });
+  conversation.userInfo = serialized;
+}
+
+async function saveIntakeDraft(conversation, draft, extras = {}) {
+  if (!conversation) return;
+  const next = {
+    ...widgetIdentityOnly(conversation.userInfo),
+    ...normalizePatientInfo(draft),
+    ...extras
+  };
+  const serialized = serializeUserInfo(next);
+  await conversation.update({ userInfo: serialized });
+  conversation.userInfo = serialized;
+}
+
+function hasNameAndEmail(draft) {
+  const normalized = normalizePatientInfo(draft);
+  return Boolean(normalized.name && normalized.email);
 }
 
 function isNewConversationRequest(conversationId) {
@@ -66,15 +110,23 @@ function incomingFormPatientInfo(...parts) {
   );
 }
 
+function widgetIdentityOnly(...parts) {
+  const form = incomingFormPatientInfo(...parts);
+  return {
+    name: form.name || "",
+    email: form.email || ""
+  };
+}
+
 async function persistFormPatientInfo(conversation, incoming) {
-  const form = incomingFormPatientInfo(
+  const form = widgetIdentityOnly(
     ...(Array.isArray(incoming) ? incoming : [incoming])
   );
-  if (!form.name && !form.email && !form.phone && !form.dob && !form.type && !form.datetime) {
+  if (!form.name && !form.email) {
     return form;
   }
 
-  const current = incomingFormPatientInfo(conversation?.userInfo);
+  const current = widgetIdentityOnly(conversation?.userInfo);
   const merged = { ...current, ...form };
   const next = serializeUserInfo(merged);
   const prev = serializeUserInfo(current) || "{}";
@@ -86,7 +138,7 @@ async function persistFormPatientInfo(conversation, incoming) {
 }
 
 async function createConversation({ clinicId, userInfo }) {
-  const form = incomingFormPatientInfo(userInfo);
+  const form = widgetIdentityOnly(userInfo);
   const created = await Conversation.create({
     clinicId,
     userInfo: serializeUserInfo(form) || "{}"
@@ -146,9 +198,9 @@ async function resolveConversationOnConnect({ conversationId, clinicId, userInfo
 
     const createdId = await createConversation({
       clinicId,
-      userInfo: incomingFormPatientInfo(...formPayload)
+      userInfo: widgetIdentityOnly(...formPayload)
     });
-    const form = incomingFormPatientInfo(...formPayload);
+    const form = widgetIdentityOnly(...formPayload);
     // eslint-disable-next-line no-console
     console.log(
       `[Chat] new conversation created id=${createdId} clinicId=${clinicId} form name=${form.name ? "yes" : "no"} email=${form.email ? "yes" : "no"} phone=${form.phone ? "yes" : "no"} dob=${form.dob ? "yes" : "no"} type=${form.type || "-"}`
@@ -158,7 +210,7 @@ async function resolveConversationOnConnect({ conversationId, clinicId, userInfo
 
   const existing = await ensureConversationExists(conversationId, {
     clinicId,
-    userInfo: incomingFormPatientInfo(...formPayload)
+    userInfo: widgetIdentityOnly(...formPayload)
   });
   await persistFormPatientInfo(existing, formPayload);
   return existing.id;
@@ -253,22 +305,30 @@ async function continueAppointmentIntake({
   currentText,
   replyType,
   isTopic,
-  formPatientInfo = {}
+  formPatientInfo = {},
+  clinicPrompt = null,
+  knowledgePrompt = null,
+  aiMessages = []
 }) {
-  if (isAppointmentCancelRequest(currentText)) return null;
-
-  const followUp = isAppointmentIntakeQuestion(lastBotMessageText(dbMessages));
-  if (chatIntent !== "appointment" && !followUp) return null;
+  if (isAppointmentCancelRequest(currentText)) {
+    const conversation = await Conversation.findByPk(conversationId, { attributes: ["id", "userInfo"] });
+    await setAppointmentIntakeActive(conversation, false);
+    return null;
+  }
 
   const conversation = await Conversation.findByPk(conversationId, { attributes: ["id", "userInfo"] });
-  const historyText = conversationTextFromMessages(dbMessages);
+  const followUp =
+    isAppointmentIntakeQuestion(lastBotMessageText(dbMessages)) ||
+    isAppointmentIntakeActive(conversation?.userInfo);
+  if (chatIntent !== "appointment" && !followUp) return null;
+
+  const callerText = conversationCallerTextFromMessages(dbMessages);
   const spokenEmail = firstSpokenEmail(
-    [historyText, currentText].filter(Boolean).join("\n")
+    [callerText, currentText].filter(Boolean).join("\n")
   );
   let draft = mergePatientInfo(
-    incomingFormPatientInfo(conversation?.userInfo),
-    formPatientInfo,
-    extractAppointmentIntakeHeuristic(historyText),
+    widgetIdentityOnly(conversation?.userInfo, formPatientInfo),
+    extractAppointmentIntakeHeuristic(callerText),
     extractAppointmentIntakeHeuristic(currentText),
     spokenEmail ? { email: spokenEmail } : {}
   );
@@ -279,12 +339,13 @@ async function continueAppointmentIntake({
       `[Appointment] intake incomplete conversationId=${conversationId} missing=${missingPreview(draft)} form name=${draft.name ? "yes" : "no"} email=${draft.email ? "yes" : "no"} phone=${draft.phone ? "yes" : "no"} dob=${draft.dob ? "yes" : "no"} type=${draft.type || "-"} datetime=${draft.datetime ? "yes" : "no"}`
     );
     const extracted = await extractAppointmentIntakeFromText(
-      `${historyText}\nCaller: ${String(currentText || "").trim()}`.trim()
+      `${callerText}\nCaller: ${String(currentText || "").trim()}`.trim()
     );
     draft = mergePatientInfo(draft, extracted);
   }
 
-  if (isAppointmentComplete(draft)) {
+  if (isAppointmentComplete(draft) && !knowledgePrompt) {
+    await setAppointmentIntakeActive(conversation, false);
     return processAppointmentRequest({
       conversationId,
       clinicId,
@@ -295,9 +356,32 @@ async function continueAppointmentIntake({
     });
   }
 
+  await saveIntakeDraft(conversation, draft, { appointmentIntakeActive: true });
+
+  if (knowledgePrompt) {
+    const info = readUserInfoObject(conversation.userInfo);
+    if (hasNameAndEmail(draft) && !info.appointmentRequestSent) {
+      await processAppointmentRequest({
+        conversationId,
+        clinicId,
+        patientInfo: draft,
+        isTopic,
+        replyType,
+        persistUserRequest: false,
+        skipUserFacingMessage: true
+      });
+      await saveIntakeDraft(conversation, draft, {
+        appointmentIntakeActive: true,
+        appointmentRequestSent: true
+      });
+    }
+    return null;
+  }
+
   const missing = getMissingAppointmentFields(draft);
-  const question = buildMissingFieldsQuestion(missing, { voice: replyType === "voice" });
   const normalizedReplyType = replyType === "voice" ? "voice" : "chat";
+  const question = buildMissingFieldsQuestion(missing, { voice: normalizedReplyType === "voice" });
+
   const lastBot = lastBotMessageText(dbMessages);
   const skipDuplicateQuestion = lastBot === question || (
     isAppointmentIntakeQuestion(lastBot) &&
@@ -410,7 +494,10 @@ async function processIncomingMessage({
         currentText: transcriptText,
         replyType: "voice",
         isTopic,
-        formPatientInfo
+        formPatientInfo,
+        clinicPrompt: contextPrompts.clinicPrompt,
+        knowledgePrompt: contextPrompts.knowledgePrompt,
+        aiMessages: [...aiMessages, { role: "user", content: transcriptText }]
       });
       if (intake) return intake;
 
@@ -520,7 +607,10 @@ async function processIncomingMessage({
       currentText: text,
       replyType: "chat",
       isTopic,
-      formPatientInfo
+      formPatientInfo,
+      clinicPrompt: contextPrompts.clinicPrompt,
+      knowledgePrompt: contextPrompts.knowledgePrompt,
+      aiMessages: updatedAiMessages
     });
     if (intake) return intake;
 
@@ -584,7 +674,8 @@ async function processAppointmentRequest({
   userInfo = null,
   isTopic = 0,
   replyType = "chat",
-  persistUserRequest = true
+  persistUserRequest = true,
+  skipUserFacingMessage = false
 }) {
   const conversation = await ensureConversationExists(conversationId);
   const businessClinicId = clinicId || conversation.clinicId;
@@ -594,12 +685,12 @@ async function processAppointmentRequest({
   ]);
   const normalizedReplyType = replyType === "voice" ? "voice" : "chat";
   const normalizedPatient = mergePatientInfo(
-    incomingFormPatientInfo(conversation.userInfo, userInfo, patientInfo),
+    widgetIdentityOnly(conversation.userInfo, userInfo),
     patientInfo
   );
   const missing = getMissingAppointmentFields(normalizedPatient);
 
-  if (missing.length) {
+  if (missing.length && !skipUserFacingMessage) {
     const question = buildMissingFieldsQuestion(missing, { voice: normalizedReplyType === "voice" });
     const recent = await listMessages(conversationId);
     const lastBot = lastBotMessageText(recent);
@@ -717,6 +808,15 @@ async function processAppointmentRequest({
     console.log(
       `[Appointment] patient meeting email sent to ${patientEmailResult.to} conversationId=${conversationId}`
     );
+  }
+
+  if (skipUserFacingMessage) {
+    return {
+      conversationId,
+      status: "success",
+      replyType: normalizedReplyType,
+      confirmationMessage: null
+    };
   }
 
   let confirmationMessage =

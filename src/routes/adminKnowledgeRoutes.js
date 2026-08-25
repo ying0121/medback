@@ -6,7 +6,8 @@ const {
   updateKnowledge,
   updateKnowledgeStatus,
   deleteKnowledge,
-  analyzeKnowledgeDocument
+  analyzeKnowledgeDocument,
+  downloadKnowledgeDocument
 } = require("../controllers/adminKnowledgeController");
 const { MAX_FILE_BYTES } = require("../services/knowledgeDocumentService");
 
@@ -19,6 +20,7 @@ const upload = multer({
 router.get("/", listKnowledge);
 router.post("/", createKnowledge);
 router.post("/analyze", upload.single("file"), analyzeKnowledgeDocument);
+router.get("/:id/document", downloadKnowledgeDocument);
 router.put("/:id", updateKnowledge);
 router.patch("/:id/status", updateKnowledgeStatus);
 router.delete("/:id", deleteKnowledge);

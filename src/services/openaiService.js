@@ -63,15 +63,9 @@ async function generateAssistantReply(messages, options = {}) {
     typeof options.maxCompletionTokens === "number" && Number.isFinite(options.maxCompletionTokens)
       ? options.maxCompletionTokens
       : openaiMaxCompletionTokens;
-  const systemPrompt = defaultSystemPrompt;
   const clinicPrompt = options.clinicPrompt || null;
   const knowledgePrompt = options.knowledgePrompt || null;
-  const systemMessages = [
-    {
-      role: "system",
-      content: systemPrompt
-    }
-  ];
+  const systemMessages = [];
   if (clinicPrompt) {
     systemMessages.push({
       role: "system",
@@ -83,6 +77,16 @@ async function generateAssistantReply(messages, options = {}) {
       role: "system",
       content: knowledgePrompt
     });
+    systemMessages.push({
+      role: "system",
+      content:
+        "Clinic knowledge is the only source of truth for what to ask and what to say. Do not add extra appointment questions or confirmation wording that is not in knowledge."
+    });
+  } else {
+    systemMessages.push({
+      role: "system",
+      content: options.systemPrompt || defaultSystemPrompt
+    });
   }
   if (options.languageConstraint) {
     systemMessages.push({
@@ -90,14 +94,6 @@ async function generateAssistantReply(messages, options = {}) {
       content: String(options.languageConstraint)
     });
   }
-  systemMessages.push({
-    role: "system",
-    content: [
-      "If the user wants to book an appointment, you must collect: full name, phone number, email, date of birth,",
-      "whether they are a new or existing patient, and the appointment date and time.",
-      "If any of those is missing, ask for the next missing item. Do not say the appointment is booked until all are provided."
-    ].join(" ")
-  });
 
   const completion = await client.chat.completions.create({
     model,
@@ -113,7 +109,6 @@ async function generateAssistantReply(messages, options = {}) {
 }
 
 const inboundMergedJsonPrompt = [
-  process.env.OPENAI_SYSTEM_PROMPT,
   "You are answering a live phone caller (PSTN). Be fast and concise.",
   "The conversation messages include the caller's latest utterance.",
   "Output exactly one JSON object (no markdown, no code fences) with keys:",
@@ -131,8 +126,6 @@ const inboundMergedJsonPrompt = [
   "  (e.g. goodbye, bye, hang up, end call, I'm done, 끊을게요, 통화 종료, 終わります, etc.).",
   "  When end_call is true, set reply to a warm short farewell in the caller's language.",
   "  Otherwise always set end_call to false.",
-  "If the caller is booking an appointment, collect full name, phone, email, date of birth,",
-  "new vs existing patient, and appointment date and time. Ask for the next missing item before confirming."
 ].join("\n");
 
 /**
@@ -147,9 +140,10 @@ async function generateInboundMergedTurn(messages, options = {}) {
   const clinicPrompt = options.clinicPrompt || null;
   const knowledgePrompt = options.knowledgePrompt || null;
   const systemMessages = [
-    { role: "system", content: defaultSystemPrompt },
     ...(clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
-    ...(knowledgePrompt ? [{ role: "system", content: knowledgePrompt }] : []),
+    ...(knowledgePrompt
+      ? [{ role: "system", content: knowledgePrompt }]
+      : [{ role: "system", content: defaultSystemPrompt }]),
     { role: "system", content: inboundMergedJsonPrompt }
   ];
 
@@ -531,11 +525,11 @@ function appointmentIntakeExtractPrompt() {
     "Rules:",
     "- Use empty string when a value was not clearly given. Do not invent.",
     "- Only extract values the person actually said in the conversation.",
-    "- Ignore widget/profile placeholders such as name \"Medical Bot\" or email addresses like medibot@...",
+    "- Ignore widget/profile defaults. Never copy a profile phone or date of birth unless the person typed or said it in this conversation.",
     "- name: the person's full name as they stated it.",
     "- email: the person's own email address as they stated it. Never use a clinic, bot, or noreply address.",
-    "- phone: the person's phone number as they stated it. Ignore placeholder numbers like 1234567890.",
-    "- dob: date of birth as YYYY-MM-DD if possible.",
+    "- phone: only if the person stated their own phone number. Otherwise \"\". Ignore clinic numbers, Twilio numbers, and placeholders like 1234567890 or 555 numbers.",
+    "- dob: only if the person stated their date of birth. Otherwise \"\". Never use 1970-01-01 or other profile defaults.",
     `- datetime: appointment start as YYYY-MM-DDTHH:mm in ${APP_TIMEZONE}. Convert today/tomorrow and clock times (for example tomorrow 10:00 AM) using America/New_York. Current Eastern time: ${nowLabelNy()}.`,
     "- date / time: split values if datetime cannot be formed.",
     "- type: exactly \"new\" or \"existing\" if the person said they are a new or existing/returning patient, else \"\"."

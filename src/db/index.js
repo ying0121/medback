@@ -158,6 +158,37 @@ async function syncDatabase() {
   await ensureClinicChatGreetingColumn();
   await ensureClinicGoogleColumns();
   await migrateThemeColorLegacyIds();
+  await ensureKnowledgePromptKeyColumn();
+  await ensureKnowledgeMediumText();
+  const { migrateKnowledgeMultiClinic } = require("../services/knowledgeClinicService");
+  await migrateKnowledgeMultiClinic();
+  const { ensureKnowledgeUploadDir } = require("../services/knowledgeDocumentStorage");
+  ensureKnowledgeUploadDir();
+  const { seedDefaultKnowledgeForAllClinics } = require("../services/knowledgeSeedService");
+  await seedDefaultKnowledgeForAllClinics();
+}
+
+async function ensureKnowledgePromptKeyColumn() {
+  try {
+    await sequelize.query("ALTER TABLE knowledges ADD COLUMN prompt_key VARCHAR(64) NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
+}
+
+async function ensureKnowledgeMediumText() {
+  try {
+    await sequelize.query("ALTER TABLE knowledges MODIFY COLUMN knowledge MEDIUMTEXT NOT NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/unknown column|doesn't exist/i.test(msg)) {
+      if (!/duplicate|same/i.test(msg)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[knowledge] MEDIUMTEXT migration: ${msg}`);
+      }
+    }
+  }
 }
 
 async function ensureClinicChatGreetingColumn() {

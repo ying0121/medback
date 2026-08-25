@@ -3,6 +3,8 @@
  * Used by web chat, web voice, and inbound phone booking.
  */
 
+const { APP_TIMEZONE, zonedCivilToUtcDate } = require("../utils/appTimeZone");
+
 const INTAKE_MARKER = "To finish booking this appointment";
 
 const REQUIRED_FIELDS = [
@@ -80,7 +82,17 @@ function isPlaceholderPhone(value) {
   if (!digits) return true;
   if (/^(\d)\1{9,}$/.test(digits)) return true;
   const national = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
-  return national === "1234567890" || national === "0123456789";
+  if (national.length !== 10) return true;
+  if (national === "1234567890" || national === "0123456789") return true;
+  if (national.startsWith("555")) return true;
+  if (national.startsWith("000") || national.startsWith("111")) return true;
+  return false;
+}
+
+function isPlaceholderDob(value) {
+  const iso = String(value || "").trim().slice(0, 10);
+  if (!iso) return true;
+  return /^(1970-01-01|1900-01-01|2000-01-01|0001-01-01)$/.test(iso);
 }
 
 function firstSpokenEmail(text) {
@@ -153,6 +165,8 @@ function normalizePhone(value) {
 function parseDob(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+  if (/^(1970-01-01|1900-01-01|2000-01-01|0001-01-01)([T\s].*)?$/.test(text)) return "";
+  if (/^(01[/-]01[/-]1970|1[/-]1[/-]1970)$/.test(text)) return "";
   const parsed = new Date(text);
   if (Number.isNaN(parsed.getTime())) return "";
   const now = new Date();
@@ -162,7 +176,9 @@ function parseDob(value) {
   const y = parsed.getFullYear();
   const m = String(parsed.getMonth() + 1).padStart(2, "0");
   const d = String(parsed.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  const iso = `${y}-${m}-${d}`;
+  if (isPlaceholderDob(iso)) return "";
+  return iso;
 }
 
 function parseClockTime(raw) {
@@ -291,9 +307,12 @@ function normalizePatientInfo(raw = {}) {
       );
       return phone && !isPlaceholderPhone(phone) ? phone : "";
     })(),
-    dob: parseDob(
-      firstNonEmpty(source.dob, source.dateOfBirth, source.birthDate, source.birthday, source.date_of_birth)
-    ),
+    dob: (() => {
+      const dob = parseDob(
+        firstNonEmpty(source.dob, source.dateOfBirth, source.birthDate, source.birthday, source.date_of_birth)
+      );
+      return dob && !isPlaceholderDob(dob) ? dob : "";
+    })(),
     type,
     datetime: parseAppointmentDateTime(source)
   };
@@ -347,6 +366,50 @@ function isAppointmentIntakeQuestion(text) {
   return String(text || "").includes(INTAKE_MARKER);
 }
 
+function parseCivilDateTimeParts(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+    second: Number(match[6] || 0)
+  };
+}
+
+function resolveAppointmentWindow(patientInfo = {}, extras = {}) {
+  const timeZone = String(extras.timeZone || APP_TIMEZONE).trim() || APP_TIMEZONE;
+  const durationRaw = Number(extras.durationMinutes || extras.duration || 30);
+  const durationMinutes = Number.isFinite(durationRaw) && durationRaw > 0 ? durationRaw : 30;
+
+  const normalized = normalizePatientInfo(patientInfo);
+  const civilText = firstNonEmpty(
+    normalized.datetime,
+    extras.start,
+    extras.datetime,
+    extras.dateTime
+  );
+
+  let start = null;
+  const parts = parseCivilDateTimeParts(civilText);
+  if (parts) {
+    start = zonedCivilToUtcDate(parts, timeZone);
+  } else if (civilText) {
+    const parsed = new Date(civilText);
+    if (!Number.isNaN(parsed.getTime())) start = parsed;
+  }
+
+  if (!start || Number.isNaN(start.getTime())) {
+    return { start: null, end: null, timeZone };
+  }
+
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  return { start, end, timeZone };
+}
+
 function isAppointmentCancelRequest(text) {
   const value = String(text || "").toLowerCase();
   return /\b(cancel( the)? appointment|never mind|forget it|stop booking|don't (want|need) (an )?appointment|do not (want|need) (an )?appointment)\b/.test(
@@ -372,17 +435,17 @@ const APPOINTMENT_COLLECTION_INSTRUCTIONS = [
 function extractAppointmentIntakeHeuristic(text) {
   const raw = String(text || "");
   const emailMatch = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  const phoneMatch = raw.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}/);
+  const labeledPhone = raw.match(
+    /(?:phone|mobile|cell|call me at|number is)[:\s-]*((?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4})/i
+  );
   const dobMatch = raw.match(
-    /(?:dob|date of birth|birthday)[:\s-]+(\d{1,4}[/-]\d{1,2}[/-]\d{1,4})/i
-  ) || raw.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+    /(?:dob|date of birth|birthday|born on)[:\s-]+(\d{1,4}[/-]\d{1,2}[/-]\d{1,4})/i
+  );
 
   return normalizePatientInfo({
     email: emailMatch ? emailMatch[0] : "",
-    phone: phoneMatch ? phoneMatch[0] : "",
-    dob: dobMatch ? dobMatch[1] : "",
-    type: raw,
-    datetime: raw
+    phone: labeledPhone ? labeledPhone[1] : "",
+    dob: dobMatch ? dobMatch[1] : ""
   });
 }
 
@@ -394,6 +457,14 @@ function conversationTextFromMessages(messages = []) {
       return `${role}: ${String(text).trim()}`;
     })
     .filter((line) => !line.endsWith(":"))
+    .join("\n");
+}
+
+function conversationCallerTextFromMessages(messages = []) {
+  return (messages || [])
+    .filter((msg) => msg.userType !== "bot" && msg.role !== "assistant")
+    .map((msg) => String(msg.message || msg.content || msg.text || "").trim())
+    .filter(Boolean)
     .join("\n");
 }
 
@@ -409,11 +480,15 @@ module.exports = {
   buildMissingFieldsQuestion,
   isAppointmentIntakeQuestion,
   isAppointmentCancelRequest,
+  resolveAppointmentWindow,
   extractAppointmentIntakeHeuristic,
   conversationTextFromMessages,
+  conversationCallerTextFromMessages,
   parseAppointmentDateTime,
   parseUserInfoBlob,
   coercePatientForm,
   isNonPatientEmail,
+  isPlaceholderPhone,
+  isPlaceholderDob,
   firstSpokenEmail
 };

@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   listClinics,
@@ -31,6 +32,7 @@ import {
   toggleKnowledgeStatus,
   deleteKnowledge,
   analyzeKnowledgeDocument,
+  knowledgeDocumentUrl,
   type Clinic,
   type KnowledgeItem,
 } from "@/lib/api";
@@ -81,9 +83,8 @@ export default function Training() {
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<KnowledgeItem | null>(null);
-  const [formClinicId, setFormClinicId] = useState("");
+  const [formClinicIds, setFormClinicIds] = useState<string[]>([]);
   const [clinicQuery, setClinicQuery] = useState("");
-  const [clinicMenuOpen, setClinicMenuOpen] = useState(false);
   const [formKnowledge, setFormKnowledge] = useState("");
   const [formStatus, setFormStatus] = useState<"active" | "inactive">("active");
   const [confirmDelete, setConfirmDelete] = useState<KnowledgeItem | null>(null);
@@ -93,6 +94,17 @@ export default function Training() {
   const [analysisStep, setAnalysisStep] = useState(0);
   const [analysisDone, setAnalysisDone] = useState(false);
   const [uploadedName, setUploadedName] = useState<string | null>(null);
+  const [documentMeta, setDocumentMeta] = useState<{
+    documentName: string | null;
+    documentPath: string | null;
+    documentMime: string | null;
+    documentSize: number | null;
+  }>({
+    documentName: null,
+    documentPath: null,
+    documentMime: null,
+    documentSize: null,
+  });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const clinicPickerRef = useRef<HTMLDivElement | null>(null);
   const knowledgeRef = useRef<HTMLDivElement | null>(null);
@@ -105,6 +117,15 @@ export default function Training() {
     });
   }, [user, refreshKey]);
 
+  const clinicMap = useMemo(() => {
+    const map: Record<string, Clinic> = {};
+    for (const clinic of clinics) {
+      map[String(clinic.id)] = clinic;
+      if (clinic.clinicId) map[String(clinic.clinicId)] = clinic;
+    }
+    return map;
+  }, [clinics]);
+
   useEffect(() => {
     const params = {
       clinicId: filterClinicId === "all" ? undefined : filterClinicId,
@@ -112,21 +133,19 @@ export default function Training() {
     };
     listKnowledge(params).then((rows) => {
       const allowed = user?.role === "Admin" ? null : new Set(user?.clinicIds || []);
-      const filtered = allowed ? rows.filter((r) => allowed.has(String(r.clinicId))) : rows;
+      const filtered = allowed
+        ? rows.filter((r) => {
+            const ids = r.clinicIds?.length ? r.clinicIds : [r.clinicId];
+            return ids.some((id) => {
+              if (allowed.has(String(id))) return true;
+              const clinic = clinicMap[String(id)];
+              return clinic ? allowed.has(String(clinic.id)) : false;
+            });
+          })
+        : rows;
       setItems(filtered);
     });
-  }, [filterClinicId, filterStatus, user, refreshKey]);
-
-  useEffect(() => {
-    if (!clinicMenuOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!clinicPickerRef.current?.contains(event.target as Node)) {
-        setClinicMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [clinicMenuOpen]);
+  }, [filterClinicId, filterStatus, user, refreshKey, clinicMap]);
 
   useEffect(() => {
     if (!analyzing) {
@@ -139,8 +158,18 @@ export default function Training() {
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [analyzing]);
 
-  const clinicMap = useMemo(() => Object.fromEntries(clinics.map((c) => [String(c.id), c])), [clinics]);
-  const selectedClinic = clinicMap[formClinicId] || null;
+  const resolveFormClinicId = (raw: string) => {
+    const clinic = clinicMap[String(raw)];
+    return clinic ? String(clinic.id) : String(raw);
+  };
+
+  const selectedClinics = useMemo(
+    () =>
+      formClinicIds
+        .map((id) => clinicMap[id])
+        .filter((clinic): clinic is Clinic => Boolean(clinic)),
+    [formClinicIds, clinicMap]
+  );
 
   const filteredClinics = useMemo(() => {
     const q = clinicQuery.trim().toLowerCase();
@@ -152,46 +181,74 @@ export default function Training() {
     );
   }, [clinics, clinicQuery]);
 
+  const toggleFormClinic = (clinicId: string) => {
+    const id = String(clinicId);
+    setFormClinicIds((prev) =>
+      prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]
+    );
+  };
+
   const openCreate = () => {
     setEditing(null);
-    setFormClinicId(clinics[0]?.id || "");
+    setFormClinicIds([]);
     setClinicQuery("");
     setFormKnowledge("");
     setFormStatus("active");
     setUploadedName(null);
+    setDocumentMeta({
+      documentName: null,
+      documentPath: null,
+      documentMime: null,
+      documentSize: null,
+    });
     setAnalysisDone(false);
     setOpen(true);
   };
 
   const openEdit = (row: KnowledgeItem) => {
     setEditing(row);
-    setFormClinicId(String(row.clinicId));
+    const ids = (row.clinicIds?.length ? row.clinicIds : [row.clinicId])
+      .map(resolveFormClinicId)
+      .filter(Boolean);
+    setFormClinicIds([...new Set(ids)]);
     setClinicQuery("");
     setFormKnowledge(row.knowledge || "");
     setFormStatus(row.status);
-    setUploadedName(null);
+    setUploadedName(row.documentName || null);
+    setDocumentMeta({
+      documentName: row.documentName || null,
+      documentPath: row.documentPath || null,
+      documentMime: row.documentMime || null,
+      documentSize: row.documentSize ?? null,
+    });
     setAnalysisDone(false);
     setOpen(true);
   };
 
   const save = async () => {
-    if (!formClinicId) return toast.error("Clinic is required.");
+    if (!formClinicIds.length) return toast.error("Select at least one clinic.");
     if (!formKnowledge.trim()) return toast.error("Knowledge is required.");
 
+    const payload = {
+      clinicIds: formClinicIds,
+      knowledge: formKnowledge.trim(),
+      status: formStatus,
+      documentName: documentMeta.documentPath ? documentMeta.documentName : null,
+      documentPath: documentMeta.documentPath,
+      documentMime: documentMeta.documentPath ? documentMeta.documentMime : null,
+      documentSize: documentMeta.documentPath ? documentMeta.documentSize : null,
+    };
+
     if (editing) {
-      await updateKnowledge(editing.id, {
-        clinicId: formClinicId,
-        knowledge: formKnowledge.trim(),
-        status: formStatus,
-      });
+      await updateKnowledge(editing.id, payload);
       toast.success("Knowledge updated");
     } else {
-      await createKnowledge({
-        clinicId: formClinicId,
-        knowledge: formKnowledge.trim(),
-        status: formStatus,
-      });
-      toast.success("Knowledge added");
+      await createKnowledge(payload);
+      toast.success(
+        formClinicIds.length > 1
+          ? `Knowledge added for ${formClinicIds.length} clinics`
+          : "Knowledge added"
+      );
     }
     setOpen(false);
     setRefreshKey((v) => v + 1);
@@ -222,11 +279,18 @@ export default function Training() {
       setAnalysisDone(false);
       setUploadedName(file.name);
       const result = await analyzeKnowledgeDocument(file, {
-        clinicId: formClinicId || undefined,
-        clinicName: selectedClinic?.name,
+        clinicId: formClinicIds[0] || undefined,
+        clinicName: selectedClinics[0]?.name,
       });
       setAnalysisStep(ANALYSIS_STEPS.length - 1);
       setFormKnowledge(result.knowledge);
+      setUploadedName(result.documentName || result.filename || file.name);
+      setDocumentMeta({
+        documentName: result.documentName || result.filename || file.name,
+        documentPath: result.documentPath || null,
+        documentMime: result.documentMime || file.type || null,
+        documentSize: result.documentSize ?? file.size ?? null,
+      });
       setAnalysisDone(true);
       window.setTimeout(() => {
         knowledgeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -256,30 +320,150 @@ export default function Training() {
     {
       key: "clinic",
       header: "Clinic",
-      searchable: (r) =>
-        `${clinicMap[String(r.clinicId)]?.name || ""} ${clinicMap[String(r.clinicId)]?.acronym || ""} ${r.clinicId}`,
+      searchable: (r) => {
+        const ids = r.clinicIds?.length ? r.clinicIds : [r.clinicId];
+        return ids
+          .map((id) => {
+            const c = clinicMap[String(id)];
+            return `${c?.name || ""} ${c?.acronym || ""} ${id}`;
+          })
+          .join(" ");
+      },
       render: (r) => {
-        const c = clinicMap[String(r.clinicId)];
-        return (
-          <div className="flex items-center gap-2 min-w-[180px]">
-            <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
+        const ids = r.clinicIds?.length ? r.clinicIds : [r.clinicId];
+        const clinicsForRow = ids.map((id) => {
+          const clinic = clinicMap[String(id)];
+          return {
+            id: String(id),
+            name: clinic?.name || `Clinic ${id}`,
+            acronym: clinic?.acronym || "",
+            businessId: clinic?.clinicId || String(id),
+            city: clinic?.city || "",
+          };
+        });
+        const first = clinicsForRow[0];
+        const extra = Math.max(0, clinicsForRow.length - 1);
+        const cell = (
+          <div className="flex items-center gap-2.5 min-w-[200px] max-w-[280px]">
+            <div className="relative h-9 w-9 rounded-xl bg-gradient-to-br from-primary/15 to-muted flex items-center justify-center shrink-0 ring-1 ring-border/60">
+              <Building2 className="h-4 w-4 text-primary/80" />
+              {clinicsForRow.length > 1 ? (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold leading-[18px] text-center shadow-sm">
+                  {clinicsForRow.length}
+                </span>
+              ) : null}
             </div>
-            <div className="min-w-0">
-              <div className="font-medium truncate">{c?.name || `Clinic ${r.clinicId}`}</div>
-              <div className="text-xs text-muted-foreground truncate">
-                {c?.acronym || "-"} · {r.clinicId}
+            <div className="min-w-0 flex-1">
+              <div className="font-medium truncate leading-tight">
+                {first?.name || "Unknown clinic"}
+              </div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                {extra > 0 ? (
+                  <>
+                    <span className="truncate">+{extra} more</span>
+                    <span className="text-border">·</span>
+                    <span className="shrink-0">Hover for list</span>
+                  </>
+                ) : (
+                  <span className="truncate">
+                    {first?.acronym || "-"}
+                    {first?.businessId ? ` · ${first.businessId}` : ""}
+                  </span>
+                )}
               </div>
             </div>
           </div>
         );
+
+        if (clinicsForRow.length <= 1) return cell;
+
+        return (
+          <Tooltip delayDuration={180}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="text-left rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {cell}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="bottom"
+              align="start"
+              sideOffset={8}
+              className="max-w-[340px] p-0 border-border/80 bg-popover shadow-elegant overflow-hidden"
+            >
+              <div className="px-3.5 py-2.5 border-b border-border/70 bg-muted/40">
+                <div className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">Assigned clinics</div>
+                <div className="mt-0.5 text-sm font-semibold text-foreground">
+                  {clinicsForRow.length} clinics
+                </div>
+              </div>
+              <div className="max-h-64 overflow-y-auto p-1.5">
+                {clinicsForRow.map((clinic, index) => (
+                  <div
+                    key={clinic.id}
+                    className="flex items-start gap-2.5 rounded-lg px-2.5 py-2 hover:bg-muted/60"
+                  >
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-[10px] font-semibold text-primary">
+                      {index + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium leading-snug truncate">{clinic.name}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {[clinic.acronym || null, clinic.businessId, clinic.city || null]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        );
       },
+    },
+    {
+      key: "type",
+      header: "Type",
+      searchable: (r) => `${r.promptLabel || ""} ${r.promptKey || ""} knowledge`,
+      render: (r) =>
+        r.promptKey ? (
+          <Badge variant="outline" className="text-primary border-primary/30 bg-primary/10 whitespace-nowrap">
+            {r.promptLabel || "Bot prompt"}
+          </Badge>
+        ) : (
+          <span className="text-xs text-muted-foreground">Content</span>
+        ),
+    },
+    {
+      key: "document",
+      header: "Document",
+      searchable: (r) => r.documentName || "",
+      render: (r) =>
+        r.documentPath ? (
+          <a
+            href={knowledgeDocumentUrl(r.id)}
+            className="inline-flex items-center gap-1 text-sm text-primary hover:underline max-w-[180px]"
+            title={r.documentName || "Document"}
+          >
+            <FileText className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{r.documentName || "File"}</span>
+          </a>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        ),
     },
     {
       key: "knowledge",
       header: "Knowledge",
       searchable: (r) => r.knowledge,
-      render: (r) => <div className="max-w-[620px] line-clamp-3 whitespace-pre-wrap">{r.knowledge}</div>,
+      render: (r) => (
+        <div className="max-w-[420px] line-clamp-2 whitespace-pre-wrap break-words" title={r.knowledge}>
+          {r.knowledge}
+        </div>
+      ),
     },
     {
       key: "status",
@@ -326,8 +510,8 @@ export default function Training() {
   return (
     <div className="p-8 max-w-[1600px] mx-auto">
       <PageHeader
-        title="Training Model"
-        description="Manage knowledge records by clinic for product/training information."
+        title="Knowledge"
+        description="Clinic knowledge drives the bot. Edit assistant, voice, and appointment prompts here, plus product facts."
         actions={
           <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
             <Plus className="h-4 w-4 mr-1.5" />
@@ -385,9 +569,17 @@ export default function Training() {
       >
         <DialogContent className="flex max-h-[90vh] min-h-0 max-w-3xl flex-col gap-0 overflow-hidden p-6 sm:max-w-3xl">
           <DialogHeader className="shrink-0 pr-8">
-            <DialogTitle>{editing ? "Edit knowledge" : "Add knowledge"}</DialogTitle>
+            <DialogTitle>
+              {editing?.promptKey
+                ? `Edit ${editing.promptLabel || "bot prompt"}`
+                : editing
+                  ? "Edit knowledge"
+                  : "Add knowledge"}
+            </DialogTitle>
             <DialogDescription>
-              Search a clinic, drop a document for AI analysis, then review the knowledge text before saving.
+              {editing?.promptKey
+                ? "Bot handling instructions. Assign one or more clinics; the same prompt applies to all selected."
+                : "Select one or more clinics, optionally import a document, then review the knowledge text before saving."}
             </DialogDescription>
           </DialogHeader>
 
@@ -397,66 +589,94 @@ export default function Training() {
             aria-label="Knowledge form"
           >
             <div className="space-y-4 py-1 pr-1 pb-4">
-              <div ref={clinicPickerRef} className="relative">
-                <Label>Clinic</Label>
-                <button
-                  type="button"
-                  className="mt-1.5 flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm text-left hover:bg-secondary/70 transition-colors"
-                  onClick={() => {
-                    setClinicMenuOpen((v) => !v);
-                    setClinicQuery("");
-                  }}
-                >
-                  <span className="truncate">
-                    {selectedClinic
-                      ? `${selectedClinic.name}${selectedClinic.acronym ? ` (${selectedClinic.acronym})` : ""}`
-                      : "Select clinic"}
-                  </span>
-                  <Search className="h-4 w-4 text-muted-foreground shrink-0" />
-                </button>
-                {clinicMenuOpen ? (
-                  <div className="absolute z-50 mt-1.5 w-full rounded-xl border border-border bg-popover shadow-elegant overflow-hidden">
-                    <div className="p-2 border-b border-border">
-                      <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                        <Input
-                          autoFocus
-                          value={clinicQuery}
-                          onChange={(e) => setClinicQuery(e.target.value)}
-                          placeholder="Search clinic name, acronym, ID…"
-                          className="h-9 pl-8"
-                        />
-                      </div>
-                    </div>
-                    <div className="max-h-56 overflow-y-auto p-1">
-                      {filteredClinics.length === 0 ? (
-                        <div className="px-3 py-6 text-center text-sm text-muted-foreground">No clinics match</div>
-                      ) : (
-                        filteredClinics.map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            className={cn(
-                              "w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-secondary",
-                              String(c.id) === formClinicId && "bg-secondary font-medium"
-                            )}
-                            onClick={() => {
-                              setFormClinicId(String(c.id));
-                              setClinicMenuOpen(false);
-                              setClinicQuery("");
-                            }}
-                          >
-                            <div className="truncate">{c.name}</div>
-                            <div className="text-xs text-muted-foreground truncate">
-                              {c.acronym || "-"} · {c.clinicId}
-                              {c.city ? ` · ${c.city}` : ""}
-                            </div>
-                          </button>
-                        ))
-                      )}
-                    </div>
+              <div ref={clinicPickerRef}>
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Clinics (multi-select)</Label>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      className="text-primary hover:underline"
+                      onClick={() => setFormClinicIds(clinics.map((c) => String(c.id)))}
+                    >
+                      Select all
+                    </button>
+                    <span className="text-muted-foreground">·</span>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground hover:underline"
+                      onClick={() => setFormClinicIds([])}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {formClinicIds.length === 0
+                    ? "No clinics selected"
+                    : `${formClinicIds.length} clinic${formClinicIds.length === 1 ? "" : "s"} selected`}
+                </p>
+                {selectedClinics.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {selectedClinics.map((clinic) => (
+                      <Badge key={clinic.id} variant="outline" className="gap-1 pr-1 max-w-full">
+                        <span className="truncate">{clinic.name}</span>
+                        <button
+                          type="button"
+                          className="rounded-sm p-0.5 hover:bg-muted"
+                          onClick={() => toggleFormClinic(String(clinic.id))}
+                          aria-label={`Remove ${clinic.name}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
                   </div>
                 ) : null}
+                <div className="mt-2 rounded-xl border border-border bg-background overflow-hidden">
+                  <div className="p-2 border-b border-border">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                      <Input
+                        value={clinicQuery}
+                        onChange={(e) => setClinicQuery(e.target.value)}
+                        placeholder="Search clinic name, acronym, ID…"
+                        className="h-9 pl-8"
+                      />
+                    </div>
+                  </div>
+                  <div className="max-h-52 overflow-y-auto p-1">
+                    {filteredClinics.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-sm text-muted-foreground">No clinics match</div>
+                    ) : (
+                      filteredClinics.map((c) => {
+                        const selected = formClinicIds.includes(String(c.id));
+                        return (
+                          <label
+                            key={c.id}
+                            className={cn(
+                              "flex w-full cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-secondary",
+                              selected && "bg-secondary/80"
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              className="mt-1 h-4 w-4 accent-primary"
+                              checked={selected}
+                              onChange={() => toggleFormClinic(String(c.id))}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <div className="truncate font-medium">{c.name}</div>
+                              <div className="text-xs text-muted-foreground truncate">
+                                {c.acronym || "-"} · {c.clinicId}
+                                {c.city ? ` · ${c.city}` : ""}
+                              </div>
+                            </span>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -475,11 +695,19 @@ export default function Training() {
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1.5">
                   <Label>Import document</Label>
-                  {uploadedName ? (
+                  {uploadedName || documentMeta.documentPath ? (
                     <button
                       type="button"
                       className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => setUploadedName(null)}
+                      onClick={() => {
+                        setUploadedName(null);
+                        setDocumentMeta({
+                          documentName: null,
+                          documentPath: null,
+                          documentMime: null,
+                          documentSize: null,
+                        });
+                      }}
                       disabled={analyzing}
                     >
                       <X className="h-3 w-3" />
@@ -673,7 +901,7 @@ export default function Training() {
                       analyzing && "opacity-70",
                       analysisDone && "ring-2 ring-success/30 border-success/30"
                     )}
-                    placeholder="Enter product / training knowledge details, or drop a document above…"
+                    placeholder="Enter product / knowledge details, or drop a document above…"
                     disabled={analyzing}
                   />
                 </div>

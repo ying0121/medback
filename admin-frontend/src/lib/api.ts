@@ -811,8 +811,15 @@ export const deleteTopic = (id: string) => {
 export interface KnowledgeItem {
   id: string;
   clinicId: string;
+  clinicIds?: string[];
   knowledge: string;
   status: "active" | "inactive";
+  promptKey?: string | null;
+  promptLabel?: string | null;
+  documentName?: string | null;
+  documentPath?: string | null;
+  documentMime?: string | null;
+  documentSize?: number | null;
 }
 
 let knowledgeItems: KnowledgeItem[] = [];
@@ -835,30 +842,75 @@ export async function listKnowledge(params?: { clinicId?: string; status?: "acti
   }
 }
 
-export async function createKnowledge(input: Omit<KnowledgeItem, "id">) {
+export type KnowledgeDocumentMeta = {
+  documentName?: string | null;
+  documentPath?: string | null;
+  documentMime?: string | null;
+  documentSize?: number | null;
+};
+
+export async function createKnowledge(input: {
+  clinicId?: string;
+  clinicIds?: string[];
+  knowledge: string;
+  status: "active" | "inactive";
+} & KnowledgeDocumentMeta) {
   try {
+    const clinicIds = (input.clinicIds?.length
+      ? input.clinicIds
+      : input.clinicId
+        ? [input.clinicId]
+        : []
+    ).map(Number);
     const data = await request<{ item: KnowledgeItem }>("/api/admin/knowledge", {
       method: "POST",
       body: JSON.stringify({
-        clinicId: Number(input.clinicId),
+        clinicIds,
         knowledge: input.knowledge,
-        status: input.status
+        status: input.status,
+        documentName: input.documentName || null,
+        documentPath: input.documentPath || null,
+        documentMime: input.documentMime || null,
+        documentSize: input.documentSize ?? null
       })
     });
     return data.item;
   } catch {
-    const item = { ...input, id: String(Date.now()) };
+    const item: KnowledgeItem = {
+      id: String(Date.now()),
+      clinicId: input.clinicIds?.[0] || input.clinicId || "",
+      clinicIds: input.clinicIds || (input.clinicId ? [input.clinicId] : []),
+      knowledge: input.knowledge,
+      status: input.status,
+      documentName: input.documentName || null,
+      documentPath: input.documentPath || null,
+      documentMime: input.documentMime || null,
+      documentSize: input.documentSize ?? null
+    };
     knowledgeItems = [item, ...knowledgeItems];
     return delay(item);
   }
 }
 
-export async function updateKnowledge(id: string, patch: Partial<Omit<KnowledgeItem, "id">>) {
+export async function updateKnowledge(
+  id: string,
+  patch: {
+    clinicId?: string;
+    clinicIds?: string[];
+    knowledge?: string;
+    status?: "active" | "inactive";
+  } & KnowledgeDocumentMeta
+) {
   try {
     const body: Record<string, unknown> = {};
-    if (patch.clinicId !== undefined) body.clinicId = Number(patch.clinicId);
+    if (patch.clinicIds !== undefined) body.clinicIds = patch.clinicIds.map(Number);
+    else if (patch.clinicId !== undefined) body.clinicIds = [Number(patch.clinicId)];
     if (patch.knowledge !== undefined) body.knowledge = patch.knowledge;
     if (patch.status !== undefined) body.status = patch.status;
+    if (patch.documentPath !== undefined) body.documentPath = patch.documentPath;
+    if (patch.documentName !== undefined) body.documentName = patch.documentName;
+    if (patch.documentMime !== undefined) body.documentMime = patch.documentMime;
+    if (patch.documentSize !== undefined) body.documentSize = patch.documentSize;
     const data = await request<{ item: KnowledgeItem }>(`/api/admin/knowledge/${id}`, {
       method: "PUT",
       body: JSON.stringify(body)
@@ -911,6 +963,14 @@ export async function analyzeKnowledgeDocument(file: File, options?: { clinicId?
     filename: string;
     truncated?: boolean;
     characterCount?: number;
+    documentName?: string;
+    documentPath?: string;
+    documentMime?: string | null;
+    documentSize?: number | null;
   };
+}
+
+export function knowledgeDocumentUrl(id: string) {
+  return `${API_BASE_URL}/api/admin/knowledge/${id}/document`;
 }
 
