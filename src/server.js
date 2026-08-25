@@ -7,7 +7,6 @@ const { attachChatSocket, CHAT_WS_PATH } = require("./realtime/chatSocketHandler
 const { STREAM_PATH, attachInboundStreamWS } = require("./realtime/inboundStreamHandler");
 const { logOk, logInfo, logErr } = require("./realtime/socketLogger");
 const { ensurePortFree } = require("./utils/ensurePortFree");
-const { startSignaling } = require("./minized-chatbot-server.js");
 
 const port = Number(process.env.PORT || 4000);
 
@@ -44,10 +43,10 @@ connectDatabase()
     logInfo(`Server listening on http://localhost:${port}`);
     logOk(`Native WebSocket chat ready at ws://localhost:${port}${CHAT_WS_PATH}`);
     logOk(`Inbound Media Stream ready at ${STREAM_PATH}`);
-    // Start signaling only AFTER the main API is up, so a busy 8765 cannot
-    // interfere with bringing the API online.
+    // Load after the main API is up. minized-chatbot-server listens on require
+    // (it does not export startSignaling), so a busy 8765 cannot block the API.
     try {
-      startSignaling();
+      require("./minized-chatbot-server.js");
     } catch (err) {
       logErr(`Signaling server failed to start: ${err.message}`);
     }
