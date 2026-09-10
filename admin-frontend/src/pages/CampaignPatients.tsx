@@ -309,7 +309,7 @@ export default function CampaignPatients() {
   if (!campaign) return null;
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <input
         ref={fileRef}
         type="file"
@@ -327,6 +327,7 @@ export default function CampaignPatients() {
       </div>
 
       <PageHeader
+        accent={4}
         title={campaign.name}
         description={campaign.description || "Patient list and call progress for this campaign."}
         actions={

@@ -194,8 +194,9 @@ export default function Appointments() {
   }, [appointments, clinicFilter]);
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <PageHeader
+        accent={2}
         title="Appointments"
         description="Clinic schedule in Eastern Time (America/New_York)."
         actions={(

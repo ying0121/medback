@@ -213,8 +213,9 @@ export default function Users() {
   ];
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <PageHeader
+        accent={3}
         title="User Management"
         description="Manage administrators and clinic staff with per-clinic access."
         actions={<Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground"><Plus className="h-4 w-4 mr-1" /> Add user</Button>}

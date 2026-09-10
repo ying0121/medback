@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, ShieldCheck, Stethoscope, Activity } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,39 +35,70 @@ export default function Login() {
 
   return (
     <div className="relative min-h-screen bg-gradient-hero flex items-center justify-center p-6 overflow-hidden">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute top-16 left-[12%] h-40 w-40 rounded-full bg-primary/15 blur-3xl" />
+        <div className="absolute bottom-20 right-[10%] h-52 w-52 rounded-full bg-med-sky/20 blur-3xl" />
+        <div className="absolute top-1/3 right-1/4 h-28 w-28 rounded-full bg-med-mint/15 blur-2xl" />
+      </div>
+
       <motion.div
-        className="pointer-events-none absolute inset-0"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.8 }}
-      />
-      <motion.div
-        className="w-full max-w-md relative"
+        className="w-full max-w-[920px] relative grid lg:grid-cols-2 gap-6 items-stretch"
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
       >
-        <div className="flex flex-col items-center text-center mb-8">
-          <div className="relative mb-5">
-            <div className="absolute inset-0 bg-primary/15 blur-2xl opacity-50 rounded-full" />
-            <motion.img
-              src={botLogo}
-              alt="MedBot logo"
-              width={96}
-              height={96}
-              className="relative h-24 w-24 drop-shadow-xl animate-float-soft"
-            />
+        <div className="hidden lg:flex flex-col justify-between rounded-3xl border border-white/30 bg-gradient-primary text-primary-foreground p-8 shadow-elegant overflow-hidden relative">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_90%_10%,white/20,transparent_45%)]" />
+          <div className="relative">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em]">
+              <Activity className="h-3.5 w-3.5" /> Clinical console
+            </div>
+            <h1 className="font-display text-3xl font-semibold mt-5 leading-tight">
+              Care operations,
+              <br />
+              clearly in view.
+            </h1>
+            <p className="mt-3 text-primary-foreground/85 text-sm leading-relaxed max-w-sm">
+              Manage clinics, doctors, campaigns, and conversation flows from one calm medical workspace.
+            </p>
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight">Welcome to MedBot Admin</h1>
-          <p className="text-muted-foreground mt-2">Sign in to manage clinics, users and conversations.</p>
+          <div className="relative grid gap-3 mt-10">
+            {[
+              { icon: ShieldCheck, title: "Secure sessions", text: "60-minute idle timeout" },
+              { icon: Stethoscope, title: "Care-ready tools", text: "Doctors, flows, and calls" },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="flex items-start gap-3 rounded-2xl bg-white/10 border border-white/15 px-4 py-3"
+              >
+                <item.icon className="h-5 w-5 mt-0.5 shrink-0" />
+                <div>
+                  <div className="text-sm font-semibold">{item.title}</div>
+                  <div className="text-xs text-primary-foreground/75">{item.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <motion.div
-          className="bg-card/90 backdrop-blur-sm border border-border rounded-2xl p-8 shadow-elegant"
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
-        >
+        <div className="rounded-3xl border border-border/70 bg-card/95 backdrop-blur-sm p-8 shadow-elegant">
+          <div className="flex flex-col items-center text-center mb-7 lg:items-start lg:text-left">
+            <div className="relative mb-4">
+              <div className="absolute inset-0 bg-primary/20 blur-2xl opacity-60 rounded-full" />
+              <motion.img
+                src={botLogo}
+                alt="MedBot logo"
+                width={80}
+                height={80}
+                className="relative h-20 w-20 drop-shadow-xl animate-float-soft"
+              />
+            </div>
+            <h2 className="font-display text-2xl font-semibold tracking-tight">Welcome back</h2>
+            <p className="text-muted-foreground mt-1.5 text-sm">
+              Sign in to the MedBot admin console.
+            </p>
+          </div>
+
           <form onSubmit={onSubmit} className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -79,6 +110,7 @@ export default function Login() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="admin@medbot.com"
                 required
+                className="h-11"
               />
             </div>
             <div className="space-y-2">
@@ -92,7 +124,7 @@ export default function Login() {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   required
-                  className="pr-10"
+                  className="pr-10 h-11"
                 />
                 <button
                   type="button"
@@ -114,14 +146,10 @@ export default function Login() {
             </Button>
           </form>
 
-          <p className="text-xs text-muted-foreground mt-6 text-center">
-            Tip: use an email containing <span className="font-mono text-foreground">admin</span> to sign in as an Administrator.
+          <p className="text-xs text-muted-foreground mt-6 text-center lg:text-left">
+            Sessions expire after 60 minutes of inactivity.
           </p>
-        </motion.div>
-
-        <p className="text-center text-xs text-muted-foreground mt-6">
-          Sessions automatically expire after 60 minutes of inactivity.
-        </p>
+        </div>
       </motion.div>
     </div>
   );

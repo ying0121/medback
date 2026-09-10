@@ -405,8 +405,9 @@ export default function Flows() {
   ];
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <PageHeader
+        accent={3}
         title="Conversation flows"
         description="Design the bot’s work mode as a visual graph. Start and End are fixed — reaching End hangs up the call."
         actions={

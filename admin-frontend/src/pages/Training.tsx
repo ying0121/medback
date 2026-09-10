@@ -508,8 +508,9 @@ export default function Training() {
   ];
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <PageHeader
+        accent={0}
         title="Knowledge"
         description="Clinic knowledge drives the bot. Edit assistant, voice, and appointment prompts here, plus product facts."
         actions={

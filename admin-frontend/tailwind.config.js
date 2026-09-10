@@ -8,6 +8,10 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["var(--font-sans)"],
+        display: ["var(--font-display)"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -17,6 +21,7 @@ module.exports = {
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
+          glow: "hsl(var(--primary-glow))",
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",
@@ -50,6 +55,19 @@ module.exports = {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
+        info: {
+          DEFAULT: "hsl(var(--info))",
+          foreground: "hsl(var(--info-foreground))",
+        },
+        med: {
+          sky: "hsl(var(--sky))",
+          mint: "hsl(var(--mint))",
+          coral: "hsl(var(--coral))",
+          amber: "hsl(var(--amber))",
+          cyan: "hsl(var(--cyan))",
+          rose: "hsl(var(--rose))",
+          indigo: "hsl(var(--indigo-soft))",
+        },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",
@@ -67,8 +85,8 @@ module.exports = {
         sm: "calc(var(--radius) - 4px)",
       },
       boxShadow: {
-        soft: "0 1px 2px hsl(235 65% 22% / 0.04), 0 8px 24px -12px hsl(235 65% 22% / 0.12)",
-        lift: "0 12px 32px -12px hsl(235 65% 22% / 0.22)",
+        soft: "0 1px 2px hsl(173 40% 18% / 0.04), 0 10px 28px -14px hsl(173 45% 20% / 0.16)",
+        lift: "0 14px 36px -14px hsl(173 50% 18% / 0.28)",
       },
       keyframes: {
         "accordion-down": {

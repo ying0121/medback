@@ -134,8 +134,9 @@ export default function Calls() {
   };
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <PageHeader
+        accent={1}
         title="Calling History"
         description="Review inbound call sessions, transcripts, and audio waveforms."
         actions={(

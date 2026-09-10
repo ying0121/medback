@@ -32,9 +32,9 @@ import { formatNyDate, getZonedParts } from "@/lib/appTimeZone";
 import { motion } from "framer-motion";
 
 const CHANNEL_COLORS = {
-  conversations: "hsl(235 65% 32%)",
-  phoneCalls: "hsl(222 35% 38%)",
-  webChats: "#0DA2E7",
+  conversations: "hsl(173 62% 32%)",
+  phoneCalls: "hsl(199 84% 42%)",
+  webChats: "hsl(187 72% 40%)",
 };
 
 export default function Dashboard() {
@@ -79,10 +79,12 @@ export default function Dashboard() {
   }, [stats]);
 
   return (
-    <div className="p-6 lg:p-8 max-w-[1600px] mx-auto">
-      <header className="mb-8">
+    <div className="admin-page">
+      <header className="relative mb-8 overflow-hidden rounded-2xl border border-border/60 bg-card/70 backdrop-blur-sm shadow-soft p-5 sm:p-6">
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/15 via-med-sky/10 to-med-mint/10" />
+        <div className="relative">
         <motion.p
-          className="text-sm font-medium text-primary/80 mb-1"
+          className="text-sm font-semibold text-primary mb-1"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35 }}
@@ -90,7 +92,7 @@ export default function Dashboard() {
           {greetingForHour(getZonedParts(new Date()).hour)}, {firstName}
         </motion.p>
         <motion.h1
-          className="text-3xl font-semibold tracking-tight"
+          className="font-display text-3xl font-semibold tracking-tight"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.04 }}
@@ -105,6 +107,7 @@ export default function Dashboard() {
         >
           {formatNyDate(new Date())} ET · Daily volume by channel, then clinic conversation history
         </motion.p>
+        </div>
       </header>
 
       <motion.div
@@ -162,7 +165,7 @@ export default function Dashboard() {
             value={loadingToday ? "—" : todayAppointments.length}
             hint={`${stats?.totalAppointments ?? 0} total · ${stats?.week.appointments ?? 0} booked this week`}
             delta={weekDelta(stats?.week.appointments, stats?.previousWeek.appointments)}
-            color="hsl(235 70% 42%)"
+            color="hsl(152 58% 36%)"
             series={perDay.map((row) => row.appointments)}
           />,
         ].map((card) => (

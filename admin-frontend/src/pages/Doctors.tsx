@@ -255,8 +255,9 @@ export default function Doctors() {
   ];
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <PageHeader
+        accent={4}
         title="Doctors"
         description="Manage doctor profiles, contact details, and photos."
         actions={

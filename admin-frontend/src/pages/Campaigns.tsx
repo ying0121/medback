@@ -559,7 +559,7 @@ export default function Campaigns() {
   ];
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto">
+    <div className="admin-page">
       <input
         ref={fileRef}
         type="file"
@@ -568,6 +568,7 @@ export default function Campaigns() {
         onChange={(e) => onImportFile(e.target.files?.[0] || null)}
       />
       <PageHeader
+        accent={4}
         title="Campaigns"
         description="Schedule outbound bot calls. Create a campaign, load patients, then the bot dials at the scheduled time."
         actions={
