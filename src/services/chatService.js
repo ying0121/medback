@@ -21,7 +21,7 @@ const {
 const { getCallStatus, endCall } = require("./twilioService");
 const { generateSpeechFromText } = require("./openaiService");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
-const { buildClinicContextByBusinessClinicId } = require("./contextPromptService");
+const { buildChatBehaviorByBusinessClinicId } = require("./agentRuntimeService");
 const { getClinicConnectFields } = require("./greetingService");
 const { sendAppointmentRequestEmail, sendPatientMeetingNotificationEmail } = require("./emailService");
 const { tryCreateGoogleMeetForAppointment } = require("./googleMeetService");
@@ -217,16 +217,29 @@ async function resolveConversationOnConnect({ conversationId, clinicId, userInfo
 }
 
 /**
- * Build clinic + knowledge prompts for chat mode.
- * Thin wrapper kept for backward compatibility; real logic lives in
- * `contextPromptService` so chat and inbound voice share one source of truth.
+ * Build clinic + agent behavior prompts for chat mode.
+ * Prefer clinic.agentId → flow + knowledge; fall back to clinic-scoped knowledge.
+ * Flow + knowledge are merged into knowledgePrompt so existing OpenAI call sites pick them up.
  */
 async function buildContextPrompts(clinicId) {
-  return buildClinicContextByBusinessClinicId(clinicId);
+  const ctx = await buildChatBehaviorByBusinessClinicId(clinicId);
+  const behaviorParts = [];
+  if (ctx.flowInstructions) {
+    behaviorParts.push(`CONVERSATION FLOW (must follow):\n${ctx.flowInstructions}`);
+  }
+  if (ctx.knowledgePrompt) behaviorParts.push(ctx.knowledgePrompt);
+  return {
+    clinicPrompt: ctx.clinicPrompt,
+    knowledgePrompt: behaviorParts.length ? behaviorParts.join("\n\n") : null,
+    openaiVoice: ctx.openaiVoice,
+    agentId: ctx.agent?.id || null
+  };
 }
 
 async function getClinicOpenAiVoice(clinicId) {
   if (!clinicId) return resolveOpenAiVoice(null);
+  const ctx = await buildChatBehaviorByBusinessClinicId(clinicId);
+  if (ctx.openaiVoice) return resolveOpenAiVoice(ctx.openaiVoice);
   const clinic = await Clinic.findOne({
     where: { clinicId },
     attributes: ["openaiVoice"]

@@ -293,9 +293,12 @@ class OpenAIRealtimeBridge extends EventEmitter {
 function buildRealtimeInstructions(ctx = {}) {
   const parts = [];
   if (ctx.clinicPrompt) parts.push(ctx.clinicPrompt);
+  if (ctx.flowInstructions) {
+    parts.push("CONVERSATION FLOW (must follow):\n" + String(ctx.flowInstructions));
+  }
   if (ctx.knowledgePrompt) {
     parts.push(ctx.knowledgePrompt);
-  } else {
+  } else if (!ctx.flowInstructions) {
     const base =
       String(process.env.BOT_SYSTEM_PROMPT || "").trim() ||
       "You are a friendly, concise medical office voice assistant. " +

@@ -13,6 +13,7 @@ import Dashboard from "./pages/Dashboard.tsx";
 import Clinics from "./pages/Clinics.tsx";
 import Users from "./pages/Users.tsx";
 import Doctors from "./pages/Doctors.tsx";
+import Agents from "./pages/Agents.tsx";
 import Training from "./pages/Training.tsx";
 import Calls from "./pages/Calls.tsx";
 import Appointments from "./pages/Appointments.tsx";
@@ -38,6 +39,7 @@ const App = () => (
               <Route path="/appointments" element={<RequireAuth page="appointments"><Appointments /></RequireAuth>} />
               <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
               <Route path="/doctors" element={<RequireAuth page="doctors"><Doctors /></RequireAuth>} />
+              <Route path="/agents" element={<RequireAuth page="agents"><Agents /></RequireAuth>} />
               <Route path="/training" element={<RequireAuth page="training"><Training /></RequireAuth>} />
               <Route path="/flows" element={<RequireAuth page="flows"><Flows /></RequireAuth>} />
               <Route path="/campaigns" element={<RequireAuth page="campaigns"><Campaigns /></RequireAuth>} />

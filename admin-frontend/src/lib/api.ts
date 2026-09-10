@@ -31,6 +31,10 @@ export interface Clinic {
   fax?: string;
   web?: string;
   portal?: string;
+  /** Linked agent (bot profile) for this clinic. */
+  agentId?: string | null;
+  agentTitle?: string | null;
+  agentStatus?: "active" | "inactive" | null;
   twilioConfigured?: boolean;
   /** Google Calendar / ECW / Azul configured for this clinic. */
   googleConfigured?: boolean;
@@ -405,7 +409,8 @@ function clinicBodyFromForm(c: Omit<Clinic, "id"> | Partial<Clinic>) {
     web: c.web ?? "",
     portal: c.portal ?? "",
     themeColor: c.themeColor ?? DEFAULT_CLINIC_THEME_COLOR,
-    avatar: c.avatar ?? null
+    avatar: c.avatar ?? null,
+    agentId: c.agentId ?? null
   };
 }
 
@@ -556,6 +561,226 @@ export async function updateDoctor(id: string, patch: Partial<DoctorInput>) {
 export async function deleteDoctor(id: string) {
   await request<{ success: boolean }>(`/api/admin/doctors/${id}`, { method: "DELETE" });
   return true;
+}
+
+// ---------- Agents ----------
+export type AgentMeetingProvider = "google" | "ecw" | "azul";
+
+export interface Agent {
+  id: string;
+  title: string;
+  description: string;
+  status: "active" | "inactive";
+  openaiApiKey: string;
+  openaiApiKeySet: boolean;
+  openaiModel: string;
+  openaiRealtimeModel: string;
+  openaiTranscriptionModel: string;
+  openaiTtsModel: string;
+  openaiInboundModel: string;
+  openaiVoice: string;
+  twilioPhoneNumber: string;
+  twilioCallerId: string;
+  twilioAccountSid: string;
+  twilioAuthToken: string;
+  twilioAuthTokenSet: boolean;
+  twilioApiKeySid: string;
+  twilioApiKeySecret: string;
+  twilioApiKeySecretSet: boolean;
+  twilioTwimlAppSid: string;
+  twilioConfigured: boolean;
+  meetingProvider: AgentMeetingProvider;
+  googleClientId: string;
+  googleClientSecret: string;
+  googleClientSecretSet: boolean;
+  googleRefreshToken: string;
+  googleRefreshTokenSet: boolean;
+  googleCreateMeet: boolean;
+  ecwApiEndpoint: string;
+  azulApiEndpoint: string;
+  meetingConfigured: boolean;
+  flowId: string | null;
+  knowledgeIds: string[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export type AgentInput = {
+  title: string;
+  description?: string;
+  status?: "active" | "inactive";
+  openaiApiKey?: string;
+  clearOpenaiApiKey?: boolean;
+  openaiModel?: string;
+  openaiRealtimeModel?: string;
+  openaiTranscriptionModel?: string;
+  openaiTtsModel?: string;
+  openaiInboundModel?: string;
+  openaiVoice?: string;
+  twilioPhoneNumber?: string;
+  twilioCallerId?: string;
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioApiKeySid?: string;
+  twilioApiKeySecret?: string;
+  twilioTwimlAppSid?: string;
+  meetingProvider?: AgentMeetingProvider;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRefreshToken?: string;
+  googleCreateMeet?: boolean;
+  ecwApiEndpoint?: string;
+  azulApiEndpoint?: string;
+  flowId?: string | null;
+  knowledgeIds?: string[];
+};
+
+export interface AgentModelCatalog {
+  chat: string[];
+  realtime: string[];
+  transcription: string[];
+  tts: string[];
+  other: string[];
+  source: "api" | "fallback";
+  error?: string;
+}
+
+export interface AgentModelDefaults {
+  openaiModel: string;
+  openaiRealtimeModel: string;
+  openaiTranscriptionModel: string;
+  openaiTtsModel: string;
+  openaiInboundModel: string;
+  openaiVoice: string;
+}
+
+export async function listAgents() {
+  const data = await request<{ agents: Agent[] }>("/api/admin/agents");
+  return data.agents;
+}
+
+export async function getAgent(id: string, reveal = false) {
+  const data = await request<{ agent: Agent }>(
+    `/api/admin/agents/${id}${reveal ? "?reveal=1" : ""}`
+  );
+  return data.agent;
+}
+
+export async function createAgent(input: AgentInput) {
+  const data = await request<{ agent: Agent }>("/api/admin/agents", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return data.agent;
+}
+
+export async function updateAgent(id: string, patch: Partial<AgentInput>) {
+  const data = await request<{ agent: Agent }>(`/api/admin/agents/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+  return data.agent;
+}
+
+export async function deleteAgent(id: string) {
+  await request<{ success: boolean }>(`/api/admin/agents/${id}`, { method: "DELETE" });
+  return true;
+}
+
+export async function listAgentModels(opts?: { apiKey?: string; agentId?: string }) {
+  const data = await request<{
+    models: AgentModelCatalog;
+    defaults: AgentModelDefaults;
+  }>("/api/admin/agents/options/models", {
+    method: "POST",
+    body: JSON.stringify({
+      apiKey: opts?.apiKey || undefined,
+      agentId: opts?.agentId ? Number(opts.agentId) : undefined,
+    }),
+  });
+  return data;
+}
+
+export async function listAgentVoices() {
+  const data = await request<{ voices: BotVoice[] }>("/api/admin/agents/options/voices");
+  return data.voices;
+}
+
+export async function listAgentLinkOptions() {
+  const data = await request<{
+    flows: { id: string; name: string; description: string; status: string }[];
+    knowledge: { id: string; knowledge: string; promptKey: string; status: string }[];
+  }>("/api/admin/agents/options/links");
+  return data;
+}
+
+/** Preview TTS audio for an agent voice. Caller should revoke object URLs. */
+export async function fetchAgentVoicePreviewBlob(opts: {
+  voice: string;
+  agentId?: string;
+  apiKey?: string;
+  ttsModel?: string;
+  text?: string;
+}): Promise<Blob> {
+  const res = await fetch(`${API_BASE_URL}/api/admin/agents/options/voice-preview`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      voice: opts.voice,
+      agentId: opts.agentId ? Number(opts.agentId) : undefined,
+      apiKey: opts.apiKey || undefined,
+      ttsModel: opts.ttsModel || undefined,
+      text: opts.text || undefined,
+    }),
+  });
+  if (!res.ok) {
+    let msg = "Voice preview failed.";
+    try {
+      const data = await res.json();
+      if (data?.error) msg = String(data.error);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return res.blob();
+}
+
+export type AgentTestMessage = { role: "user" | "assistant"; content: string };
+
+export async function testAgentChat(opts: {
+  agentId?: string;
+  draft?: Partial<AgentInput> & { title?: string };
+  messages: AgentTestMessage[];
+  language?: string;
+  speak?: boolean;
+}) {
+  const path = opts.agentId
+    ? `/api/admin/agents/${opts.agentId}/test`
+    : "/api/admin/agents/test";
+  return request<{
+    reply: string;
+    meta: {
+      flowId: string | null;
+      flowName: string | null;
+      knowledgeCount: number;
+      model: string;
+      voice: string;
+      realtimeModel: string | null;
+    };
+    audioBase64: string | null;
+    audioMimeType: string | null;
+  }>(path, {
+    method: "POST",
+    body: JSON.stringify({
+      agentId: opts.agentId ? Number(opts.agentId) : undefined,
+      draft: opts.draft,
+      messages: opts.messages,
+      language: opts.language || "English",
+      speak: opts.speak === true,
+    }),
+  });
 }
 
 // ---------- Conversations / Messages ----------
@@ -1280,7 +1505,12 @@ export interface CampaignContactCounts {
 export interface CampaignItem {
   id: string;
   clinicId: string;
-  flowId: string;
+  /** Assigned agent — owns conversation flow + knowledge for outbound calls */
+  agentId?: string | null;
+  agentTitle?: string | null;
+  /** Resolved from agent (or legacy campaign.flowId) */
+  flowId?: string | null;
+  flowName?: string | null;
   name: string;
   description: string;
   status: CampaignStatus;
@@ -1464,7 +1694,7 @@ export async function getCampaign(id: string) {
 
 export async function createCampaign(input: {
   clinicId: string;
-  flowId: string;
+  agentId: string;
   name: string;
   description?: string;
   scheduledAt: string;
@@ -1482,7 +1712,7 @@ export async function updateCampaign(
   id: string,
   patch: Partial<{
     clinicId: string;
-    flowId: string;
+    agentId: string;
     name: string;
     description: string;
     scheduledAt: string;

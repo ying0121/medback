@@ -6,7 +6,7 @@ import {
   Pencil,
   Trash2,
   Building2,
-  GitBranch,
+  Bot,
   Users,
   Loader2,
   CloudDownload,
@@ -52,7 +52,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   listClinics,
-  listConversationFlows,
+  listAgents,
   listCampaigns,
   createCampaign,
   updateCampaign,
@@ -61,7 +61,7 @@ import {
   resumeCampaign,
   analyzeCampaignImport,
   type Clinic,
-  type ConversationFlowItem,
+  type Agent,
   type CampaignItem,
   type CampaignStatus,
   type PatientImportAnalyzeResult,
@@ -123,7 +123,7 @@ export default function Campaigns() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [clinics, setClinics] = useState<Clinic[]>([]);
-  const [flows, setFlows] = useState<ConversationFlowItem[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [items, setItems] = useState<CampaignItem[]>([]);
   const [filterClinicId, setFilterClinicId] = useState("all");
   const [filterStatus, setFilterStatus] = useState<"all" | CampaignStatus>("all");
@@ -137,7 +137,7 @@ export default function Campaigns() {
   const [formName, setFormName] = useState("");
   const [formDescription, setFormDescription] = useState("");
   const [formClinicId, setFormClinicId] = useState("");
-  const [formFlowId, setFormFlowId] = useState("");
+  const [formAgentId, setFormAgentId] = useState("");
   const [formScheduledAt, setFormScheduledAt] = useState("");
   const [formRetryCount, setFormRetryCount] = useState("3");
   const [saving, setSaving] = useState(false);
@@ -157,19 +157,18 @@ export default function Campaigns() {
       const filtered = allowed ? all.filter((c) => allowed.includes(c.id)) : all;
       setClinics(filtered);
     });
-    listConversationFlows().then((rows) => {
-      const allowedIds = user?.role === "Admin" ? null : new Set(user?.clinicIds || []);
-      setFlows(allowedIds ? rows.filter((r) => allowedIds.has(r.clinicId)) : rows);
-    });
+    listAgents()
+      .then(setAgents)
+      .catch(() => setAgents([]));
   }, [user, refreshKey]);
 
   const clinicMap = useMemo(
     () => Object.fromEntries(clinics.map((c) => [c.id, c])),
     [clinics]
   );
-  const flowMap = useMemo(
-    () => Object.fromEntries(flows.map((f) => [f.id, f])),
-    [flows]
+  const agentMap = useMemo(
+    () => Object.fromEntries(agents.map((a) => [a.id, a])),
+    [agents]
   );
 
   useEffect(() => {
@@ -186,14 +185,9 @@ export default function Campaigns() {
       .finally(() => setLoading(false));
   }, [filterClinicId, filterStatus, user, refreshKey]);
 
-  const clinicFlows = useMemo(
-    () =>
-      flows.filter((f) => {
-        if (f.status !== "active") return false;
-        const ids = f.clinicIds?.length ? f.clinicIds : f.clinicId ? [f.clinicId] : [];
-        return ids.map(String).includes(String(formClinicId));
-      }),
-    [flows, formClinicId]
+  const activeAgents = useMemo(
+    () => agents.filter((a) => a.status === "active"),
+    [agents]
   );
 
   const stats = useMemo(() => {
@@ -207,18 +201,18 @@ export default function Campaigns() {
     setFormName("");
     setFormDescription("");
     setFormClinicId(clinicId);
-    const firstFlow = flows.find((f) => {
-      const ids = f.clinicIds?.length ? f.clinicIds : f.clinicId ? [f.clinicId] : [];
-      return ids.map(String).includes(String(clinicId));
-    });
-    setFormFlowId(firstFlow?.id || "");
+    const preferred =
+      agents.find((a) => a.status === "active" && a.id === clinicMap[clinicId]?.agentId) ||
+      agents.find((a) => a.status === "active");
+    setFormAgentId(preferred?.id || "");
     setFormScheduledAt(defaultScheduleLocal());
     setFormRetryCount("3");
   };
 
   const openCreate = () => {
     if (!clinics.length) return toast.error("Add a clinic first");
-    if (!flows.length) return toast.error("Create a conversation flow first");
+    if (!agents.some((a) => a.status === "active"))
+      return toast.error("Create an active agent with a conversation flow first");
     setEditing(null);
     setCreatedCampaign(null);
     setCreateStep(1);
@@ -233,7 +227,7 @@ export default function Campaigns() {
     setFormName(row.name);
     setFormDescription(row.description || "");
     setFormClinicId(row.clinicId);
-    setFormFlowId(row.flowId);
+    setFormAgentId(row.agentId || "");
     setFormScheduledAt(toDatetimeLocalValue(row.scheduledAt) || defaultScheduleLocal());
     setFormRetryCount(String(row.retryCount ?? 3));
     setOpen(true);
@@ -250,7 +244,7 @@ export default function Campaigns() {
   const saveStep1 = async () => {
     if (!formName.trim()) return toast.error("Name is required");
     if (!formClinicId) return toast.error("Clinic is required");
-    if (!formFlowId) return toast.error("Conversation flow is required");
+    if (!formAgentId) return toast.error("Agent is required");
     const scheduledAt = fromDatetimeLocalValue(formScheduledAt);
     if (!scheduledAt) return toast.error("Scheduled start date/time is required");
     const retryCount = Number(formRetryCount);
@@ -265,7 +259,7 @@ export default function Campaigns() {
           name: formName.trim(),
           description: formDescription.trim(),
           clinicId: formClinicId,
-          flowId: formFlowId,
+          agentId: formAgentId,
           scheduledAt,
           retryCount,
         });
@@ -276,7 +270,7 @@ export default function Campaigns() {
           name: formName.trim(),
           description: formDescription.trim(),
           clinicId: formClinicId,
-          flowId: formFlowId,
+          agentId: formAgentId,
           scheduledAt,
           retryCount,
         });
@@ -401,15 +395,20 @@ export default function Campaigns() {
       },
     },
     {
-      key: "flow",
-      header: "Flow",
-      searchable: (r) => flowMap[r.flowId]?.name || "",
+      key: "agent",
+      header: "Agent",
+      searchable: (r) => `${r.agentTitle || ""} ${r.flowName || ""} ${r.agentId || ""}`,
       render: (r) => (
-        <div className="flex items-center gap-2 min-w-[140px]">
-          <div className="h-8 w-8 rounded-lg bg-violet-500/10 text-violet-600 flex items-center justify-center ring-1 ring-violet-500/15">
-            <GitBranch className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-2 min-w-[160px]">
+          <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">
+              {r.agentTitle || agentMap[r.agentId || ""]?.title || "—"}
+            </div>
+            <div className="text-[11px] text-muted-foreground truncate">
+              Flow: {r.flowName || "—"}
+            </div>
           </div>
-          <span className="text-sm font-medium truncate">{flowMap[r.flowId]?.name || r.flowId}</span>
         </div>
       ),
     },
@@ -721,12 +720,11 @@ export default function Campaigns() {
                   value={formClinicId}
                   onValueChange={(v) => {
                     setFormClinicId(v);
-                    const next = flows.find((f) => {
-                      if (f.status !== "active") return false;
-                      const ids = f.clinicIds?.length ? f.clinicIds : f.clinicId ? [f.clinicId] : [];
-                      return ids.map(String).includes(String(v));
-                    });
-                    setFormFlowId(next?.id || "");
+                    const preferred =
+                      agents.find(
+                        (a) => a.status === "active" && a.id === clinicMap[v]?.agentId
+                      ) || agents.find((a) => a.status === "active");
+                    if (preferred) setFormAgentId(preferred.id);
                   }}
                 >
                   <SelectTrigger className="mt-1.5">
@@ -743,23 +741,34 @@ export default function Campaigns() {
               </div>
               <div>
                 <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Conversation flow
+                  Agent
                 </Label>
-                <Select value={formFlowId || undefined} onValueChange={setFormFlowId}>
+                <Select value={formAgentId || undefined} onValueChange={setFormAgentId}>
                   <SelectTrigger className="mt-1.5">
-                    <SelectValue placeholder={clinicFlows.length ? "Select flow" : "No active flows"} />
+                    <SelectValue
+                      placeholder={activeAgents.length ? "Select agent" : "No active agents"}
+                    />
                   </SelectTrigger>
                   <SelectContent>
-                    {clinicFlows.map((f) => (
-                      <SelectItem key={f.id} value={f.id}>
-                        {f.name}
+                    {activeAgents.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.title}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {!clinicFlows.length ? (
+                {formAgentId ? (
                   <p className="text-xs text-muted-foreground mt-1.5">
-                    Create an active flow for this clinic first.
+                    Flow:{" "}
+                    {agentMap[formAgentId]?.flowId
+                      ? `linked (#${agentMap[formAgentId].flowId})`
+                      : "none — link a flow on the agent first"}
+                    {" · "}
+                    Knowledge: {agentMap[formAgentId]?.knowledgeIds?.length || 0}
+                  </p>
+                ) : !activeAgents.length ? (
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    Create an active agent with a conversation flow first.
                   </p>
                 ) : null}
               </div>
@@ -851,7 +860,7 @@ export default function Campaigns() {
                 <Button
                   className="bg-gradient-primary text-primary-foreground"
                   onClick={saveStep1}
-                  disabled={saving || !formFlowId}
+                  disabled={saving || !formAgentId}
                 >
                   {saving ? "Saving…" : editing ? "Save changes" : "Create"}
                 </Button>

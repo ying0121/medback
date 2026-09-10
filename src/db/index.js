@@ -13,6 +13,7 @@ const Campaign = require("../models/campaign");
 const CampaignContact = require("../models/campaignContact");
 const CampaignCallHistory = require("../models/campaignCallHistory");
 const Doctor = require("../models/doctor");
+const Agent = require("../models/agent");
 
 Conversation.hasMany(Message, {
   foreignKey: "conversationId",
@@ -150,6 +151,17 @@ async function ensureClinicOpenAiVoiceColumn() {
   }
 }
 
+async function ensureClinicAgentIdColumn() {
+  try {
+    await sequelize.query(
+      "ALTER TABLE clinics ADD COLUMN agent_id INT UNSIGNED NULL"
+    );
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) throw err;
+  }
+}
+
 async function ensureClinicInboundGreetingColumn() {
   try {
     await sequelize.query("ALTER TABLE clinics ADD COLUMN inbound_greeting TEXT NULL");
@@ -220,13 +232,16 @@ async function syncDatabase() {
   await CampaignContact.sync();
   await CampaignCallHistory.sync();
   await Doctor.sync();
+  await Agent.sync();
   await ensureConversationFlowClinicIds();
   await ensureCampaignContactPatientColumns();
   await ensureCampaignContactResultColumns();
   await ensureCampaignScheduleColumns();
+  await ensureCampaignAgentIdColumn();
   await ensureClinicElevenlabsColumn();
   await ensureClinicElevenlabsVoiceColumn();
   await ensureClinicOpenAiVoiceColumn();
+  await ensureClinicAgentIdColumn();
   await ensureClinicTwilioColumns();
   await ensureClinicInboundGreetingColumn();
   await ensureClinicThemeColorColumn();
@@ -257,6 +272,30 @@ async function ensureCampaignScheduleColumns() {
       if (!/duplicate column name/i.test(msg)) {
         if (!/unknown table|doesn't exist/i.test(msg)) throw err;
       }
+    }
+  }
+}
+
+async function ensureCampaignAgentIdColumn() {
+  try {
+    await sequelize.query(
+      "ALTER TABLE campaigns ADD COLUMN agent_id INT UNSIGNED NULL"
+    );
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) {
+      if (!/unknown table|doesn't exist/i.test(msg)) throw err;
+    }
+  }
+  try {
+    await sequelize.query(
+      "ALTER TABLE campaigns MODIFY COLUMN flow_id INT UNSIGNED NULL"
+    );
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate|identical|same|unknown table|doesn't exist/i.test(msg)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[db] campaigns.flow_id nullable migrate: ${msg}`);
     }
   }
 }
@@ -465,6 +504,7 @@ module.exports = {
   CampaignContact,
   CampaignCallHistory,
   Doctor,
+  Agent,
   connectDatabase,
   syncDatabase,
   initializeDatabase

@@ -54,7 +54,8 @@ const inboundLanguageDetectionSystemPrompt = [
 const client = new OpenAI({ apiKey: openaiApiKey });
 
 async function generateAssistantReply(messages, options = {}) {
-  if (!openaiApiKey) {
+  const key = String(options.apiKey || openaiApiKey || "").trim();
+  if (!key) {
     throw new Error("Missing OPENAI_API_KEY");
   }
 
@@ -65,11 +66,24 @@ async function generateAssistantReply(messages, options = {}) {
       : openaiMaxCompletionTokens;
   const clinicPrompt = options.clinicPrompt || null;
   const knowledgePrompt = options.knowledgePrompt || null;
+  const flowInstructions = options.flowInstructions || null;
   const systemMessages = [];
+  if (options.systemPrompt) {
+    systemMessages.push({
+      role: "system",
+      content: String(options.systemPrompt)
+    });
+  }
   if (clinicPrompt) {
     systemMessages.push({
       role: "system",
       content: clinicPrompt
+    });
+  }
+  if (flowInstructions) {
+    systemMessages.push({
+      role: "system",
+      content: String(flowInstructions)
     });
   }
   if (knowledgePrompt) {
@@ -82,10 +96,10 @@ async function generateAssistantReply(messages, options = {}) {
       content:
         "Clinic knowledge is the only source of truth for what to ask and what to say. Do not add extra appointment questions or confirmation wording that is not in knowledge."
     });
-  } else {
+  } else if (!options.systemPrompt && !flowInstructions) {
     systemMessages.push({
       role: "system",
-      content: options.systemPrompt || defaultSystemPrompt
+      content: defaultSystemPrompt
     });
   }
   if (options.languageConstraint) {
@@ -95,14 +109,12 @@ async function generateAssistantReply(messages, options = {}) {
     });
   }
 
-  const completion = await client.chat.completions.create({
+  const replyClient = key === openaiApiKey ? client : new OpenAI({ apiKey: key });
+  const completion = await replyClient.chat.completions.create({
     model,
-    temperature: 0.4,
+    temperature: typeof options.temperature === "number" ? options.temperature : 0.4,
     max_completion_tokens: maxTok,
-    messages: [
-      ...systemMessages,
-      ...messages
-    ]
+    messages: [...systemMessages, ...messages]
   });
 
   return completion.choices?.[0]?.message?.content || "No response generated.";
@@ -413,20 +425,30 @@ async function transcribeAudioBase64({ audioBase64, audioMimeType }) {
   return transcriptText;
 }
 
-async function generateSpeechFromText({ text, voice = openaiTtsVoice }) {
-  if (!openaiApiKey) {
+async function generateSpeechFromText({
+  text,
+  voice = openaiTtsVoice,
+  apiKey = null,
+  model = null,
+  format = null
+} = {}) {
+  const key = String(apiKey || openaiApiKey || "").trim();
+  if (!key) {
     throw new Error("Missing OPENAI_API_KEY");
   }
-  const speechResponse = await client.audio.speech.create({
-    model: openaiTtsModel,
+  const ttsModel = String(model || openaiTtsModel || "").trim() || openaiTtsModel;
+  const ttsFormat = String(format || openaiTtsFormat || "mp3").trim() || "mp3";
+  const ttsClient = key === openaiApiKey ? client : new OpenAI({ apiKey: key });
+  const speechResponse = await ttsClient.audio.speech.create({
+    model: ttsModel,
     voice,
-    format: openaiTtsFormat,
-    input: text
+    format: ttsFormat,
+    input: String(text || "").trim() || "Hello."
   });
   const speechArrayBuffer = await speechResponse.arrayBuffer();
   return {
     audioBase64: Buffer.from(speechArrayBuffer).toString("base64"),
-    audioMimeType: `audio/${openaiTtsFormat}`
+    audioMimeType: `audio/${ttsFormat}`
   };
 }
 

@@ -4,7 +4,7 @@ import {
   ArrowLeft,
   CloudDownload,
   FileSpreadsheet,
-  GitBranch,
+  Bot,
   Loader2,
   PhoneCall,
   Trash2,
@@ -14,6 +14,7 @@ import {
   CalendarClock,
   RotateCcw,
   History,
+  GitBranch,
 } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
@@ -24,9 +25,7 @@ import {
   analyzeCampaignImport,
   deleteCampaignContact,
   listClinics,
-  listConversationFlows,
   type Clinic,
-  type ConversationFlowItem,
   type CampaignItem,
   type CampaignContactItem,
   type CampaignStatus,
@@ -85,7 +84,6 @@ export default function CampaignPatients() {
   const [campaign, setCampaign] = useState<CampaignItem | null>(null);
   const [contacts, setContacts] = useState<CampaignContactItem[]>([]);
   const [clinics, setClinics] = useState<Clinic[]>([]);
-  const [flows, setFlows] = useState<ConversationFlowItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -120,7 +118,6 @@ export default function CampaignPatients() {
   useEffect(() => {
     void load();
     listClinics().then(setClinics).catch(() => undefined);
-    listConversationFlows().then(setFlows).catch(() => undefined);
   }, [load]);
 
   useEffect(() => {
@@ -130,7 +127,8 @@ export default function CampaignPatients() {
   }, [campaign?.status, load]);
 
   const clinicName = clinics.find((c) => c.id === campaign?.clinicId)?.name;
-  const flowName = flows.find((f) => f.id === campaign?.flowId)?.name;
+  const agentLabel = campaign?.agentTitle || "—";
+  const flowName = campaign?.flowName || "—";
 
   const loadStats = useMemo(() => {
     const counts = campaign?.contactCounts || {
@@ -362,8 +360,13 @@ export default function CampaignPatients() {
         </span>
         <span className="text-border">·</span>
         <span className="inline-flex items-center gap-1.5">
+          <Bot className="h-3.5 w-3.5" />
+          {agentLabel}
+        </span>
+        <span className="text-border">·</span>
+        <span className="inline-flex items-center gap-1.5">
           <GitBranch className="h-3.5 w-3.5" />
-          {flowName || campaign.flowId}
+          {flowName}
         </span>
         <span className="text-border">·</span>
         <span className="inline-flex items-center gap-1.5">

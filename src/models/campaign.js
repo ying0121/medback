@@ -17,8 +17,14 @@ const Campaign = sequelize.define(
     },
     flowId: {
       type: DataTypes.INTEGER.UNSIGNED,
-      allowNull: false,
+      allowNull: true,
       field: "flow_id"
+    },
+    /** Assigned agent — owns flow + knowledge for outbound calls */
+    agentId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "agent_id"
     },
     name: {
       type: DataTypes.STRING(255),

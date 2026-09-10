@@ -1,6 +1,6 @@
 const axios = require("axios");
 const { Op } = require("sequelize");
-const { Conversation, Message, User, Clinic, Call, IncomingMessage, CallAnalysis, Appointment } = require("../db");
+const { Conversation, Message, User, Clinic, Call, IncomingMessage, CallAnalysis, Appointment, Agent } = require("../db");
 const { generateSpeechFromText } = require("../services/openaiService");
 const {
   listOpenAiVoicesForAdmin,
@@ -81,11 +81,15 @@ function makeClinicSummary(clinicId) {
     googleConfigured: false,
     meetingProvider: "google",
     botVoiceConfigured: false,
-    openaiVoice: null
+    openaiVoice: null,
+    agentId: null,
+    agentTitle: null,
+    agentStatus: null
   };
 }
 
-function mapClinicRowToApi(row) {
+function mapClinicRowToApi(row, agentMeta = null) {
+  const agentId = row.agentId ? String(row.agentId) : null;
   return {
     id: String(row.id),
     clinicId: row.clinicId ? String(row.clinicId) : `CL-${String(row.id).padStart(4, "0")}`,
@@ -101,6 +105,9 @@ function mapClinicRowToApi(row) {
     portal: row.portal || "",
     themeColor: normalizeThemeColor(row.themeColor),
     avatar: row.avatar ? String(row.avatar) : null,
+    agentId,
+    agentTitle: agentMeta?.title || null,
+    agentStatus: agentMeta?.status || null,
     twilioConfigured: Boolean(
       row.twilioPhoneNumber &&
         row.twilioCallerId &&
@@ -137,6 +144,13 @@ function clinicPayloadFromBody(body) {
       ? null
       : Number(rawClinicId);
 
+  const rawAgentId = body?.agentId;
+  let agentId = null;
+  if (rawAgentId !== "" && rawAgentId !== undefined && rawAgentId !== null) {
+    const n = Number(rawAgentId);
+    if (Number.isFinite(n) && n > 0) agentId = n;
+  }
+
   return {
     clinicId: Number.isFinite(clinicId) && clinicId > 0 ? clinicId : null,
     name: sanitizeText(body?.name),
@@ -150,7 +164,8 @@ function clinicPayloadFromBody(body) {
     web: sanitizeText(body?.web),
     portal: sanitizeText(body?.portal),
     themeColor: normalizeThemeColor(body?.themeColor),
-    avatar: parseClinicAvatar(body)
+    avatar: parseClinicAvatar(body),
+    agentId
   };
 }
 
@@ -186,13 +201,38 @@ function lastMessagePreview(row) {
   return truncateText(text, 110);
 }
 
+async function buildAgentMetaMap(agentIds) {
+  const ids = [...new Set((agentIds || []).filter((id) => Number.isFinite(Number(id)) && Number(id) > 0))].map(
+    Number
+  );
+  if (ids.length === 0) return new Map();
+  const rows = await Agent.findAll({
+    where: { id: { [Op.in]: ids } },
+    attributes: ["id", "title", "status"]
+  });
+  return new Map(rows.map((r) => [Number(r.id), { title: r.title || "", status: r.status || "inactive" }]));
+}
+
+async function mapClinicWithAgent(row) {
+  const agentId = row.agentId ? Number(row.agentId) : null;
+  if (!agentId) return mapClinicRowToApi(row, null);
+  const agent = await Agent.findByPk(agentId, { attributes: ["id", "title", "status"] });
+  return mapClinicRowToApi(
+    row,
+    agent ? { title: agent.title || "", status: agent.status || "inactive" } : null
+  );
+}
+
 async function listClinics(req, res, next) {
   try {
     const clinicRows = await Clinic.findAll({
       order: [["id", "ASC"]]
     });
 
-    let clinics = clinicRows.map((row) => mapClinicRowToApi(row));
+    const agentMap = await buildAgentMetaMap(clinicRows.map((r) => r.agentId));
+    let clinics = clinicRows.map((row) =>
+      mapClinicRowToApi(row, row.agentId ? agentMap.get(Number(row.agentId)) || null : null)
+    );
 
     // Backward-compat fallback for existing conversation-only data.
     if (clinics.length === 0) {
@@ -218,12 +258,19 @@ async function createClinic(req, res, next) {
     }
     if (payload.avatar === undefined) payload.avatar = null;
 
+    if (payload.agentId) {
+      const agent = await Agent.findByPk(payload.agentId);
+      if (!agent) {
+        return res.status(400).json({ error: "Selected agent was not found." });
+      }
+    }
+
     const created = await Clinic.create(payload);
     if (created.clinicId) {
       const { seedDefaultKnowledgeForClinic } = require("../services/knowledgeSeedService");
       await seedDefaultKnowledgeForClinic(created.clinicId);
     }
-    return res.status(201).json({ clinic: mapClinicRowToApi(created) });
+    return res.status(201).json({ clinic: await mapClinicWithAgent(created) });
   } catch (err) {
     return next(err);
   }
@@ -247,9 +294,16 @@ async function updateClinic(req, res, next) {
     }
     if (payload.avatar === undefined) delete payload.avatar;
 
+    if (payload.agentId) {
+      const agent = await Agent.findByPk(payload.agentId);
+      if (!agent) {
+        return res.status(400).json({ error: "Selected agent was not found." });
+      }
+    }
+
     await clinic.update(payload);
     await clinic.reload();
-    return res.status(200).json({ clinic: mapClinicRowToApi(clinic) });
+    return res.status(200).json({ clinic: await mapClinicWithAgent(clinic) });
   } catch (err) {
     return next(err);
   }

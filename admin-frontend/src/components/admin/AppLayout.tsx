@@ -14,6 +14,7 @@ import {
   Stethoscope,
   PanelLeftClose,
   PanelLeftOpen,
+  Bot,
 } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
 import botLogo from "@/assets/bot-logo.png";
@@ -66,6 +67,14 @@ const NAV = [
     key: "doctors",
     tint: "bg-med-mint/20 text-med-mint",
     rail: "bg-med-mint",
+  },
+  {
+    to: "/agents",
+    label: "Agents",
+    icon: Bot,
+    key: "agents",
+    tint: "bg-primary/15 text-primary",
+    rail: "bg-primary",
   },
   {
     to: "/training",

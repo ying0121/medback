@@ -24,7 +24,7 @@ const {
   getClinicTwilioConfigByClinicId,
   getDoctorPhoneNumberByClinicId,
 } = require("../services/twilioService");
-const { buildInboundClinicContextBySystemClinicId } = require("../services/contextPromptService");
+const { buildInboundBehaviorBySystemClinicId } = require("../services/agentRuntimeService");
 const {
   findOrCreateCallBySid,
   computeFinalCallSeconds,
@@ -224,18 +224,23 @@ module.exports = {
         });
       }
 
-      // 2. Load clinic context (prompts + OpenAI Realtime voice).
-      let clinicContext = { clinicPrompt: null, knowledgePrompt: null, openaiVoice: null };
+      // 2. Load clinic + assigned agent behavior (flow + knowledge + voice).
+      let clinicContext = {
+        clinicPrompt: null,
+        knowledgePrompt: null,
+        flowInstructions: null,
+        openaiVoice: null
+      };
       let inboundClinicId = null;
       try {
         const clinicTwilio = await getClinicTwilioConfigByPhoneNumber(to);
         inboundClinicId = clinicTwilio.clinicId;
-        clinicContext = await buildInboundClinicContextBySystemClinicId(clinicTwilio.clinicId);
+        clinicContext = await buildInboundBehaviorBySystemClinicId(clinicTwilio.clinicId);
         clinicRow = await Clinic.findByPk(clinicTwilio.clinicId);
         greetingText = resolveInboundGreeting(clinicRow || { name: clinicContext.clinicName });
         // eslint-disable-next-line no-console
         console.log(
-          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} voice=${clinicContext.openaiVoice || "-"} customGreeting=${!!clinicRow?.inboundGreeting}`
+          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} agent=${clinicContext.agent?.id || "-"} voice=${clinicContext.openaiVoice || "-"} flow=${clinicContext.flowId || "-"} customGreeting=${!!clinicRow?.inboundGreeting}`
         );
       } catch (err) {
         // eslint-disable-next-line no-console

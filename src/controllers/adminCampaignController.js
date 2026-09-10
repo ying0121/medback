@@ -1,11 +1,12 @@
 const { Op } = require("sequelize");
 const axios = require("axios");
-const { Campaign, CampaignContact, ConversationFlow, Clinic } = require("../db");
+const { Campaign, CampaignContact, ConversationFlow, Clinic, Agent } = require("../db");
 const {
   analyzePatientWorkbook,
   buildImportPreview,
   formatDob
 } = require("../services/campaignPatientImport");
+const { getAgentById } = require("../services/agentRuntimeService");
 
 function toContactDto(row) {
   const first = row.patientFirstName || "";
@@ -63,7 +64,10 @@ function toCampaignDto(row, extras = {}) {
   return {
     id: String(row.id),
     clinicId: String(row.clinicId),
-    flowId: String(row.flowId),
+    agentId: row.agentId != null ? String(row.agentId) : null,
+    agentTitle: extras.agentTitle != null ? extras.agentTitle : null,
+    flowId: row.flowId != null ? String(row.flowId) : null,
+    flowName: extras.flowName != null ? extras.flowName : null,
     name: row.name || "",
     description: row.description || "",
     status: row.status || "draft",
@@ -140,13 +144,13 @@ async function listCampaigns(req, res, next) {
     const rows = await Campaign.findAll({ where, order: [["id", "DESC"]] });
     const counts = await contactCountsForCampaignIds(rows.map((r) => r.id));
 
-    return res.status(200).json({
-      items: rows.map((row) =>
-        toCampaignDto(row, {
-          contactCounts: counts[row.id] || { total: 0, pending: 0, completed: 0, failed: 0 }
-        })
+    const items = await Promise.all(
+      rows.map((row) =>
+        enrichCampaignDto(row, counts[row.id] || { total: 0, pending: 0, completed: 0, failed: 0 })
       )
-    });
+    );
+
+    return res.status(200).json({ items });
   } catch (err) {
     return next(err);
   }
@@ -167,7 +171,7 @@ async function getCampaign(req, res, next) {
     const counts = await contactCountsForCampaignIds([id]);
 
     return res.status(200).json({
-      item: toCampaignDto(row, { contactCounts: counts[id] }),
+      item: await enrichCampaignDto(row, counts[id]),
       contacts: contacts.map(toContactDto)
     });
   } catch (err) {
@@ -175,26 +179,54 @@ async function getCampaign(req, res, next) {
   }
 }
 
-async function assertClinicAndFlow(clinicId, flowId) {
+async function assertClinicAndAgent(clinicId, agentId) {
   const clinic = await Clinic.findByPk(clinicId);
   if (!clinic) return { error: "Clinic not found." };
 
-  const flow = await ConversationFlow.findByPk(flowId);
-  if (!flow) return { error: "Conversation flow not found." };
+  const agentRow = await Agent.findByPk(agentId);
+  if (!agentRow) return { error: "Agent not found." };
+  if (agentRow.status !== "active") {
+    return { error: "Agent must be active." };
+  }
+  if (!agentRow.flowId) {
+    return { error: "Agent must have a conversation flow linked." };
+  }
 
-  const { parseClinicIds } = require("../utils/clinicIds");
-  let flowClinicIds = parseClinicIds(
-    Array.isArray(flow.clinicIds) ? flow.clinicIds : flow.getDataValue?.("clinicIds")
-  );
-  // Legacy single clinic_id fallback
-  const legacyId = Number(flow.getDataValue?.("clinicId"));
-  if (!flowClinicIds.length && Number.isFinite(legacyId) && legacyId > 0) {
-    flowClinicIds = [legacyId];
+  const flow = await ConversationFlow.findByPk(agentRow.flowId);
+  if (!flow) return { error: "Agent conversation flow was not found." };
+
+  return {
+    clinic,
+    agent: agentRow,
+    flow,
+    flowId: Number(agentRow.flowId)
+  };
+}
+
+async function enrichCampaignDto(row, contactCounts) {
+  let agentTitle = null;
+  let flowName = null;
+  let flowId = row.flowId != null ? String(row.flowId) : null;
+
+  if (row.agentId) {
+    const agent = await getAgentById(row.agentId);
+    agentTitle = agent?.title || null;
+    if (agent?.flowId) {
+      flowId = agent.flowId;
+      const flow = await ConversationFlow.findByPk(agent.flowId);
+      flowName = flow?.name || null;
+    }
+  } else if (row.flowId) {
+    const flow = await ConversationFlow.findByPk(row.flowId);
+    flowName = flow?.name || null;
   }
-  if (!flowClinicIds.includes(Number(clinicId))) {
-    return { error: "Conversation flow must belong to the same clinic." };
-  }
-  return { clinic, flow };
+
+  return toCampaignDto(row, {
+    contactCounts,
+    agentTitle,
+    flowName,
+    flowId
+  });
 }
 
 async function createCampaign(req, res, next) {
@@ -202,17 +234,16 @@ async function createCampaign(req, res, next) {
     const body = req.body || {};
     const name = String(body.name || "").trim();
     const clinicId = Number(body.clinicId);
-    const flowId = Number(body.flowId);
+    const agentId = Number(body.agentId);
     const description = body.description != null ? String(body.description).trim() : "";
-    // Status is managed automatically (draft → ready on import → running/paused by dialer controls).
     const status = "draft";
 
     if (!name) return res.status(400).json({ error: "Name is required." });
     if (!Number.isFinite(clinicId) || clinicId <= 0) {
       return res.status(400).json({ error: "Valid clinicId is required." });
     }
-    if (!Number.isFinite(flowId) || flowId <= 0) {
-      return res.status(400).json({ error: "Valid flowId is required." });
+    if (!Number.isFinite(agentId) || agentId <= 0) {
+      return res.status(400).json({ error: "Valid agentId is required." });
     }
 
     const scheduled = parseScheduledAt(body.scheduledAt);
@@ -224,12 +255,13 @@ async function createCampaign(req, res, next) {
     const retry = parseRetryCount(body.retryCount, 3);
     if (retry.error) return res.status(400).json({ error: retry.error });
 
-    const check = await assertClinicAndFlow(clinicId, flowId);
+    const check = await assertClinicAndAgent(clinicId, agentId);
     if (check.error) return res.status(400).json({ error: check.error });
 
     const created = await Campaign.create({
       clinicId,
-      flowId,
+      agentId,
+      flowId: check.flowId,
       name,
       description: description || null,
       status,
@@ -238,7 +270,9 @@ async function createCampaign(req, res, next) {
       externalSource: body.externalSource ? String(body.externalSource).trim() : null
     });
 
-    return res.status(201).json({ item: toCampaignDto(created, { contactCounts: { total: 0 } }) });
+    return res.status(201).json({
+      item: await enrichCampaignDto(created, { total: 0 })
+    });
   } catch (err) {
     return next(err);
   }
@@ -262,7 +296,6 @@ async function updateCampaign(req, res, next) {
     if (body.description != null) {
       row.description = String(body.description).trim() || null;
     }
-    // Status is automatic — only pause/resume endpoints change running ↔ paused.
 
     if (body.scheduledAt !== undefined) {
       const scheduled = parseScheduledAt(body.scheduledAt);
@@ -280,16 +313,18 @@ async function updateCampaign(req, res, next) {
     }
 
     const nextClinicId = body.clinicId != null ? Number(body.clinicId) : row.clinicId;
-    const nextFlowId = body.flowId != null ? Number(body.flowId) : row.flowId;
+    const nextAgentId =
+      body.agentId != null ? Number(body.agentId) : row.agentId != null ? Number(row.agentId) : null;
 
-    if (body.clinicId != null || body.flowId != null) {
-      if (!Number.isFinite(nextClinicId) || !Number.isFinite(nextFlowId)) {
-        return res.status(400).json({ error: "Valid clinicId and flowId are required." });
+    if (body.clinicId != null || body.agentId != null) {
+      if (!Number.isFinite(nextClinicId) || !Number.isFinite(nextAgentId) || nextAgentId <= 0) {
+        return res.status(400).json({ error: "Valid clinicId and agentId are required." });
       }
-      const check = await assertClinicAndFlow(nextClinicId, nextFlowId);
+      const check = await assertClinicAndAgent(nextClinicId, nextAgentId);
       if (check.error) return res.status(400).json({ error: check.error });
       row.clinicId = nextClinicId;
-      row.flowId = nextFlowId;
+      row.agentId = nextAgentId;
+      row.flowId = check.flowId;
     }
 
     if (body.externalSource !== undefined) {
@@ -298,7 +333,7 @@ async function updateCampaign(req, res, next) {
 
     await row.save();
     const counts = await contactCountsForCampaignIds([id]);
-    return res.status(200).json({ item: toCampaignDto(row, { contactCounts: counts[id] }) });
+    return res.status(200).json({ item: await enrichCampaignDto(row, counts[id]) });
   } catch (err) {
     return next(err);
   }

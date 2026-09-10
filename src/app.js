@@ -14,6 +14,7 @@ const adminKnowledgeRoutes = require("./routes/adminKnowledgeRoutes");
 const adminConversationFlowRoutes = require("./routes/adminConversationFlowRoutes");
 const adminCampaignRoutes = require("./routes/adminCampaignRoutes");
 const adminDoctorRoutes = require("./routes/adminDoctorRoutes");
+const adminAgentRoutes = require("./routes/adminAgentRoutes");
 const twilioRoutes = require("./routes/twilioRoutes");
 const errorHandler = require("./middlewares/errorHandler");
 
@@ -81,6 +82,7 @@ app.use("/api/admin/knowledge", adminKnowledgeRoutes);
 app.use("/api/admin/flows", adminConversationFlowRoutes);
 app.use("/api/admin/campaigns", adminCampaignRoutes);
 app.use("/api/admin/doctors", adminDoctorRoutes);
+app.use("/api/admin/agents", adminAgentRoutes);
 app.use("/api/twilio", twilioRoutes);
 
 const landingDistPath = path.resolve(__dirname, "../landing-frontend/dist");

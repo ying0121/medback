@@ -54,7 +54,8 @@ class InboundCallSession {
     this.realtime = new OpenAIRealtimeBridge(callSid, {
       instructions: buildRealtimeInstructions({
         clinicPrompt: opts.clinicPrompt || null,
-        knowledgePrompt: opts.knowledgePrompt || null
+        knowledgePrompt: opts.knowledgePrompt || null,
+        flowInstructions: opts.flowInstructions || null
       }),
       voice: opts.openaiVoice || null
     });

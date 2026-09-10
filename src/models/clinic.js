@@ -59,6 +59,11 @@ const Clinic = sequelize.define(
       type: DataTypes.STRING(255),
       allowNull: true
     },
+    agentId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "agent_id"
+    },
     openaiVoice: {
       type: DataTypes.STRING(64),
       allowNull: true,

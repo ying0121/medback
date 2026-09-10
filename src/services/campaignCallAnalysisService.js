@@ -104,6 +104,12 @@ async function startCampaignCallAttempt({
   if (!contact) throw new Error("Campaign contact not found.");
 
   const campaign = await Campaign.findByPk(campaignId);
+  let resolvedFlowId = flowId || campaign?.flowId || null;
+  if (!resolvedFlowId && campaign?.agentId) {
+    const { getAgentById } = require("./agentRuntimeService");
+    const agent = await getAgentById(campaign.agentId);
+    resolvedFlowId = agent?.flowId || null;
+  }
   const attemptNumber = (Number(contact.attemptCount) || 0) + 1;
   const language = normalizeLanguage(contact.patientLanguage);
 
@@ -112,7 +118,7 @@ async function startCampaignCallAttempt({
     campaignContactId: contact.id,
     callId,
     callSid,
-    flowId: flowId || campaign?.flowId || null,
+    flowId: resolvedFlowId,
     attemptNumber,
     language,
     resultType: "calling",
@@ -210,24 +216,18 @@ async function getCampaignCallBotContext(campaignId, contactId) {
   const campaign = await Campaign.findByPk(campaignId);
   if (!campaign) throw new Error("Campaign not found.");
 
-  const flow = await ConversationFlow.findByPk(campaign.flowId);
-  if (!flow) throw new Error("Conversation flow not found for this campaign.");
-
-  const instructions = await buildCampaignFlowInstructionsWithKnowledge({
-    flow: {
-      name: flow.name,
-      graph: flow.graph
-    },
-    patient: contact,
-    campaign
-  });
+  const { buildCampaignBehavior } = require("./agentRuntimeService");
+  const behavior = await buildCampaignBehavior(campaign, contact);
 
   return {
     contact,
     campaign,
-    flow,
-    language: normalizeLanguage(contact.patientLanguage),
-    instructions
+    flow: behavior.flow,
+    language: behavior.language,
+    instructions: behavior.instructions,
+    agent: behavior.agent,
+    knowledgePrompt: behavior.knowledgePrompt,
+    openaiVoice: behavior.openaiVoice
   };
 }
 
