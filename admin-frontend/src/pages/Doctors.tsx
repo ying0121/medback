@@ -59,11 +59,51 @@ const EMPTY: DoctorInput = {
 const LANGUAGE_OPTIONS = [
   "English",
   "Spanish",
+  "Chinese (Mandarin)",
+  "Chinese (Cantonese)",
   "Korean",
-  "Chinese",
   "Vietnamese",
   "Tagalog",
   "Arabic",
+  "Hindi",
+  "Portuguese",
+  "French",
+  "German",
+  "Italian",
+  "Japanese",
+  "Russian",
+  "Polish",
+  "Ukrainian",
+  "Persian (Farsi)",
+  "Urdu",
+  "Bengali",
+  "Turkish",
+  "Thai",
+  "Indonesian",
+  "Malay",
+  "Hebrew",
+  "Greek",
+  "Dutch",
+  "Swedish",
+  "Norwegian",
+  "Danish",
+  "Finnish",
+  "Romanian",
+  "Hungarian",
+  "Czech",
+  "Slovak",
+  "Croatian",
+  "Serbian",
+  "Bulgarian",
+  "Amharic",
+  "Somali",
+  "Swahili",
+  "Haitian Creole",
+  "Armenian",
+  "Punjabi",
+  "Gujarati",
+  "Tamil",
+  "Telugu",
   "Other",
 ];
 
@@ -348,18 +388,47 @@ export default function Doctors() {
                   </Select>
                 </Field>
                 <Field label="Language" className="col-span-12 md:col-span-6">
-                  <Input
-                    list="doctor-language-options"
-                    value={form.language}
-                    onChange={(e) => setForm({ ...form, language: e.target.value })}
-                    placeholder="e.g. English"
-                  />
-                  <datalist id="doctor-language-options">
-                    {LANGUAGE_OPTIONS.map((lang) => (
-                      <option key={lang} value={lang} />
-                    ))}
-                  </datalist>
+                  <Select
+                    value={
+                      LANGUAGE_OPTIONS.filter((l) => l !== "Other").includes(form.language)
+                        ? form.language
+                        : "Other"
+                    }
+                    onValueChange={(v) => {
+                      if (v === "Other") {
+                        const known = LANGUAGE_OPTIONS.filter((l) => l !== "Other");
+                        setForm({
+                          ...form,
+                          language: known.includes(form.language) ? "" : form.language,
+                        });
+                        return;
+                      }
+                      setForm({ ...form, language: v });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select language" />
+                    </SelectTrigger>
+                    <SelectContent className="z-[80] max-h-72">
+                      {LANGUAGE_OPTIONS.map((lang) => (
+                        <SelectItem key={lang} value={lang}>
+                          {lang}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </Field>
+                {!LANGUAGE_OPTIONS.filter((l) => l !== "Other").includes(form.language) ? (
+                  <Field label="Custom language" className="col-span-12 md:col-span-6">
+                    <Input
+                      value={form.language === "Other" ? "" : form.language}
+                      placeholder="Type language name"
+                      onChange={(e) =>
+                        setForm({ ...form, language: e.target.value.trim() || "Other" })
+                      }
+                    />
+                  </Field>
+                ) : null}
                 <Field label="Phone" className="col-span-12 md:col-span-6">
                   <Input
                     value={form.phone}
