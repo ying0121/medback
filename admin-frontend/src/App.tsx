@@ -12,9 +12,13 @@ import Login from "./pages/Login.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
 import Clinics from "./pages/Clinics.tsx";
 import Users from "./pages/Users.tsx";
+import Doctors from "./pages/Doctors.tsx";
 import Training from "./pages/Training.tsx";
 import Calls from "./pages/Calls.tsx";
 import Appointments from "./pages/Appointments.tsx";
+import Flows from "./pages/Flows.tsx";
+import Campaigns from "./pages/Campaigns.tsx";
+import CampaignPatients from "./pages/CampaignPatients.tsx";
 
 const queryClient = new QueryClient();
 
@@ -33,7 +37,11 @@ const App = () => (
               <Route path="/clinics" element={<RequireAuth page="clinics"><Clinics /></RequireAuth>} />
               <Route path="/appointments" element={<RequireAuth page="appointments"><Appointments /></RequireAuth>} />
               <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
+              <Route path="/doctors" element={<RequireAuth page="doctors"><Doctors /></RequireAuth>} />
               <Route path="/training" element={<RequireAuth page="training"><Training /></RequireAuth>} />
+              <Route path="/flows" element={<RequireAuth page="flows"><Flows /></RequireAuth>} />
+              <Route path="/campaigns" element={<RequireAuth page="campaigns"><Campaigns /></RequireAuth>} />
+              <Route path="/campaigns/:id" element={<RequireAuth page="campaigns"><CampaignPatients /></RequireAuth>} />
               <Route path="/calls" element={<RequireAuth page="calls"><Calls /></RequireAuth>} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />

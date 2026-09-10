@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { LayoutDashboard, Building2, Users, Sparkles, PhoneCall, CalendarClock, LogOut } from "lucide-react";
+import { LayoutDashboard, Building2, Users, Sparkles, PhoneCall, CalendarClock, LogOut, GitBranch, Megaphone, Stethoscope } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
 import botLogo from "@/assets/bot-logo.png";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,10 @@ const NAV = [
   { to: "/clinics", label: "Clinics", icon: Building2, key: "clinics" },
   { to: "/appointments", label: "Appointments", icon: CalendarClock, key: "appointments" },
   { to: "/users", label: "Users", icon: Users, key: "users" },
+  { to: "/doctors", label: "Doctors", icon: Stethoscope, key: "doctors" },
   { to: "/training", label: "Knowledge", icon: Sparkles, key: "training" },
+  { to: "/flows", label: "Flows", icon: GitBranch, key: "flows" },
+  { to: "/campaigns", label: "Campaigns", icon: Megaphone, key: "campaigns" },
   { to: "/calls", label: "Calls", icon: PhoneCall, key: "calls" },
 ];
 

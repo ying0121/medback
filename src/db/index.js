@@ -8,6 +8,11 @@ const User = require("../models/user");
 const Clinic = require("../models/clinic");
 const Knowledge = require("../models/knowledge");
 const Appointment = require("../models/appointment");
+const ConversationFlow = require("../models/conversationFlow");
+const Campaign = require("../models/campaign");
+const CampaignContact = require("../models/campaignContact");
+const CampaignCallHistory = require("../models/campaignCallHistory");
+const Doctor = require("../models/doctor");
 
 Conversation.hasMany(Message, {
   foreignKey: "conversationId",
@@ -51,6 +56,67 @@ Appointment.belongsTo(Clinic, {
   foreignKey: "clinicId",
   targetKey: "id",
   as: "clinic"
+});
+
+Clinic.hasMany(Campaign, {
+  foreignKey: "clinicId",
+  sourceKey: "id",
+  constraints: false
+});
+
+Campaign.belongsTo(Clinic, {
+  foreignKey: "clinicId",
+  targetKey: "id",
+  constraints: false
+});
+
+ConversationFlow.hasMany(Campaign, {
+  foreignKey: "flowId",
+  sourceKey: "id",
+  constraints: false
+});
+
+Campaign.belongsTo(ConversationFlow, {
+  foreignKey: "flowId",
+  targetKey: "id",
+  as: "flow",
+  constraints: false
+});
+
+Campaign.hasMany(CampaignContact, {
+  foreignKey: "campaignId",
+  sourceKey: "id",
+  constraints: false
+});
+
+CampaignContact.belongsTo(Campaign, {
+  foreignKey: "campaignId",
+  targetKey: "id",
+  constraints: false
+});
+
+CampaignContact.hasMany(CampaignCallHistory, {
+  foreignKey: "campaignContactId",
+  sourceKey: "id",
+  constraints: false
+});
+
+CampaignCallHistory.belongsTo(CampaignContact, {
+  foreignKey: "campaignContactId",
+  targetKey: "id",
+  constraints: false
+});
+
+Campaign.hasMany(CampaignCallHistory, {
+  foreignKey: "campaignId",
+  sourceKey: "id",
+  constraints: false
+});
+
+CampaignCallHistory.belongsTo(Campaign, {
+  foreignKey: "campaignId",
+  targetKey: "id",
+  constraints: false
 });
 
 async function connectDatabase() {
@@ -148,6 +214,16 @@ async function ensureClinicGoogleColumns() {
 
 async function syncDatabase() {
   await sequelize.sync();
+  // Explicitly ensure campaign/flow tables exist (MyISAM, no FK — may be skipped in some sync paths).
+  await ConversationFlow.sync();
+  await Campaign.sync();
+  await CampaignContact.sync();
+  await CampaignCallHistory.sync();
+  await Doctor.sync();
+  await ensureConversationFlowClinicIds();
+  await ensureCampaignContactPatientColumns();
+  await ensureCampaignContactResultColumns();
+  await ensureCampaignScheduleColumns();
   await ensureClinicElevenlabsColumn();
   await ensureClinicElevenlabsVoiceColumn();
   await ensureClinicOpenAiVoiceColumn();
@@ -166,6 +242,154 @@ async function syncDatabase() {
   ensureKnowledgeUploadDir();
   const { seedDefaultKnowledgeForAllClinics } = require("../services/knowledgeSeedService");
   await seedDefaultKnowledgeForAllClinics();
+}
+
+async function ensureCampaignScheduleColumns() {
+  const statements = [
+    "ALTER TABLE campaigns ADD COLUMN scheduled_at DATETIME NULL",
+    "ALTER TABLE campaigns ADD COLUMN retry_count INT UNSIGNED NOT NULL DEFAULT 3"
+  ];
+  for (const sql of statements) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      if (!/duplicate column name/i.test(msg)) {
+        if (!/unknown table|doesn't exist/i.test(msg)) throw err;
+      }
+    }
+  }
+}
+
+async function ensureCampaignContactResultColumns() {
+  const statements = [
+    "ALTER TABLE campaign_contacts MODIFY COLUMN status VARCHAR(32) NOT NULL DEFAULT 'pending'",
+    "ALTER TABLE campaign_contacts ADD COLUMN attempt_count INT UNSIGNED NOT NULL DEFAULT 0",
+    "ALTER TABLE campaign_contacts ADD COLUMN last_call_at DATETIME NULL",
+    "ALTER TABLE campaign_contacts ADD COLUMN last_analysis_summary TEXT NULL"
+  ];
+  for (const sql of statements) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      if (!/duplicate column name/i.test(msg)) {
+        if (!/unknown table|doesn't exist/i.test(msg)) {
+          // MODIFY may fail on fresh VARCHAR already — ignore benign
+          if (!/identical|same/i.test(msg)) {
+            // eslint-disable-next-line no-console
+            console.warn(`[campaigns] status/result columns: ${msg}`);
+          }
+        }
+      }
+    }
+  }
+
+  const remaps = [
+    "UPDATE campaign_contacts SET status = 'pending' WHERE status IN ('queued', 'skipped', 'draft')",
+    "UPDATE campaign_contacts SET status = 'success' WHERE status IN ('completed', 'done')",
+    "UPDATE campaign_contacts SET status = 'reject' WHERE status IN ('failed', 'failure')",
+    "UPDATE campaign_contacts SET status = 'not_interesting' WHERE status IN ('not interesting', 'notinteresting')"
+  ];
+  for (const sql of remaps) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      // eslint-disable-next-line no-console
+      console.warn(`[campaigns] status remap: ${msg}`);
+    }
+  }
+}
+
+async function ensureCampaignContactPatientColumns() {
+  const statements = [
+    "ALTER TABLE campaign_contacts ADD COLUMN patient_first_name VARCHAR(128) NOT NULL DEFAULT ''",
+    "ALTER TABLE campaign_contacts ADD COLUMN patient_last_name VARCHAR(128) NOT NULL DEFAULT ''",
+    "ALTER TABLE campaign_contacts ADD COLUMN patient_language VARCHAR(64) NULL",
+    "ALTER TABLE campaign_contacts ADD COLUMN patient_member_number VARCHAR(128) NULL"
+  ];
+  for (const sql of statements) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      if (!/duplicate column name/i.test(msg)) {
+        if (!/unknown table|doesn't exist/i.test(msg)) throw err;
+      }
+    }
+  }
+
+  try {
+    await sequelize.query(`
+      UPDATE campaign_contacts
+      SET
+        patient_first_name = CASE
+          WHEN patient_first_name IS NULL OR patient_first_name = '' THEN TRIM(SUBSTRING_INDEX(patient_name, ' ', 1))
+          ELSE patient_first_name
+        END,
+        patient_last_name = CASE
+          WHEN patient_last_name IS NULL OR patient_last_name = '' THEN TRIM(SUBSTRING(patient_name, LENGTH(SUBSTRING_INDEX(patient_name, ' ', 1)) + 2))
+          ELSE patient_last_name
+        END
+      WHERE patient_name IS NOT NULL AND patient_name != ''
+    `);
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    // eslint-disable-next-line no-console
+    console.warn(`[campaigns] contact name backfill: ${msg}`);
+  }
+}
+
+async function ensureConversationFlowClinicIds() {
+  try {
+    await sequelize.query("ALTER TABLE conversation_flows ADD COLUMN clinic_ids TEXT NULL");
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/duplicate column name/i.test(msg)) {
+      if (!/unknown table|doesn't exist/i.test(msg)) throw err;
+      return;
+    }
+  }
+
+  try {
+    await sequelize.query(`
+      UPDATE conversation_flows
+      SET clinic_ids = CONCAT('[', clinic_id, ']')
+      WHERE (clinic_ids IS NULL OR clinic_ids = '' OR clinic_ids = '[]')
+        AND clinic_id IS NOT NULL
+        AND clinic_id > 0
+    `);
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    // clinic_id may already be gone on fresh schemas
+    if (!/unknown column/i.test(msg)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[flows] clinic_ids backfill: ${msg}`);
+    }
+  }
+
+  try {
+    await sequelize.query(`
+      UPDATE conversation_flows
+      SET clinic_ids = '[]'
+      WHERE clinic_ids IS NULL
+    `);
+  } catch {
+    // ignore
+  }
+
+  try {
+    await sequelize.query(
+      "ALTER TABLE conversation_flows MODIFY COLUMN clinic_id INT UNSIGNED NULL"
+    );
+  } catch (err) {
+    const msg = String(err?.parent?.sqlMessage || err?.message || "");
+    if (!/unknown column/i.test(msg)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[flows] clinic_id nullable: ${msg}`);
+    }
+  }
 }
 
 async function ensureKnowledgePromptKeyColumn() {
@@ -236,6 +460,11 @@ module.exports = {
   Clinic,
   Knowledge,
   Appointment,
+  ConversationFlow,
+  Campaign,
+  CampaignContact,
+  CampaignCallHistory,
+  Doctor,
   connectDatabase,
   syncDatabase,
   initializeDatabase

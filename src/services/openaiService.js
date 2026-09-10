@@ -624,6 +624,103 @@ async function analyzeDocumentForKnowledge({ sourceText, filename = "", clinicNa
   return knowledge;
 }
 
+async function analyzeCampaignCallTranscript({
+  transcript = [],
+  patient = {},
+  campaignName = "",
+  flowName = "",
+  language = ""
+} = {}) {
+  const empty = {
+    resultType: "not_interesting",
+    summary: "Insufficient conversation data to analyze this campaign call.",
+    notes: "",
+    keyPoints: []
+  };
+
+  const turns = (transcript || []).filter((turn) => String(turn?.text || "").trim());
+  if (!turns.length) return { ...empty, resultType: "reject" };
+  if (!openaiApiKey) return empty;
+
+  const formattedTranscript = turns
+    .map((turn) => `${turn.role}: ${String(turn.text).trim()}`)
+    .join("\n")
+    .slice(0, 12000);
+
+  const system = [
+    "You analyze outbound clinic campaign phone calls.",
+    "Output exactly one JSON object (no markdown) with keys:",
+    'resultType, summary, notes, keyPoints',
+    "",
+    "resultType MUST be exactly one of:",
+    "- success — patient engaged and the call goal was achieved (confirmed, booked, completed flow happily)",
+    "- reject — patient refused, hung up early, asked not to be called, or call failed socially",
+    "- interesting — patient showed interest / asked questions / wants follow-up but goal not fully done",
+    "- not_interesting — answered but disengaged, no interest, irrelevant, or no useful outcome",
+    "Do NOT use pending or calling (those are dialer states only).",
+    "",
+    "summary: 2-4 sentences of what happened.",
+    "notes: short internal note for staff.",
+    "keyPoints: array of short strings."
+  ].join("\n");
+
+  const completion = await client.chat.completions.create({
+    model: openaiInboundModel,
+    temperature: 0.2,
+    max_completion_tokens: 700,
+    messages: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          campaignName ? `Campaign: ${campaignName}` : "",
+          flowName ? `Conversation flow: ${flowName}` : "",
+          language ? `Patient language: ${language}` : "",
+          patient?.patientName ? `Patient name: ${patient.patientName}` : "",
+          patient?.patientPhone ? `Patient phone: ${patient.patientPhone}` : "",
+          "",
+          "Call transcript:",
+          formattedTranscript
+        ]
+          .filter(Boolean)
+          .join("\n")
+      }
+    ]
+  });
+
+  const raw = String(completion.choices?.[0]?.message?.content || "").trim();
+  let parsed = null;
+  try {
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object") return empty;
+
+  const allowed = new Set(["success", "reject", "interesting", "not_interesting"]);
+  let resultType = String(parsed.resultType || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (resultType === "notinteresting") resultType = "not_interesting";
+  if (!allowed.has(resultType)) resultType = "not_interesting";
+
+  return {
+    resultType,
+    summary: String(parsed.summary || empty.summary).trim() || empty.summary,
+    notes: String(parsed.notes || "").trim(),
+    keyPoints: Array.isArray(parsed.keyPoints)
+      ? parsed.keyPoints.map((k) => String(k).trim()).filter(Boolean).slice(0, 12)
+      : []
+  };
+}
+
 module.exports = {
   generateAssistantReply,
   generateInboundMergedTurn,
@@ -637,6 +734,7 @@ module.exports = {
   transcribeAudioBase64,
   generateSpeechFromText,
   analyzeInboundCallTranscript,
+  analyzeCampaignCallTranscript,
   extractAppointmentIntakeFromText,
   analyzeDocumentForKnowledge
 };

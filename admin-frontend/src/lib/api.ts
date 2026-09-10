@@ -94,6 +94,26 @@ export interface User {
   clinicIds: string[];
 }
 
+export type DoctorGender = "Male" | "Female" | "Other";
+
+export interface Doctor {
+  id: string;
+  firstName: string;
+  lastName: string;
+  gender: DoctorGender;
+  phone: string;
+  email: string;
+  language: string;
+  address1: string;
+  address2: string;
+  photo?: string;
+  status: "active" | "inactive";
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export type DoctorInput = Omit<Doctor, "id" | "createdAt" | "updatedAt">;
+
 export type MessageType = "text" | "voice";
 
 export interface Message {
@@ -508,6 +528,33 @@ export async function changeUserPassword(id: string, password: string) {
     method: "PATCH",
     body: JSON.stringify({ password }),
   });
+  return true;
+}
+
+// ---------- Doctors ----------
+export async function listDoctors() {
+  const data = await request<{ doctors: Doctor[] }>("/api/admin/doctors");
+  return data.doctors;
+}
+
+export async function createDoctor(input: DoctorInput) {
+  const data = await request<{ doctor: Doctor }>("/api/admin/doctors", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return data.doctor;
+}
+
+export async function updateDoctor(id: string, patch: Partial<DoctorInput>) {
+  const data = await request<{ doctor: Doctor }>(`/api/admin/doctors/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+  return data.doctor;
+}
+
+export async function deleteDoctor(id: string) {
+  await request<{ success: boolean }>(`/api/admin/doctors/${id}`, { method: "DELETE" });
   return true;
 }
 
@@ -973,4 +1020,568 @@ export async function analyzeKnowledgeDocument(file: File, options?: { clinicId?
 export function knowledgeDocumentUrl(id: string) {
   return `${API_BASE_URL}/api/admin/knowledge/${id}/document`;
 }
+
+// ---------- Conversation Flows ----------
+export type FlowNodeType = "start" | "end" | "message" | "question" | "subagent" | "branch";
+
+export interface FlowNodeOption {
+  id: string;
+  label: string;
+  target: string;
+}
+
+export interface FlowSubagentTool {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface FlowNode {
+  id: string;
+  type: FlowNodeType;
+  position: { x: number; y: number };
+  data: {
+    label?: string;
+    prompt?: string;
+    description?: string;
+    /** Knowledge base item ids attached to this node */
+    knowledgeIds?: string[];
+    /** Operator / bot guide text for this node */
+    guideText?: string;
+    /** Question answer branches */
+    options?: FlowNodeOption[];
+    /** Branch node: multiple next paths */
+    branches?: FlowNodeOption[];
+    /** Function tool id (backend action) */
+    toolId?: string;
+    toolName?: string;
+    toolConfig?: Record<string, unknown>;
+  };
+}
+
+export interface FlowEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  sourceHandle?: string;
+}
+
+export interface FlowGraph {
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+}
+
+export interface ConversationFlowItem {
+  id: string;
+  clinicId: string;
+  clinicIds: string[];
+  name: string;
+  description: string;
+  graph: FlowGraph;
+  status: "active" | "inactive";
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export const FLOW_SUBAGENT_TOOLS: FlowSubagentTool[] = [
+  {
+    id: "book_appointment",
+    name: "Book appointment",
+    description: "Schedule a patient visit using clinic calendar / EHR.",
+    category: "appointments",
+  },
+  {
+    id: "cancel_appointment",
+    name: "Cancel appointment",
+    description: "Cancel an existing appointment for the patient.",
+    category: "appointments",
+  },
+  {
+    id: "reschedule_appointment",
+    name: "Reschedule appointment",
+    description: "Move an appointment to a new date/time.",
+    category: "appointments",
+  },
+  {
+    id: "send_appointment_reminder",
+    name: "Send appointment reminder",
+    description: "Notify the patient about an upcoming appointment.",
+    category: "appointments",
+  },
+  {
+    id: "send_voicemail",
+    name: "Send voicemail",
+    description: "Drop a voicemail message to the patient phone number.",
+    category: "messaging",
+  },
+  {
+    id: "send_sms",
+    name: "Send text message",
+    description: "Send an SMS / text message to the patient.",
+    category: "messaging",
+  },
+  {
+    id: "send_email",
+    name: "Send email",
+    description: "Send an email to the patient.",
+    category: "messaging",
+  },
+  {
+    id: "transfer_to_human",
+    name: "Transfer to human",
+    description: "Hand the call off to a clinic staff member / queue.",
+    category: "call",
+  },
+  {
+    id: "collect_payment",
+    name: "Collect payment",
+    description: "Start a billing / payment collection step.",
+    category: "billing",
+  },
+  {
+    id: "update_patient_info",
+    name: "Update patient info",
+    description: "Save updated patient contact or demographic details.",
+    category: "patient",
+  },
+];
+
+export async function listFlowSubagentTools() {
+  try {
+    const data = await request<{ tools: FlowSubagentTool[] }>("/api/admin/flows/tools");
+    return data.tools?.length ? data.tools : FLOW_SUBAGENT_TOOLS;
+  } catch {
+    return FLOW_SUBAGENT_TOOLS;
+  }
+}
+
+export function createDefaultFlowGraph(): FlowGraph {
+  return {
+    nodes: [
+      {
+        id: "start",
+        type: "start",
+        position: { x: 280, y: 40 },
+        data: { label: "Start", knowledgeIds: [], guideText: "" },
+      },
+      {
+        id: "end",
+        type: "end",
+        position: { x: 280, y: 360 },
+        data: {
+          label: "End",
+          description: "Call finishes automatically",
+          knowledgeIds: [],
+          guideText: "",
+        },
+      },
+    ],
+    edges: [{ id: "e-start-end", source: "start", target: "end", label: "" }],
+  };
+}
+
+export async function listConversationFlows(params?: {
+  clinicId?: string;
+  status?: "active" | "inactive";
+  q?: string;
+}) {
+  const search = new URLSearchParams();
+  if (params?.clinicId) search.set("clinicId", params.clinicId);
+  if (params?.status) search.set("status", params.status);
+  if (params?.q) search.set("q", params.q);
+  const path = search.size ? `/api/admin/flows?${search.toString()}` : "/api/admin/flows";
+  const data = await request<{ items: ConversationFlowItem[] }>(path);
+  return data.items.map((item) => ({
+    ...item,
+    clinicIds: item.clinicIds?.length ? item.clinicIds : item.clinicId ? [item.clinicId] : [],
+  }));
+}
+
+export async function getConversationFlow(id: string) {
+  const data = await request<{ item: ConversationFlowItem }>(`/api/admin/flows/${id}`);
+  const item = data.item;
+  return {
+    ...item,
+    clinicIds: item.clinicIds?.length ? item.clinicIds : item.clinicId ? [item.clinicId] : [],
+  };
+}
+
+export async function createConversationFlow(input: {
+  clinicId?: string;
+  clinicIds?: string[];
+  name: string;
+  description?: string;
+  graph?: FlowGraph;
+  status?: "active" | "inactive";
+}) {
+  const clinicIds = input.clinicIds?.length
+    ? input.clinicIds
+    : input.clinicId
+      ? [input.clinicId]
+      : [];
+  const data = await request<{ item: ConversationFlowItem }>("/api/admin/flows", {
+    method: "POST",
+    body: JSON.stringify({ ...input, clinicIds }),
+  });
+  return data.item;
+}
+
+export async function updateConversationFlow(
+  id: string,
+  patch: Partial<{
+    clinicId: string;
+    clinicIds: string[];
+    name: string;
+    description: string;
+    graph: FlowGraph;
+    status: "active" | "inactive";
+  }>
+) {
+  const body: Record<string, unknown> = { ...patch };
+  if (patch.clinicIds !== undefined) body.clinicIds = patch.clinicIds;
+  else if (patch.clinicId !== undefined) body.clinicIds = [patch.clinicId];
+  const data = await request<{ item: ConversationFlowItem }>(`/api/admin/flows/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  return data.item;
+}
+
+export async function deleteConversationFlow(id: string) {
+  await request<{ success: boolean }>(`/api/admin/flows/${id}`, { method: "DELETE" });
+}
+
+// ---------- Campaigns ----------
+export type CampaignStatus = "draft" | "ready" | "running" | "paused" | "completed";
+export type CampaignContactStatus =
+  | "pending"
+  | "calling"
+  | "success"
+  | "reject"
+  | "interesting"
+  | "not_interesting";
+
+export interface CampaignContactCounts {
+  total: number;
+  pending?: number;
+  calling?: number;
+  success?: number;
+  reject?: number;
+  interesting?: number;
+  not_interesting?: number;
+  completed?: number;
+  failed?: number;
+  queued?: number;
+  skipped?: number;
+}
+
+export interface CampaignItem {
+  id: string;
+  clinicId: string;
+  flowId: string;
+  name: string;
+  description: string;
+  status: CampaignStatus;
+  scheduledAt?: string | null;
+  retryCount?: number;
+  externalSource?: string | null;
+  contactCounts?: CampaignContactCounts;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface CampaignContactItem {
+  id: string;
+  campaignId: string;
+  patientFirstName?: string;
+  patientLastName?: string;
+  patientName: string;
+  patientPhone: string;
+  patientEmail?: string | null;
+  patientDob?: string | null;
+  patientLanguage?: string | null;
+  patientMemberNumber?: string | null;
+  extra?: Record<string, string>;
+  status: CampaignContactStatus;
+  attemptCount?: number;
+  lastCallAt?: string | null;
+  lastAnalysisSummary?: string | null;
+  lastError?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export type CampaignCallResultType =
+  | "pending"
+  | "calling"
+  | "success"
+  | "reject"
+  | "interesting"
+  | "not_interesting";
+
+export interface CampaignCallHistoryItem {
+  id: string;
+  campaignId: string;
+  campaignContactId: string;
+  callId?: string | null;
+  callSid?: string | null;
+  flowId?: string | null;
+  attemptNumber: number;
+  language?: string | null;
+  resultType: CampaignCallResultType;
+  summary: string;
+  analysisNotes?: string;
+  rawAnalysis?: {
+    resultType?: string;
+    summary?: string;
+    notes?: string;
+    keyPoints?: string[];
+  } | null;
+  transcript?: Array<{ role: string; text: string }>;
+  durationSeconds?: number | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  errorMessage?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export type PatientFieldKey = "firstName" | "lastName" | "dob" | "phone" | "language" | "memberNumber";
+
+export interface PatientImportField {
+  key: PatientFieldKey;
+  label: string;
+  required: boolean;
+}
+
+export interface PatientImportAnalysis {
+  valid: number;
+  invalid: number;
+  duplicatesInFile: number;
+  duplicatesExisting: number;
+  willImport: number;
+  errors: Array<{ row: number; reason: string }>;
+  uniqueSample?: Array<Record<string, unknown>>;
+  duplicateInFileSample?: Array<Record<string, unknown>>;
+  duplicateExistingSample?: Array<Record<string, unknown>>;
+}
+
+export interface PatientImportAnalyzeResult {
+  columns: string[];
+  fields: PatientImportField[];
+  suggestedMapping: Record<PatientFieldKey, string>;
+  previewRows: Array<Record<string, string>>;
+  rows: Array<Record<string, string>>;
+  totalRows: number;
+  existingContactCount: number;
+  analysis: PatientImportAnalysis;
+}
+
+export async function analyzeCampaignImport(id: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/api/admin/campaigns/${id}/import/analyze`, {
+    method: "POST",
+    body: form,
+    credentials: "include",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || "Failed to analyze Excel");
+  return data as PatientImportAnalyzeResult;
+}
+
+export async function previewCampaignImport(
+  id: string,
+  input: { mapping: Record<string, string>; rows: Array<Record<string, string>> }
+) {
+  return request<{ analysis: PatientImportAnalysis }>(`/api/admin/campaigns/${id}/import/preview`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function confirmCampaignImport(
+  id: string,
+  input: {
+    mapping: Record<string, string>;
+    rows: Array<Record<string, string>>;
+    replace?: boolean;
+    skipFileDuplicates?: boolean;
+    skipExistingDuplicates?: boolean;
+  }
+) {
+  return request<{
+    item: CampaignItem;
+    imported: number;
+    skippedInvalid: number;
+    skippedFileDuplicates: number;
+    skippedExistingDuplicates: number;
+    analysis: PatientImportAnalysis;
+    contacts: CampaignContactItem[];
+  }>(`/api/admin/campaigns/${id}/import/confirm`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function importCampaignContacts(id: string, file: File, replace = false) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(
+    `${API_BASE_URL}/api/admin/campaigns/${id}/import?replace=${replace ? "1" : "0"}`,
+    { method: "POST", body: form, credentials: "include" }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || "Import failed");
+  return data as {
+    item: CampaignItem;
+    imported: number;
+    skipped: number;
+    errors: string[];
+    contacts: CampaignContactItem[];
+  };
+}
+
+export async function listCampaigns(params?: {
+  clinicId?: string;
+  status?: CampaignStatus;
+  q?: string;
+}) {
+  const search = new URLSearchParams();
+  if (params?.clinicId) search.set("clinicId", params.clinicId);
+  if (params?.status) search.set("status", params.status);
+  if (params?.q) search.set("q", params.q);
+  const path = search.size ? `/api/admin/campaigns?${search.toString()}` : "/api/admin/campaigns";
+  const data = await request<{ items: CampaignItem[] }>(path);
+  return data.items;
+}
+
+export async function getCampaign(id: string) {
+  return request<{ item: CampaignItem; contacts: CampaignContactItem[] }>(`/api/admin/campaigns/${id}`);
+}
+
+export async function createCampaign(input: {
+  clinicId: string;
+  flowId: string;
+  name: string;
+  description?: string;
+  scheduledAt: string;
+  retryCount?: number;
+  externalSource?: string;
+}) {
+  const data = await request<{ item: CampaignItem }>("/api/admin/campaigns", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return data.item;
+}
+
+export async function updateCampaign(
+  id: string,
+  patch: Partial<{
+    clinicId: string;
+    flowId: string;
+    name: string;
+    description: string;
+    scheduledAt: string;
+    retryCount: number;
+    externalSource: string | null;
+  }>
+) {
+  const data = await request<{ item: CampaignItem }>(`/api/admin/campaigns/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+  return data.item;
+}
+
+export async function pauseCampaign(id: string) {
+  const data = await request<{ item: CampaignItem }>(`/api/admin/campaigns/${id}/pause`, {
+    method: "POST",
+  });
+  return data.item;
+}
+
+export async function resumeCampaign(id: string) {
+  const data = await request<{ item: CampaignItem }>(`/api/admin/campaigns/${id}/resume`, {
+    method: "POST",
+  });
+  return data.item;
+}
+
+export async function deleteCampaign(id: string) {
+  await request<{ success: boolean }>(`/api/admin/campaigns/${id}`, { method: "DELETE" });
+}
+
+export async function syncCampaignContactsFromExternal(
+  id: string,
+  input: {
+    url?: string;
+    method?: PatientApiHttpMethod;
+    token?: string;
+    body?: unknown;
+    listPath?: string;
+    mapping?: PatientApiFieldMapping;
+    replace?: boolean;
+  } = {}
+) {
+  const data = await request<{
+    item: CampaignItem;
+    imported: number;
+    skipped: number;
+    errors: string[];
+    contacts: CampaignContactItem[];
+  }>(`/api/admin/campaigns/${id}/sync-external`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return data;
+}
+
+export type PatientApiHttpMethod = "GET" | "POST";
+
+export interface PatientApiFieldMapping {
+  firstName: string;
+  lastName: string;
+  dob: string;
+  phone: string;
+  language: string;
+  memberNumber: string;
+}
+
+export async function deleteCampaignContact(campaignId: string, contactId: string) {
+  await request<{ success: boolean }>(
+    `/api/admin/campaigns/${campaignId}/contacts/${contactId}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function getCampaignContactHistory(campaignId: string, contactId: string) {
+  return request<{
+    contact: CampaignContactItem;
+    history: CampaignCallHistoryItem[];
+    botContext?: {
+      language: string;
+      flowId: string;
+      flowName: string;
+      instructionsPreview: string;
+    } | null;
+  }>(`/api/admin/campaigns/${campaignId}/contacts/${contactId}/history`);
+}
+
+export async function reanalyzeCampaignCallHistory(
+  campaignId: string,
+  contactId: string,
+  historyId: string
+) {
+  return request<{
+    item: CampaignCallHistoryItem;
+    contact: CampaignContactItem | null;
+  }>(`/api/admin/campaigns/${campaignId}/contacts/${contactId}/history/${historyId}/reanalyze`, {
+    method: "POST",
+  });
+}
+
 
