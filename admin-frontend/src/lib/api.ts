@@ -175,15 +175,38 @@ const messages: Message[] = [];
 
 const delay = <T,>(v: T, ms = 200) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const SESSION_KEY = "medbot.session";
+
+/** Actor headers for HIPAA audit attribution (from browser session). */
+export function getAdminActorHeaders(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return {};
+    const s = JSON.parse(raw) as {
+      user?: { id?: string; email?: string; name?: string; role?: string };
+      expiresAt?: number;
+    };
+    if (!s?.user || (s.expiresAt != null && s.expiresAt <= Date.now())) return {};
+    const headers: Record<string, string> = {};
+    if (s.user.id) headers["X-Admin-User-Id"] = String(s.user.id);
+    if (s.user.email) headers["X-Admin-User-Email"] = String(s.user.email);
+    if (s.user.name) headers["X-Admin-User-Name"] = String(s.user.name);
+    if (s.user.role) headers["X-Admin-User-Role"] = String(s.user.role);
+    return headers;
+  } catch {
+    return {};
+  }
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
+      ...getAdminActorHeaders(),
       ...(options.headers || {}),
     },
-    credentials: "include",
-    ...options,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.message || "Request failed");
@@ -386,7 +409,7 @@ export async function listClinicBotVoices(clinicId: string): Promise<{ voices: B
 export async function fetchClinicBotVoicePreviewBlob(clinicId: string, voice: string): Promise<Blob> {
   const res = await fetch(
     `${API_BASE_URL}/api/admin/dashboard/clinics/${clinicId}/bot-voice/preview?voice=${encodeURIComponent(voice)}`,
-    { credentials: "include" }
+    { credentials: "include", headers: { ...getAdminActorHeaders() } }
   );
   const ct = res.headers.get("content-type") || "";
   if (!res.ok) {
@@ -725,7 +748,7 @@ export async function fetchAgentVoicePreviewBlob(opts: {
   const res = await fetch(`${API_BASE_URL}/api/admin/agents/options/voice-preview`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAdminActorHeaders() },
     body: JSON.stringify({
       voice: opts.voice,
       agentId: opts.agentId ? Number(opts.agentId) : undefined,
@@ -1226,7 +1249,8 @@ export async function analyzeKnowledgeDocument(file: File, options?: { clinicId?
   const res = await fetch(`${API_BASE_URL}/api/admin/knowledge/analyze`, {
     method: "POST",
     body: form,
-    credentials: "include"
+    credentials: "include",
+    headers: { ...getAdminActorHeaders() },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.message || "Failed to analyze document");
@@ -1616,6 +1640,7 @@ export async function analyzeCampaignImport(id: string, file: File) {
     method: "POST",
     body: form,
     credentials: "include",
+    headers: { ...getAdminActorHeaders() },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.message || "Failed to analyze Excel");
@@ -1661,7 +1686,12 @@ export async function importCampaignContacts(id: string, file: File, replace = f
   form.append("file", file);
   const res = await fetch(
     `${API_BASE_URL}/api/admin/campaigns/${id}/import?replace=${replace ? "1" : "0"}`,
-    { method: "POST", body: form, credentials: "include" }
+    {
+      method: "POST",
+      body: form,
+      credentials: "include",
+      headers: { ...getAdminActorHeaders() },
+    }
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.message || "Import failed");
@@ -1811,6 +1841,84 @@ export async function reanalyzeCampaignCallHistory(
     contact: CampaignContactItem | null;
   }>(`/api/admin/campaigns/${campaignId}/contacts/${contactId}/history/${historyId}/reanalyze`, {
     method: "POST",
+  });
+}
+
+// ---------- HIPAA Audit logs ----------
+export type AuditAction =
+  | "LOGIN_SUCCESS"
+  | "LOGIN_FAILURE"
+  | "CREATE"
+  | "READ"
+  | "UPDATE"
+  | "DELETE"
+  | "EXPORT"
+  | "ACCESS"
+  | string;
+
+export interface AuditLogItem {
+  id: string;
+  occurredAt: string | null;
+  actorUserId: string | null;
+  actorEmail: string | null;
+  actorName: string | null;
+  actorRole: string | null;
+  action: AuditAction;
+  resourceType: string;
+  resourceId: string | null;
+  clinicId: string | null;
+  outcome: "success" | "failure" | string;
+  ipAddress: string | null;
+  countryCode?: string | null;
+  countryName?: string | null;
+  userAgent: string | null;
+  method: string | null;
+  path: string | null;
+  statusCode: number | null;
+  summary: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface AuditLogListResult {
+  items: AuditLogItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export async function listAuditLogs(params?: {
+  q?: string;
+  action?: string;
+  resourceType?: string;
+  actorEmail?: string;
+  outcome?: string;
+  clinicId?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params?.q) search.set("q", params.q);
+  if (params?.action) search.set("action", params.action);
+  if (params?.resourceType) search.set("resourceType", params.resourceType);
+  if (params?.actorEmail) search.set("actorEmail", params.actorEmail);
+  if (params?.outcome) search.set("outcome", params.outcome);
+  if (params?.clinicId) search.set("clinicId", params.clinicId);
+  if (params?.from) search.set("from", params.from);
+  if (params?.to) search.set("to", params.to);
+  if (params?.page) search.set("page", String(params.page));
+  if (params?.limit) search.set("limit", String(params.limit));
+  const qs = search.toString();
+  return request<AuditLogListResult>(
+    qs ? `/api/admin/audit-logs?${qs}` : "/api/admin/audit-logs"
+  );
+}
+
+export async function clearAllAuditLogs() {
+  return request<{ success: boolean; deleted: number }>("/api/admin/audit-logs", {
+    method: "DELETE",
   });
 }
 

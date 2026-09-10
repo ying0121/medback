@@ -15,8 +15,10 @@ const adminConversationFlowRoutes = require("./routes/adminConversationFlowRoute
 const adminCampaignRoutes = require("./routes/adminCampaignRoutes");
 const adminDoctorRoutes = require("./routes/adminDoctorRoutes");
 const adminAgentRoutes = require("./routes/adminAgentRoutes");
+const adminAuditLogRoutes = require("./routes/adminAuditLogRoutes");
 const twilioRoutes = require("./routes/twilioRoutes");
 const errorHandler = require("./middlewares/errorHandler");
+const { auditAdminAccess } = require("./middlewares/auditAdminAccess");
 
 const app = express();
 
@@ -36,7 +38,15 @@ const corsOptions = {
     return callback(new Error(`CORS: origin not allowed — ${origin}`));
   },
   credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "X-Admin-User-Id",
+    "X-Admin-User-Email",
+    "X-Admin-User-Name",
+    "X-Admin-User-Role"
+  ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 };
 
@@ -53,8 +63,8 @@ app.use(
         // Allow inline scripts/styles needed by Vite-built SPA
         "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
         "style-src": ["'self'", "'unsafe-inline'"],
-        // Allow data: images (user photos stored as base64)
-        "img-src": ["'self'", "data:", "blob:"],
+        // Allow data: images (user photos stored as base64) + flagcdn for audit IP flags
+        "img-src": ["'self'", "data:", "blob:", "https://flagcdn.com"],
         // Allow blob: worker scripts used by some audio libs
         "worker-src": ["'self'", "blob:"],
         // Helmet defaults include upgrade-insecure-requests, which forces
@@ -65,9 +75,11 @@ app.use(
   })
 );
 app.use(cors(corsOptions));
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(morgan("dev"));
+app.use(auditAdminAccess);
 
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
@@ -83,6 +95,7 @@ app.use("/api/admin/flows", adminConversationFlowRoutes);
 app.use("/api/admin/campaigns", adminCampaignRoutes);
 app.use("/api/admin/doctors", adminDoctorRoutes);
 app.use("/api/admin/agents", adminAgentRoutes);
+app.use("/api/admin/audit-logs", adminAuditLogRoutes);
 app.use("/api/twilio", twilioRoutes);
 
 const landingDistPath = path.resolve(__dirname, "../landing-frontend/dist");

@@ -57,6 +57,7 @@
     "embla-carousel-react": "^8.6.0",
     "express": "^5.2.1",
     "framer-motion": "^12.23.12",
+    "geoip-lite": "^1.4.10",
     "helmet": "^8.1.0",
     "input-otp": "^1.4.2",
     "joi": "^18.1.2",

@@ -14,6 +14,7 @@ const CampaignContact = require("../models/campaignContact");
 const CampaignCallHistory = require("../models/campaignCallHistory");
 const Doctor = require("../models/doctor");
 const Agent = require("../models/agent");
+const AuditLog = require("../models/auditLog");
 
 Conversation.hasMany(Message, {
   foreignKey: "conversationId",
@@ -233,6 +234,8 @@ async function syncDatabase() {
   await CampaignCallHistory.sync();
   await Doctor.sync();
   await Agent.sync();
+  await AuditLog.sync();
+  await ensureAuditLogGeoColumns();
   await ensureConversationFlowClinicIds();
   await ensureCampaignContactPatientColumns();
   await ensureCampaignContactResultColumns();
@@ -296,6 +299,23 @@ async function ensureCampaignAgentIdColumn() {
     if (!/duplicate|identical|same|unknown table|doesn't exist/i.test(msg)) {
       // eslint-disable-next-line no-console
       console.warn(`[db] campaigns.flow_id nullable migrate: ${msg}`);
+    }
+  }
+}
+
+async function ensureAuditLogGeoColumns() {
+  const statements = [
+    "ALTER TABLE audit_logs ADD COLUMN country_code VARCHAR(8) NULL",
+    "ALTER TABLE audit_logs ADD COLUMN country_name VARCHAR(128) NULL"
+  ];
+  for (const sql of statements) {
+    try {
+      await sequelize.query(sql);
+    } catch (err) {
+      const msg = String(err?.parent?.sqlMessage || err?.message || "");
+      if (!/duplicate column name/i.test(msg)) {
+        if (!/unknown table|doesn't exist/i.test(msg)) throw err;
+      }
     }
   }
 }
@@ -505,6 +525,7 @@ module.exports = {
   CampaignCallHistory,
   Doctor,
   Agent,
+  AuditLog,
   connectDatabase,
   syncDatabase,
   initializeDatabase

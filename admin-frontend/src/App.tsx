@@ -20,6 +20,7 @@ import Appointments from "./pages/Appointments.tsx";
 import Flows from "./pages/Flows.tsx";
 import Campaigns from "./pages/Campaigns.tsx";
 import CampaignPatients from "./pages/CampaignPatients.tsx";
+import AuditLogs from "./pages/AuditLogs.tsx";
 
 const queryClient = new QueryClient();
 
@@ -45,6 +46,7 @@ const App = () => (
               <Route path="/campaigns" element={<RequireAuth page="campaigns"><Campaigns /></RequireAuth>} />
               <Route path="/campaigns/:id" element={<RequireAuth page="campaigns"><CampaignPatients /></RequireAuth>} />
               <Route path="/calls" element={<RequireAuth page="calls"><Calls /></RequireAuth>} />
+              <Route path="/audit-logs" element={<RequireAuth page="audit-logs"><AuditLogs /></RequireAuth>} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
             </Routes>

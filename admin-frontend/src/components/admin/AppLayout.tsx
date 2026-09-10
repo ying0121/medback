@@ -15,6 +15,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Bot,
+  ShieldCheck,
 } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
 import botLogo from "@/assets/bot-logo.png";
@@ -107,6 +108,14 @@ const NAV = [
     key: "calls",
     tint: "bg-info/20 text-info",
     rail: "bg-info",
+  },
+  {
+    to: "/audit-logs",
+    label: "Audit logs",
+    icon: ShieldCheck,
+    key: "audit-logs",
+    tint: "bg-med-indigo/20 text-med-indigo",
+    rail: "bg-med-indigo",
   },
 ] as const;
 
