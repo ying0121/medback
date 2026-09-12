@@ -14,6 +14,9 @@ import {
   X,
   Bot,
   GitFork,
+  Copy,
+  Check,
+  Loader2,
 } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
@@ -38,6 +41,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -51,6 +55,7 @@ import {
 import {
   listClinics,
   listConversationFlows,
+  getConversationFlow,
   listKnowledge,
   createConversationFlow,
   updateConversationFlow,
@@ -91,6 +96,15 @@ function syncGraphEdges(graph: FlowGraph): FlowGraph {
   return { ...graph, edges: [...nonBranch, ...branchEdges] };
 }
 
+function cloneFlowGraph(graph?: FlowGraph | null): FlowGraph {
+  if (!graph?.nodes?.length) return createDefaultFlowGraph();
+  try {
+    return JSON.parse(JSON.stringify(graph)) as FlowGraph;
+  } catch {
+    return createDefaultFlowGraph();
+  }
+}
+
 function nodeCounts(graph?: FlowGraph) {
   const nodes = graph?.nodes || [];
   return {
@@ -123,6 +137,10 @@ export default function Flows() {
   const [clinicQuery, setClinicQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ConversationFlowItem | null>(null);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [duplicateFlowId, setDuplicateFlowId] = useState("");
+  const [loadingDuplicate, setLoadingDuplicate] = useState(false);
+  const [duplicateSourceTitle, setDuplicateSourceTitle] = useState<string | null>(null);
 
   useEffect(() => {
     const allowed = user?.role === "Admin" ? undefined : user?.clinicIds;
@@ -203,6 +221,7 @@ export default function Flows() {
       return;
     }
     setEditing(null);
+    setDuplicateSourceTitle(null);
     setFormName("");
     setFormDescription("");
     setFormStatus("active");
@@ -210,6 +229,55 @@ export default function Flows() {
     setFormGraph(createDefaultFlowGraph());
     setClinicQuery("");
     setSetupOpen(true);
+  };
+
+  const openDuplicatePicker = () => {
+    if (!items.length) {
+      toast.error("Create a flow first before duplicating");
+      return;
+    }
+    setDuplicateFlowId(items[0]?.id || "");
+    setDuplicateOpen(true);
+  };
+
+  const confirmDuplicate = async () => {
+    if (!duplicateFlowId) {
+      toast.error("Select a flow to duplicate");
+      return;
+    }
+    if (!clinics.length) {
+      toast.error("Add a clinic first");
+      return;
+    }
+    setLoadingDuplicate(true);
+    try {
+      const source = await getConversationFlow(duplicateFlowId);
+      const clinicIds =
+        source.clinicIds?.length
+          ? source.clinicIds.map(String)
+          : source.clinicId
+            ? [String(source.clinicId)]
+            : clinics.length === 1
+              ? [clinics[0].id]
+              : [];
+      setDuplicateOpen(false);
+      setEditing(null);
+      setDuplicateSourceTitle(source.name);
+      setFormName(`${source.name} (copy)`);
+      setFormDescription(source.description || "");
+      setFormStatus(source.status === "inactive" ? "inactive" : "active");
+      setFormClinicIds(clinicIds);
+      setFormGraph(cloneFlowGraph(source.graph));
+      setClinicQuery("");
+      setSetupOpen(true);
+      toast.message("Flow copied into create form", {
+        description: "Review clinics and details, then continue to the builder.",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load flow to duplicate");
+    } finally {
+      setLoadingDuplicate(false);
+    }
   };
 
   const continueToBuilder = () => {
@@ -221,13 +289,14 @@ export default function Flows() {
 
   const openEdit = (row: ConversationFlowItem) => {
     setEditing(row);
+    setDuplicateSourceTitle(null);
     setFormName(row.name);
     setFormDescription(row.description || "");
     setFormStatus(row.status === "inactive" ? "inactive" : "active");
     setFormClinicIds(
       row.clinicIds?.length ? row.clinicIds.map(String) : row.clinicId ? [row.clinicId] : []
     );
-    setFormGraph(row.graph?.nodes?.length ? row.graph : createDefaultFlowGraph());
+    setFormGraph(cloneFlowGraph(row.graph));
     setBuilderOpen(true);
   };
 
@@ -257,6 +326,7 @@ export default function Flows() {
         toast.success("Flow created");
       }
       setBuilderOpen(false);
+      setDuplicateSourceTitle(null);
       setRefreshKey((k) => k + 1);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save flow");
@@ -411,9 +481,19 @@ export default function Flows() {
         title="Conversation flows"
         description="Design the bot’s work mode as a visual graph. Start and End are fixed — reaching End hangs up the call."
         actions={
-          <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
-            <Plus className="h-4 w-4 mr-1.5" /> Create flow
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={openDuplicatePicker}
+              disabled={!items.length}
+            >
+              <Copy className="h-4 w-4 mr-1.5" /> Duplicate flow
+            </Button>
+            <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
+              <Plus className="h-4 w-4 mr-1.5" /> Create flow
+            </Button>
+          </div>
         }
       />
 
@@ -488,7 +568,13 @@ export default function Flows() {
         }
       />
 
-      <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
+      <Dialog
+        open={setupOpen}
+        onOpenChange={(next) => {
+          setSetupOpen(next);
+          if (!next) setDuplicateSourceTitle(null);
+        }}
+      >
         <DialogContent className="sm:max-w-lg flex max-h-[90vh] flex-col gap-0 overflow-hidden p-6">
           <div className="h-1.5 w-16 rounded-full bg-gradient-primary mb-3" />
           <DialogHeader className="shrink-0">
@@ -496,7 +582,9 @@ export default function Flows() {
               <GitBranch className="h-5 w-5 text-violet-600" /> Create conversation flow
             </DialogTitle>
             <DialogDescription>
-              Choose clinics, add a description, and set status. Then design the flow graph.
+              {duplicateSourceTitle
+                ? `Duplicated from “${duplicateSourceTitle}”. Review clinics and details, then continue to the builder with the copied graph.`
+                : "Choose clinics, add a description, and set status. Then design the flow graph."}
             </DialogDescription>
           </DialogHeader>
 
@@ -662,7 +750,13 @@ export default function Flows() {
 
       <FlowBuilderModal
         open={builderOpen}
-        title={editing ? "Edit conversation flow" : "Create conversation flow"}
+        title={
+          editing
+            ? "Edit conversation flow"
+            : duplicateSourceTitle
+              ? `Create conversation flow (from “${duplicateSourceTitle}”)`
+              : "Create conversation flow"
+        }
         name={formName}
         description={formDescription}
         clinicIds={formClinicIds}
@@ -674,9 +768,104 @@ export default function Flows() {
         onDescriptionChange={setFormDescription}
         onClinicIdsChange={setFormClinicIds}
         onGraphChange={setFormGraph}
-        onClose={() => setBuilderOpen(false)}
+        onClose={() => {
+          setBuilderOpen(false);
+          setDuplicateSourceTitle(null);
+        }}
         onSave={save}
       />
+
+      <Dialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Duplicate flow</DialogTitle>
+            <DialogDescription>
+              Choose an existing conversation flow. We’ll open the create form with its
+              settings and graph filled in so you can adjust and save a new copy.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <Label className="text-xs text-muted-foreground">Source flow</Label>
+            <ScrollArea className="max-h-72 rounded-xl border border-border/70">
+              <div className="p-2 space-y-1">
+                {items.map((flow) => {
+                  const selected = duplicateFlowId === flow.id;
+                  const counts = nodeCounts(flow.graph);
+                  return (
+                    <button
+                      key={flow.id}
+                      type="button"
+                      onClick={() => setDuplicateFlowId(flow.id)}
+                      className={cn(
+                        "w-full flex items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+                        selected
+                          ? "bg-primary/10 border border-primary/30"
+                          : "hover:bg-muted/60 border border-transparent"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "mt-0.5 h-4 w-4 rounded-full border flex items-center justify-center shrink-0",
+                          selected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-muted-foreground/40"
+                        )}
+                      >
+                        {selected ? <Check className="h-2.5 w-2.5" /> : null}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-sm truncate">{flow.name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {flow.description || "No description"}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <Badge
+                            variant={flow.status === "active" ? "default" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {flow.status}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            {counts.total} nodes
+                          </Badge>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDuplicateOpen(false)}
+              disabled={loadingDuplicate}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={confirmDuplicate}
+              disabled={!duplicateFlowId || loadingDuplicate}
+              className="bg-gradient-primary text-primary-foreground"
+            >
+              {loadingDuplicate ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Loading…
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4 mr-1" /> Duplicate
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
         <AlertDialogContent>

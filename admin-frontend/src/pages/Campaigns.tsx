@@ -17,6 +17,8 @@ import {
   Square,
   Play,
   CalendarClock,
+  Copy,
+  Check,
 } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import { DataTable, type Column } from "@/components/admin/DataTable";
@@ -40,6 +42,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -68,6 +71,7 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import PatientImportDialog from "@/components/admin/PatientImportDialog";
 import PatientApiSyncDialog from "@/components/admin/PatientApiSyncDialog";
 import DateTimePicker from "@/components/admin/DateTimePicker";
@@ -143,6 +147,9 @@ export default function Campaigns() {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<CampaignItem | null>(null);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [duplicateCampaignId, setDuplicateCampaignId] = useState("");
+  const [duplicateSourceTitle, setDuplicateSourceTitle] = useState<string | null>(null);
 
   const [importing, setImporting] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
@@ -215,14 +222,66 @@ export default function Campaigns() {
       return toast.error("Create an active agent with a conversation flow first");
     setEditing(null);
     setCreatedCampaign(null);
+    setDuplicateSourceTitle(null);
     setCreateStep(1);
     resetForm(clinics[0].id);
     setOpen(true);
   };
 
+  const openDuplicatePicker = () => {
+    if (!items.length) {
+      toast.error("Create a campaign first before duplicating");
+      return;
+    }
+    if (!agents.some((a) => a.status === "active")) {
+      return toast.error("Create an active agent with a conversation flow first");
+    }
+    setDuplicateCampaignId(items[0]?.id || "");
+    setDuplicateOpen(true);
+  };
+
+  const confirmDuplicate = () => {
+    const source = items.find((c) => c.id === duplicateCampaignId);
+    if (!source) {
+      toast.error("Select a campaign to duplicate");
+      return;
+    }
+    if (!clinics.length) return toast.error("Add a clinic first");
+
+    const clinicId =
+      clinics.some((c) => c.id === source.clinicId) ? source.clinicId : clinics[0].id;
+    const agentStillActive =
+      source.agentId && agents.some((a) => a.id === source.agentId && a.status === "active");
+    const preferredAgent =
+      (agentStillActive ? agents.find((a) => a.id === source.agentId) : null) ||
+      agents.find((a) => a.status === "active" && a.id === clinicMap[clinicId]?.agentId) ||
+      agents.find((a) => a.status === "active");
+
+    if (!preferredAgent) {
+      return toast.error("Create an active agent with a conversation flow first");
+    }
+
+    setDuplicateOpen(false);
+    setEditing(null);
+    setCreatedCampaign(null);
+    setDuplicateSourceTitle(source.name);
+    setCreateStep(1);
+    setFormName(`${source.name} (copy)`);
+    setFormDescription(source.description || "");
+    setFormClinicId(clinicId);
+    setFormAgentId(preferredAgent.id);
+    setFormScheduledAt(toDatetimeLocalValue(source.scheduledAt) || defaultScheduleLocal());
+    setFormRetryCount(String(source.retryCount ?? 3));
+    setOpen(true);
+    toast.message("Campaign copied into create form", {
+      description: "Review the schedule and agent, then create. Patients are not copied.",
+    });
+  };
+
   const openEdit = (row: CampaignItem) => {
     setEditing(row);
     setCreatedCampaign(null);
+    setDuplicateSourceTitle(null);
     setCreateStep(1);
     setFormName(row.name);
     setFormDescription(row.description || "");
@@ -238,6 +297,7 @@ export default function Campaigns() {
     setCreateStep(1);
     setCreatedCampaign(null);
     setEditing(null);
+    setDuplicateSourceTitle(null);
     setRefreshKey((k) => k + 1);
   };
 
@@ -571,9 +631,19 @@ export default function Campaigns() {
         title="Campaigns"
         description="Schedule outbound bot calls. Create a campaign, load patients, then the bot dials at the scheduled time."
         actions={
-          <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
-            <Plus className="h-4 w-4 mr-1.5" /> Create campaign
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={openDuplicatePicker}
+              disabled={!items.length}
+            >
+              <Copy className="h-4 w-4 mr-1.5" /> Duplicate campaign
+            </Button>
+            <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
+              <Plus className="h-4 w-4 mr-1.5" /> Create campaign
+            </Button>
+          </div>
         }
       />
 
@@ -672,7 +742,9 @@ export default function Campaigns() {
               {editing
                 ? "Update schedule, retry count, and flow. Status updates automatically."
                 : createStep === 1
-                  ? "Step 1 of 2 — set when the bot should start calling and how many retries."
+                  ? duplicateSourceTitle
+                    ? `Duplicated from “${duplicateSourceTitle}”. Step 1 of 2 — review schedule and agent, then create. Patients are not copied.`
+                    : "Step 1 of 2 — set when the bot should start calling and how many retries."
                   : "Step 2 of 2 — import from Excel or sync from an API. You can also do this later on the patients page."}
             </DialogDescription>
           </DialogHeader>
@@ -878,6 +950,84 @@ export default function Campaigns() {
                 </Button>
               </>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Duplicate campaign</DialogTitle>
+            <DialogDescription>
+              Choose an existing campaign. We’ll open the create form with its settings
+              filled in. Patients and call history are not copied.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <Label className="text-xs text-muted-foreground">Source campaign</Label>
+            <ScrollArea className="max-h-72 rounded-xl border border-border/70">
+              <div className="p-2 space-y-1">
+                {items.map((campaign) => {
+                  const selected = duplicateCampaignId === campaign.id;
+                  return (
+                    <button
+                      key={campaign.id}
+                      type="button"
+                      onClick={() => setDuplicateCampaignId(campaign.id)}
+                      className={cn(
+                        "w-full flex items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+                        selected
+                          ? "bg-primary/10 border border-primary/30"
+                          : "hover:bg-muted/60 border border-transparent"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "mt-0.5 h-4 w-4 rounded-full border flex items-center justify-center shrink-0",
+                          selected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-muted-foreground/40"
+                        )}
+                      >
+                        {selected ? <Check className="h-2.5 w-2.5" /> : null}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-sm truncate">{campaign.name}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {campaign.description || campaign.agentTitle || "No description"}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <Badge
+                            variant="outline"
+                            className={cn("text-[10px]", STATUS_STYLE[campaign.status])}
+                          >
+                            {STATUS_LABEL[campaign.status]}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            {campaign.contactCounts?.total ?? 0} patients
+                          </Badge>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDuplicateOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={confirmDuplicate}
+              disabled={!duplicateCampaignId}
+              className="bg-gradient-primary text-primary-foreground"
+            >
+              <Copy className="h-4 w-4 mr-1" /> Duplicate
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

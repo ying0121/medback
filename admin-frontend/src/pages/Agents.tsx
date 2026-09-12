@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import {
   Bot,
   Check,
+  Copy,
   ExternalLink,
   FlaskConical,
   Loader2,
@@ -49,6 +50,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   listAgents,
+  getAgent,
   createAgent,
   updateAgent,
   deleteAgent,
@@ -133,6 +135,38 @@ const EMPTY: AgentForm = {
   knowledgeIds: [],
 };
 
+function formFromAgent(agent: Agent, opts?: { asCopy?: boolean; includeSecrets?: boolean }): AgentForm {
+  const secrets = opts?.includeSecrets !== false;
+  return {
+    title: opts?.asCopy ? `${agent.title} (copy)` : agent.title,
+    description: agent.description || "",
+    status: agent.status,
+    openaiApiKey: secrets ? agent.openaiApiKey || "" : "",
+    openaiModel: agent.openaiModel || "",
+    openaiRealtimeModel: agent.openaiRealtimeModel || "",
+    openaiTranscriptionModel: agent.openaiTranscriptionModel || "",
+    openaiTtsModel: agent.openaiTtsModel || "",
+    openaiInboundModel: agent.openaiInboundModel || "",
+    openaiVoice: agent.openaiVoice || "",
+    twilioPhoneNumber: agent.twilioPhoneNumber || "",
+    twilioCallerId: agent.twilioCallerId || "",
+    twilioAccountSid: agent.twilioAccountSid || "",
+    twilioAuthToken: secrets ? agent.twilioAuthToken || "" : "",
+    twilioApiKeySid: agent.twilioApiKeySid || "",
+    twilioApiKeySecret: secrets ? agent.twilioApiKeySecret || "" : "",
+    twilioTwimlAppSid: agent.twilioTwimlAppSid || "",
+    meetingProvider: agent.meetingProvider || "google",
+    googleClientId: agent.googleClientId || "",
+    googleClientSecret: secrets ? agent.googleClientSecret || "" : "",
+    googleRefreshToken: secrets ? agent.googleRefreshToken || "" : "",
+    googleCreateMeet: Boolean(agent.googleCreateMeet),
+    ecwApiEndpoint: agent.ecwApiEndpoint || "",
+    azulApiEndpoint: agent.azulApiEndpoint || "",
+    flowId: agent.flowId || "",
+    knowledgeIds: [...(agent.knowledgeIds || [])],
+  };
+}
+
 function Field({
   label,
   className,
@@ -197,6 +231,10 @@ export default function Agents() {
   const [confirmDelete, setConfirmDelete] = useState<Agent | null>(null);
   const [saving, setSaving] = useState(false);
   const [step, setStep] = useState(0);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [duplicateAgentId, setDuplicateAgentId] = useState("");
+  const [loadingDuplicate, setLoadingDuplicate] = useState(false);
+  const [duplicateSourceTitle, setDuplicateSourceTitle] = useState<string | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [testOpen, setTestOpen] = useState(false);
   const [testTarget, setTestTarget] = useState<{
@@ -307,6 +345,7 @@ export default function Agents() {
 
   const openCreate = async () => {
     setEditing(null);
+    setDuplicateSourceTitle(null);
     setForm(EMPTY);
     setStep(0);
     setOpen(true);
@@ -323,36 +362,44 @@ export default function Agents() {
     }));
   };
 
+  const openDuplicatePicker = () => {
+    if (!data.length) {
+      toast.error("Create an agent first before duplicating");
+      return;
+    }
+    setDuplicateAgentId(data[0]?.id || "");
+    setDuplicateOpen(true);
+  };
+
+  const confirmDuplicate = async () => {
+    if (!duplicateAgentId) {
+      toast.error("Select an agent to duplicate");
+      return;
+    }
+    setLoadingDuplicate(true);
+    try {
+      const source = await getAgent(duplicateAgentId, true);
+      setDuplicateOpen(false);
+      setEditing(null);
+      setDuplicateSourceTitle(source.title);
+      setForm(formFromAgent(source, { asCopy: true, includeSecrets: true }));
+      setStep(0);
+      setOpen(true);
+      await loadModels(source.openaiApiKey || undefined, source.id);
+      toast.message("Agent copied into create form", {
+        description: "Review the steps, then create the new agent.",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load agent to duplicate");
+    } finally {
+      setLoadingDuplicate(false);
+    }
+  };
+
   const openEdit = async (agent: Agent) => {
     setEditing(agent);
-    setForm({
-      title: agent.title,
-      description: agent.description,
-      status: agent.status,
-      openaiApiKey: "",
-      openaiModel: agent.openaiModel,
-      openaiRealtimeModel: agent.openaiRealtimeModel,
-      openaiTranscriptionModel: agent.openaiTranscriptionModel,
-      openaiTtsModel: agent.openaiTtsModel,
-      openaiInboundModel: agent.openaiInboundModel,
-      openaiVoice: agent.openaiVoice,
-      twilioPhoneNumber: agent.twilioPhoneNumber,
-      twilioCallerId: agent.twilioCallerId,
-      twilioAccountSid: agent.twilioAccountSid,
-      twilioAuthToken: "",
-      twilioApiKeySid: agent.twilioApiKeySid,
-      twilioApiKeySecret: "",
-      twilioTwimlAppSid: agent.twilioTwimlAppSid,
-      meetingProvider: agent.meetingProvider,
-      googleClientId: agent.googleClientId,
-      googleClientSecret: "",
-      googleRefreshToken: "",
-      googleCreateMeet: agent.googleCreateMeet,
-      ecwApiEndpoint: agent.ecwApiEndpoint,
-      azulApiEndpoint: agent.azulApiEndpoint,
-      flowId: agent.flowId || "",
-      knowledgeIds: [...(agent.knowledgeIds || [])],
-    });
+    setDuplicateSourceTitle(null);
+    setForm(formFromAgent(agent, { includeSecrets: false }));
     setStep(0);
     setOpen(true);
     await loadModels(undefined, agent.id);
@@ -577,9 +624,19 @@ export default function Agents() {
         title="Agents"
         description="Define complete bot behavior — OpenAI models, voice, Twilio, meetings, flows, campaigns, and knowledge."
         actions={
-          <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
-            <Plus className="h-4 w-4 mr-1" /> Create agent
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={openDuplicatePicker}
+              disabled={!data.length}
+            >
+              <Copy className="h-4 w-4 mr-1" /> Duplicate agent
+            </Button>
+            <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
+              <Plus className="h-4 w-4 mr-1" /> Create agent
+            </Button>
+          </div>
         }
       />
 
@@ -590,14 +647,22 @@ export default function Agents() {
         searchPlaceholder="Search agents…"
       />
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setDuplicateSourceTitle(null);
+        }}
+      >
         <DialogContent className="max-w-4xl max-h-[92vh] min-h-0 overflow-hidden flex flex-col gap-0 p-0">
           <DialogHeader className="px-6 pt-6 pb-3 border-b border-border/70">
             <DialogTitle>{editing ? "Edit agent" : "Create agent"}</DialogTitle>
             <DialogDescription>
               {editing
                 ? `Step ${step + 1} of ${AGENT_STEPS.length} — ${AGENT_STEPS[step].label}`
-                : `Step ${step + 1} of ${AGENT_STEPS.length} — ${AGENT_STEPS[step].label}. Configure each layer the bot needs to run.`}
+                : duplicateSourceTitle
+                  ? `Duplicated from “${duplicateSourceTitle}”. Step ${step + 1} of ${AGENT_STEPS.length} — ${AGENT_STEPS[step].label}. Review and save as a new agent.`
+                  : `Step ${step + 1} of ${AGENT_STEPS.length} — ${AGENT_STEPS[step].label}. Configure each layer the bot needs to run.`}
             </DialogDescription>
           </DialogHeader>
 
@@ -1096,6 +1161,95 @@ export default function Agents() {
                 {saving ? "Saving…" : "Save"}
               </Button>
             ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Duplicate agent</DialogTitle>
+            <DialogDescription>
+              Choose an existing agent. We’ll open the create form with its configuration filled
+              in so you can adjust and save a new copy.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <Label className="text-xs text-muted-foreground">Source agent</Label>
+            <ScrollArea className="max-h-72 rounded-xl border border-border/70">
+              <div className="p-2 space-y-1">
+                {data.map((agent) => {
+                  const selected = duplicateAgentId === agent.id;
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      onClick={() => setDuplicateAgentId(agent.id)}
+                      className={cn(
+                        "w-full flex items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+                        selected
+                          ? "bg-primary/10 border border-primary/30"
+                          : "hover:bg-muted/60 border border-transparent"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "mt-0.5 h-4 w-4 rounded-full border flex items-center justify-center shrink-0",
+                          selected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"
+                        )}
+                      >
+                        {selected ? <Check className="h-2.5 w-2.5" /> : null}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-sm truncate">{agent.title}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {agent.description || "No description"}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <Badge
+                            variant={agent.status === "active" ? "default" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {agent.status}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            {agent.openaiVoice || "no voice"}
+                          </Badge>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDuplicateOpen(false)}
+              disabled={loadingDuplicate}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={confirmDuplicate}
+              disabled={!duplicateAgentId || loadingDuplicate}
+              className="bg-gradient-primary text-primary-foreground"
+            >
+              {loadingDuplicate ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Loading…
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4 mr-1" /> Duplicate
+                </>
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
