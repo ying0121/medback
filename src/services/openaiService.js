@@ -403,8 +403,14 @@ async function generateVoiceReply({
   };
 }
 
-async function transcribeAudioBase64({ audioBase64, audioMimeType }) {
-  if (!openaiApiKey) {
+async function transcribeAudioBase64({
+  audioBase64,
+  audioMimeType,
+  apiKey = null,
+  model = null
+} = {}) {
+  const key = String(apiKey || openaiApiKey || "").trim();
+  if (!key) {
     throw new Error("Missing OPENAI_API_KEY");
   }
   if (!audioBase64) {
@@ -414,9 +420,12 @@ async function transcribeAudioBase64({ audioBase64, audioMimeType }) {
   const { extension } = parseMimeType(audioMimeType);
   const audioBuffer = Buffer.from(audioBase64, "base64");
   const audioFile = await toFile(audioBuffer, `voice-input.${extension}`);
-  const transcriptResult = await client.audio.transcriptions.create({
+  const sttClient = key === openaiApiKey ? client : new OpenAI({ apiKey: key });
+  const sttModel =
+    String(model || openaiTranscriptionModel || "").trim() || openaiTranscriptionModel;
+  const transcriptResult = await sttClient.audio.transcriptions.create({
     file: audioFile,
-    model: openaiTranscriptionModel
+    model: sttModel
   });
   const transcriptText = transcriptResult?.text?.trim();
   if (!transcriptText) {

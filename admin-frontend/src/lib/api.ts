@@ -772,36 +772,82 @@ export async function fetchAgentVoicePreviewBlob(opts: {
 
 export type AgentTestMessage = { role: "user" | "assistant"; content: string };
 
+export type AgentTestChannel = "webchat" | "inbound" | "campaign";
+
+export interface AgentTestMeta {
+  channel?: AgentTestChannel | string;
+  flowId: string | null;
+  flowName: string | null;
+  knowledgeCount: number;
+  model: string;
+  voice: string;
+  realtimeModel: string | null;
+  clinicId?: string | null;
+  clinicName?: string | null;
+  campaignId?: string | null;
+  campaignName?: string | null;
+  patientName?: string | null;
+}
+
+export interface AgentTestResult {
+  action?: "start" | "message" | string;
+  reply: string | null;
+  userTranscript?: string | null;
+  messages?: AgentTestMessage[] | null;
+  meta: AgentTestMeta;
+  audioBase64: string | null;
+  audioMimeType: string | null;
+}
+
+export async function listAgentTestOptions(agentId?: string) {
+  const path = agentId
+    ? `/api/admin/agents/${agentId}/test/options`
+    : "/api/admin/agents/options/test";
+  return request<{
+    clinics: { id: string; name: string; acronym?: string | null; city?: string | null }[];
+    campaigns: { id: string; name: string; status?: string | null; clinicId?: string | null }[];
+  }>(path);
+}
+
 export async function testAgentChat(opts: {
   agentId?: string;
   draft?: Partial<AgentInput> & { title?: string };
-  messages: AgentTestMessage[];
+  messages?: AgentTestMessage[];
   language?: string;
-  speak?: boolean;
+  speak?: boolean | null;
+  channel?: AgentTestChannel;
+  action?: "start" | "message";
+  clinicId?: string | null;
+  campaignId?: string | null;
+  contactId?: string | null;
+  patient?: {
+    patientFirstName?: string;
+    patientLastName?: string;
+    patientPhone?: string;
+    patientLanguage?: string;
+  } | null;
+  audioBase64?: string | null;
+  audioMimeType?: string | null;
 }) {
   const path = opts.agentId
     ? `/api/admin/agents/${opts.agentId}/test`
     : "/api/admin/agents/test";
-  return request<{
-    reply: string;
-    meta: {
-      flowId: string | null;
-      flowName: string | null;
-      knowledgeCount: number;
-      model: string;
-      voice: string;
-      realtimeModel: string | null;
-    };
-    audioBase64: string | null;
-    audioMimeType: string | null;
-  }>(path, {
+  return request<AgentTestResult>(path, {
     method: "POST",
     body: JSON.stringify({
       agentId: opts.agentId ? Number(opts.agentId) : undefined,
       draft: opts.draft,
-      messages: opts.messages,
+      messages: opts.messages || [],
       language: opts.language || "English",
-      speak: opts.speak === true,
+      speak: opts.speak,
+      channel: opts.channel || "webchat",
+      action: opts.action || "message",
+      clinicId: opts.clinicId || undefined,
+      campaignId: opts.campaignId || undefined,
+      contactId: opts.contactId || undefined,
+      patient: opts.patient || undefined,
+      audioBase64: opts.audioBase64 || undefined,
+      audioMimeType: opts.audioMimeType || undefined,
     }),
   });
 }

@@ -4,6 +4,8 @@ const { listOpenAiVoicesForAdmin, resolveOpenAiVoice } = require("../services/op
 const {
   normalizeAgentConfig,
   runAgentTestTurn,
+  startAgentTestSession,
+  listAgentTestOptions,
   previewAgentVoiceAudio
 } = require("../services/agentTestService");
 
@@ -415,23 +417,64 @@ async function previewAgentVoice(req, res, next) {
   }
 }
 
+async function testAgentOptions(req, res, next) {
+  try {
+    const agentId = Number(req.params.id || req.query.agentId || 0);
+    const options = await listAgentTestOptions(agentId || null);
+    return res.status(200).json(options);
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function testAgent(req, res, next) {
   try {
     const body = req.body || {};
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const language = body.language || "English";
-    const speak = body.speak === true;
+    const speak = body.speak;
+    const channel = body.channel || "webchat";
+    const action = String(body.action || "message").toLowerCase();
+    const clinicId = body.clinicId || null;
+    const campaignId = body.campaignId || null;
+    const contactId = body.contactId || null;
+    const patient = body.patient && typeof body.patient === "object" ? body.patient : null;
+    const audioBase64 = body.audioBase64 || null;
+    const audioMimeType = body.audioMimeType || null;
 
     const { config } = await resolveAgentConfigFromRequest(req);
-    const result = await runAgentTestTurn({
-      agentConfig: config,
-      messages,
-      language,
-      speak
-    });
+
+    const result =
+      action === "start"
+        ? await startAgentTestSession({
+            agentConfig: config,
+            channel,
+            language,
+            speak,
+            clinicId,
+            campaignId,
+            contactId,
+            patient
+          })
+        : await runAgentTestTurn({
+            agentConfig: config,
+            messages,
+            language,
+            speak,
+            channel,
+            clinicId,
+            campaignId,
+            contactId,
+            patient,
+            audioBase64,
+            audioMimeType
+          });
 
     return res.status(200).json({
+      action: result.action,
       reply: result.reply,
+      userTranscript: result.userTranscript || null,
+      messages: result.messages || null,
       meta: result.meta,
       audioBase64: result.audioBase64 || null,
       audioMimeType: result.audioMimeType || null
@@ -453,5 +496,6 @@ module.exports = {
   listAgentLinkOptions,
   previewAgentVoice,
   testAgent,
+  testAgentOptions,
   toAgentDto
 };

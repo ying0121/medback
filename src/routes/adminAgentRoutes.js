@@ -9,7 +9,8 @@ const {
   listAgentVoices,
   listAgentLinkOptions,
   previewAgentVoice,
-  testAgent
+  testAgent,
+  testAgentOptions
 } = require("../controllers/adminAgentController");
 
 const router = express.Router();
@@ -19,6 +20,7 @@ router.post("/options/models", listAgentModels);
 router.get("/options/voices", listAgentVoices);
 router.get("/options/links", listAgentLinkOptions);
 router.post("/options/voice-preview", previewAgentVoice);
+router.get("/options/test", testAgentOptions);
 router.post("/test", testAgent);
 
 router.get("/", listAgents);
@@ -27,6 +29,7 @@ router.post("/", createAgent);
 router.put("/:id", updateAgent);
 router.delete("/:id", deleteAgent);
 router.post("/:id/voice-preview", previewAgentVoice);
+router.get("/:id/test/options", testAgentOptions);
 router.post("/:id/test", testAgent);
 
 module.exports = router;

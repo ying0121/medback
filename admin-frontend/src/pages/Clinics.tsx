@@ -97,9 +97,11 @@ export default function Clinics() {
   const [syncingExternal, setSyncingExternal] = useState(false);
   const [savingAgentId, setSavingAgentId] = useState<string | null>(null);
   const [testOpen, setTestOpen] = useState(false);
-  const [testTarget, setTestTarget] = useState<{ agentId: string; title: string } | null>(
-    null
-  );
+  const [testTarget, setTestTarget] = useState<{
+    agentId: string;
+    title: string;
+    clinicId: string;
+  } | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
@@ -204,6 +206,7 @@ export default function Clinics() {
     setTestTarget({
       agentId: clinic.agentId,
       title: agent?.title || clinic.agentTitle || "Agent",
+      clinicId: clinic.id,
     });
     setTestOpen(true);
   };
@@ -560,6 +563,7 @@ export default function Clinics() {
         onOpenChange={setTestOpen}
         agentId={testTarget?.agentId}
         agentTitle={testTarget?.title}
+        clinicId={testTarget?.clinicId}
       />
 
       <AlertDialog open={!!confirmDelete} onOpenChange={(v) => !v && setConfirmDelete(null)}>
