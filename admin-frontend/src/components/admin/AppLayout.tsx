@@ -18,7 +18,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
-import botLogo from "@/assets/bot-logo.png";
+import MedBotLogo from "@/components/admin/MedBotLogo";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -182,16 +182,17 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 collapsed ? "flex-col gap-2" : "gap-2"
               )}
             >
-              <motion.img
-                src={botLogo}
-                alt="MedBot"
-                width={40}
-                height={40}
-                className="rounded-xl shadow-md ring-2 ring-primary/30 shrink-0"
+              <motion.div
+                className="shrink-0"
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.4, ease: pageEase }}
-              />
+              >
+                <MedBotLogo
+                  size={collapsed ? 36 : 40}
+                  className="rounded-[10px] shadow-md ring-1 ring-white/15"
+                />
+              </motion.div>
               {!collapsed ? (
                 <div className="relative min-w-0 flex-1">
                   <div className="font-display font-semibold tracking-tight text-[1.05rem]">

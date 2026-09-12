@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MedBot">
+  <defs>
+    <linearGradient id="bg" x1="4" y1="0" x2="60" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F766E"/>
+      <stop offset="0.5" stop-color="#0D9488"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <!-- Left + center of geometric M -->
+  <path
+    fill="#FFFFFF"
+    d="M13 47.5V16.5h8.2L32.2 41V47.5H25.6l-.6-1.5-5.2-12.8v14.3H13z"
+  />
+  <!-- Separated stem (i) -->
+  <path fill="#FFFFFF" d="M37 47.5V19.5h8.2V47.5H37z"/>
+  <!-- Mint AI accent -->
+  <circle cx="41.1" cy="13" r="4.3" fill="#5EEAD4"/>
+</svg>

@@ -39,7 +39,7 @@ export default function PageHeader({
             transition={{ duration: 0.3 }}
           >
             <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-            MedBot admin
+            Medical Bot Console
           </motion.div>
           <motion.h1
             className="font-display text-3xl font-semibold tracking-tight text-foreground"

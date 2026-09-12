@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import botLogo from "@/assets/bot-logo.png";
+import MedBotLogo from "@/components/admin/MedBotLogo";
 
 export default function Login() {
   const { user, signIn } = useAuth();
@@ -84,18 +84,23 @@ export default function Login() {
         <div className="rounded-3xl border border-border/70 bg-card/95 backdrop-blur-sm p-8 shadow-elegant">
           <div className="flex flex-col items-center text-center mb-7 lg:items-start lg:text-left">
             <div className="relative mb-4">
-              <div className="absolute inset-0 bg-primary/20 blur-2xl opacity-60 rounded-full" />
-              <motion.img
-                src={botLogo}
-                alt="MedBot logo"
-                width={80}
-                height={80}
-                className="relative h-20 w-20 drop-shadow-xl animate-float-soft"
-              />
+              <div className="absolute inset-0 bg-primary/25 blur-2xl opacity-70 rounded-full scale-110" />
+              <motion.div
+                className="relative"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <MedBotLogo
+                  size={80}
+                  alt="MedBot logo"
+                  className="rounded-[1.35rem] shadow-elegant animate-float-soft"
+                />
+              </motion.div>
             </div>
             <h2 className="font-display text-2xl font-semibold tracking-tight">Welcome back</h2>
             <p className="text-muted-foreground mt-1.5 text-sm">
-              Sign in to the MedBot admin console.
+              Sign in to the Medical Bot Console console.
             </p>
           </div>
 
