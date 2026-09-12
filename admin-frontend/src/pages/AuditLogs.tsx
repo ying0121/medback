@@ -37,6 +37,7 @@ const ACTION_OPTIONS = [
 ] as const;
 
 const OUTCOME_OPTIONS = ["all", "success", "failure"] as const;
+const PAGE_SIZE_OPTIONS = [20, 40, 50, 100] as const;
 
 function formatWhen(iso: string | null) {
   if (!iso) return { date: "—", time: "" };
@@ -145,6 +146,7 @@ export default function AuditLogs() {
   const [items, setItems] = useState<AuditLogItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(40);
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
@@ -162,7 +164,7 @@ export default function AuditLogs() {
         action: action === "all" ? undefined : action,
         outcome: outcome === "all" ? undefined : outcome,
         page,
-        limit: 40,
+        limit: pageSize,
       });
       setItems(res.items);
       setTotal(res.total);
@@ -172,7 +174,7 @@ export default function AuditLogs() {
     } finally {
       setLoading(false);
     }
-  }, [q, action, outcome, page]);
+  }, [q, action, outcome, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -393,30 +395,56 @@ export default function AuditLogs() {
             data={items}
             columns={columns}
             rowKey={(r) => r.id}
-            pageSize={40}
+            pageSize={pageSize}
             searchPlaceholder="Filter loaded rows…"
             emptyMessage="No audit events yet. Admin actions will appear here."
           />
-          <div className="mt-3 flex items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1 || loading}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              Previous
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              Page {page} of {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages || loading}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </Button>
+          <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span>Rows per page</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => {
+                  setPage(1);
+                  setPageSize(Number(v) as (typeof PAGE_SIZE_OPTIONS)[number]);
+                }}
+              >
+                <SelectTrigger className="w-[88px] h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="tabular-nums">
+                {total.toLocaleString()} total
+              </span>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </Button>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages || loading}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </Button>
+            </div>
           </div>
         </>
       )}

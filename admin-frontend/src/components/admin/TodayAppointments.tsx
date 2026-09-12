@@ -40,10 +40,11 @@ export default function TodayAppointments({
   const nextId = items.find((row) => isAfter(new Date(row.startsAt), now))?.id ?? null;
 
   return (
-    <section className="bg-card border border-border/80 rounded-2xl shadow-soft overflow-hidden flex flex-col h-full min-h-[420px]">
-      <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+    <section className="surface-card shadow-soft overflow-hidden flex flex-col h-full min-h-[440px] relative">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-med-mint/[0.07] to-transparent" />
+      <div className="relative px-5 py-4 border-b border-border/80 flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-semibold tracking-tight">Today’s appointments</h3>
+          <h3 className="font-display font-semibold tracking-tight text-lg">Today’s appointments</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
             {formatNyDate(now, { year: undefined })} · {items.length}{" "}
             {items.length === 1 ? "visit" : "visits"}

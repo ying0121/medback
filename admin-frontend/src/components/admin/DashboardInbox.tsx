@@ -154,16 +154,19 @@ export default function DashboardInbox({
   const theme = getThemeColorOption(activeClinic?.themeColor);
 
   return (
-    <section className="bg-card border border-border/80 rounded-2xl shadow-soft overflow-hidden">
-      <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+    <section className="surface-card overflow-hidden relative">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-primary/[0.05] to-transparent" />
+      <div className="relative px-5 py-4 border-b border-border/80 flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-semibold tracking-tight">Conversation history</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Choose a clinic, then open a patient thread. Transcripts are shown oldest to newest.
+          <h3 className="font-display font-semibold tracking-tight text-lg">
+            Conversation inbox
+          </h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Choose a clinic, then open a patient thread. Transcripts show oldest to newest.
           </p>
         </div>
         {activeClinic && (
-          <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="hidden sm:inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground">
             <span
               className="h-2 w-2 rounded-full"
               style={{ background: theme.from }}
