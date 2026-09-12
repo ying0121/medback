@@ -127,16 +127,46 @@ function CountryFlag({
 
 function IpWithFlag({ row }: { row: AuditLogItem }) {
   const ip = row.ipAddress || "—";
+  const edge = row.edgeIpAddress && row.edgeIpAddress !== row.ipAddress ? row.edgeIpAddress : null;
+  const privacyBits = [
+    row.ipIsProxy ? "VPN / proxy" : null,
+    row.ipIsHosting ? "Hosting" : null,
+  ].filter(Boolean) as string[];
+  const privacy = privacyBits.length ? privacyBits.join(" · ") : null;
+
   return (
-    <div className="flex items-center gap-2 min-w-[160px]">
-      <CountryFlag code={row.countryCode} name={row.countryName} />
-      <div className="min-w-0">
-        <div className="font-mono text-sm font-medium truncate" title={ip}>
-          {ip}
+    <div className="flex items-start gap-2 min-w-[200px]">
+      <CountryFlag code={row.countryCode} name={row.countryName} className="mt-0.5" />
+      <div className="min-w-0 space-y-1.5">
+        <div>
+          <div className="font-mono text-sm font-medium truncate" title={ip}>
+            {ip}
+          </div>
+          <div className="text-[11px] text-muted-foreground truncate">
+            {edge ? "Client IP" : null}
+            {edge && (row.countryName || row.countryCode) ? " · " : null}
+            {!edge || row.countryName || row.countryCode
+              ? row.countryName || row.countryCode || (!edge ? "Unknown location" : null)
+              : null}
+          </div>
         </div>
-        <div className="text-[11px] text-muted-foreground truncate">
-          {row.countryName || row.countryCode || "Unknown location"}
-        </div>
+        {edge ? (
+          <div>
+            <div className="font-mono text-xs text-foreground/85 truncate" title={edge}>
+              {edge}
+            </div>
+            <div className="text-[11px] text-muted-foreground">Network edge</div>
+          </div>
+        ) : null}
+        {privacy ? (
+          <Badge
+            variant="outline"
+            className="text-[10px] border-amber-400/50 text-amber-800 bg-amber-50"
+            title="IP reputation hint. A true home IP behind a VPN/proxy cannot be recovered by the server."
+          >
+            {privacy}
+          </Badge>
+        ) : null}
       </div>
     </div>
   );
@@ -216,9 +246,9 @@ export default function AuditLogs() {
     {
       key: "ip",
       header: "IP address",
-      className: "w-[200px]",
+      className: "w-[240px]",
       searchable: (r) =>
-        `${r.ipAddress || ""} ${r.countryCode || ""} ${r.countryName || ""}`,
+        `${r.ipAddress || ""} ${r.edgeIpAddress || ""} ${r.countryCode || ""} ${r.countryName || ""} ${r.ipIsProxy ? "vpn proxy" : ""} ${r.ipIsHosting ? "hosting" : ""}`,
       render: (r) => <IpWithFlag row={r} />,
     },
     {

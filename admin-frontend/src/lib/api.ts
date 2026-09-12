@@ -1915,6 +1915,9 @@ export interface AuditLogItem {
   clinicId: string | null;
   outcome: "success" | "failure" | string;
   ipAddress: string | null;
+  edgeIpAddress?: string | null;
+  ipIsProxy?: boolean;
+  ipIsHosting?: boolean;
   countryCode?: string | null;
   countryName?: string | null;
   userAgent: string | null;

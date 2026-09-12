@@ -6,6 +6,7 @@
 const { Op } = require("sequelize");
 const geoip = require("geoip-lite");
 const { AuditLog } = require("../db");
+const { lookupIpPrivacy } = require("./ipPrivacyService");
 
 const SENSITIVE_KEYS = new Set([
   "password",
@@ -103,6 +104,20 @@ function clientIp(req) {
     if (ip) return ip;
   }
   return null;
+}
+
+/**
+ * Best-effort client IP + direct connection peer (load balancer / edge).
+ * Note: if the user is on a VPN, `ipAddress` is the VPN egress — the home IP is not available.
+ */
+function resolveRequestIps(req) {
+  const ipAddress = clientIp(req);
+  const edgeIpAddress = normalizeIp(req?.socket?.remoteAddress);
+  return {
+    ipAddress,
+    edgeIpAddress:
+      edgeIpAddress && ipAddress && edgeIpAddress !== ipAddress ? edgeIpAddress : null
+  };
 }
 
 function resolveCountry(ipAddress, provided = {}) {
@@ -229,10 +244,19 @@ async function writeAuditLog(input = {}) {
       String(input.resourceType || "system").trim().slice(0, 64) || "system";
     const outcome = String(input.outcome || "success").trim().slice(0, 32) || "success";
     const ipAddress = normalizeIp(input.ipAddress) || null;
+    const edgeIpAddress = normalizeIp(input.edgeIpAddress) || null;
     const geo = resolveCountry(ipAddress, {
       countryCode: input.countryCode,
       countryName: input.countryName
     });
+
+    let ipIsProxy = Boolean(input.ipIsProxy);
+    let ipIsHosting = Boolean(input.ipIsHosting);
+    if (ipAddress && input.ipIsProxy == null && input.ipIsHosting == null) {
+      const privacy = await lookupIpPrivacy(ipAddress);
+      ipIsProxy = privacy.ipIsProxy;
+      ipIsHosting = privacy.ipIsHosting;
+    }
 
     await AuditLog.create({
       actorUserId: input.actorUserId != null ? Number(input.actorUserId) || null : null,
@@ -245,6 +269,12 @@ async function writeAuditLog(input = {}) {
       clinicId: input.clinicId != null ? String(input.clinicId).slice(0, 64) : null,
       outcome,
       ipAddress: ipAddress ? String(ipAddress).slice(0, 64) : null,
+      edgeIpAddress:
+        edgeIpAddress && edgeIpAddress !== ipAddress
+          ? String(edgeIpAddress).slice(0, 64)
+          : null,
+      ipIsProxy,
+      ipIsHosting,
       countryCode: geo.countryCode ? String(geo.countryCode).slice(0, 8) : null,
       countryName: geo.countryName ? String(geo.countryName).slice(0, 128) : null,
       userAgent: input.userAgent ? String(input.userAgent).slice(0, 512) : null,
@@ -266,6 +296,7 @@ async function writeAuditLog(input = {}) {
 function writeAuditFromRequest(req, overrides = {}) {
   const actor = extractActorFromRequest(req);
   const path = String(req.originalUrl || req.url || "").slice(0, 512);
+  const ips = resolveRequestIps(req);
   return writeAuditLog({
     ...actor,
     action: overrides.action || inferAction(req.method),
@@ -273,7 +304,8 @@ function writeAuditFromRequest(req, overrides = {}) {
     resourceId: overrides.resourceId || extractResourceId(path),
     clinicId: overrides.clinicId || req.query?.clinicId || req.body?.clinicId || null,
     outcome: overrides.outcome || "success",
-    ipAddress: clientIp(req),
+    ipAddress: ips.ipAddress,
+    edgeIpAddress: ips.edgeIpAddress,
     userAgent: String(req.headers?.["user-agent"] || "").slice(0, 512) || null,
     method: req.method,
     path,
@@ -326,6 +358,7 @@ async function listAuditLogs({
       { resourceId: { [Op.like]: like } },
       { action: { [Op.like]: like } },
       { ipAddress: { [Op.like]: like } },
+      { edgeIpAddress: { [Op.like]: like } },
       { countryCode: { [Op.like]: like } },
       { countryName: { [Op.like]: like } }
     ];
@@ -394,6 +427,9 @@ function toAuditDto(row) {
     clinicId: row.clinicId || null,
     outcome: row.outcome,
     ipAddress: row.ipAddress || null,
+    edgeIpAddress: row.edgeIpAddress || null,
+    ipIsProxy: Boolean(row.ipIsProxy),
+    ipIsHosting: Boolean(row.ipIsHosting),
     countryCode,
     countryName,
     userAgent: row.userAgent || null,
@@ -412,6 +448,7 @@ module.exports = {
   clearAllAuditLogs,
   extractActorFromRequest,
   clientIp,
+  resolveRequestIps,
   normalizeIp,
   resolveCountry,
   inferAction,

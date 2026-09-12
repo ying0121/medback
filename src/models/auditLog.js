@@ -66,6 +66,23 @@ const AuditLog = sequelize.define(
       allowNull: true,
       field: "ip_address"
     },
+    edgeIpAddress: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      field: "edge_ip_address"
+    },
+    ipIsProxy: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "ip_is_proxy"
+    },
+    ipIsHosting: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "ip_is_hosting"
+    },
     countryCode: {
       type: DataTypes.STRING(8),
       allowNull: true,

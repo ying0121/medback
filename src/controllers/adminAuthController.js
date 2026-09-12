@@ -1,6 +1,6 @@
 const { User } = require("../db");
 const { encodePassword } = require("../utils/passwordEncoder");
-const { writeAuditLog, clientIp } = require("../services/auditLogService");
+const { writeAuditLog, resolveRequestIps } = require("../services/auditLogService");
 
 function parseClinicIds(raw) {
   if (!raw) return [];
@@ -29,7 +29,7 @@ async function login(req, res, next) {
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
-    const ip = clientIp(req);
+    const { ipAddress, edgeIpAddress } = resolveRequestIps(req);
     const userAgent = String(req.headers?.["user-agent"] || "").slice(0, 512) || null;
 
     if (!email || !password) {
@@ -38,7 +38,8 @@ async function login(req, res, next) {
         action: "LOGIN_FAILURE",
         resourceType: "auth",
         outcome: "failure",
-        ipAddress: ip,
+        ipAddress,
+        edgeIpAddress,
         userAgent,
         method: "POST",
         path: "/api/admin/auth/login",
@@ -55,7 +56,8 @@ async function login(req, res, next) {
         action: "LOGIN_FAILURE",
         resourceType: "auth",
         outcome: "failure",
-        ipAddress: ip,
+        ipAddress,
+        edgeIpAddress,
         userAgent,
         method: "POST",
         path: "/api/admin/auth/login",
@@ -76,7 +78,8 @@ async function login(req, res, next) {
         resourceType: "auth",
         resourceId: String(user.id),
         outcome: "failure",
-        ipAddress: ip,
+        ipAddress,
+        edgeIpAddress,
         userAgent,
         method: "POST",
         path: "/api/admin/auth/login",
@@ -97,7 +100,8 @@ async function login(req, res, next) {
       resourceType: "auth",
       resourceId: String(user.id),
       outcome: "success",
-      ipAddress: ip,
+      ipAddress,
+      edgeIpAddress,
       userAgent,
       method: "POST",
       path: "/api/admin/auth/login",
