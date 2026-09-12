@@ -1,16 +1,22 @@
-# Healthcare Chat Bot 
+# Healthcare Chat Bot (MedBot)
 
-Backend platform for clinic-facing AI assistants: REST and WebSocket chat, Twilio voice/SMS, an admin dashboard, and a low-latency inbound phone bot powered by streaming speech and TTS.
+Clinic-facing AI front desk platform: web chat, inbound PSTN voice, appointment booking, outbound campaign calling, and a clinical **MedBot Admin** console.
+
+The Express API serves a marketing landing page at `/` and the admin SPA at `/admin`.
 
 ## Features
 
 | Area | Capabilities |
 |------|----------------|
-| **Chat** | OpenAI-powered conversations scoped per clinic, with knowledge-base context |
-| **Realtime** | Socket.IO channel for text and voice turns (transcription + TTS) |
-| **Inbound voice** | PSTN calls via Twilio Media Streams → Deepgram STT → OpenAI → ElevenLabs TTS, with barge-in and call persistence |
-| **Twilio** | Outbound/inbound voice, SMS webhooks, call control (start, stop, mute) |
-| **Admin UI** | React SPA at `/admin` — users, clinics, training/knowledge, call logs, dashboard stats |
+| **Web chat** | OpenAI-powered conversations scoped per clinic, with knowledge-base context |
+| **Realtime chat** | Socket.IO channel for text and voice turns (transcription + TTS) |
+| **Inbound voice** | PSTN via Twilio Media Streams → **OpenAI Realtime** (STT + LLM + TTS in one session), barge-in, call persistence |
+| **Agents** | Full bot profiles — models, voice, Twilio, meetings, flows, knowledge; **duplicate agent** into a prefilled create form |
+| **Conversation flows** | Visual graph builder (Start → nodes → End hangs up); **duplicate flow** with deep-copied graph |
+| **Campaigns** | Scheduled outbound dialing; patient Excel import / API sync; **duplicate campaign** (config only — patients not copied) |
+| **Appointments & doctors** | Clinic schedules, booking from chat/phone, doctor roster |
+| **Admin UI** | React SPA at `/admin` — dashboard, clinics, agents, flows, campaigns, calls, audit logs |
+| **Audit logs** | Access trail (who / what / when / where), filters, selectable page size, clear-all |
 | **Alerts** | Optional email (SMTP) and SMS (Twilio) notifications |
 
 ## Architecture
@@ -18,25 +24,25 @@ Backend platform for clinic-facing AI assistants: REST and WebSocket chat, Twili
 ```mermaid
 flowchart TB
   subgraph clients [Clients]
+    Landing[Landing site]
     WebChat[Web / mobile chat]
-    Admin[Admin SPA /admin]
+    Admin[MedBot Admin /admin]
     Phone[Inbound PSTN caller]
   end
 
-  subgraph Healthcare Chat Bot  [Healthcare Chat Bot  — Express + HTTP server]
-  API[REST /api/*]
-  SIO[Socket.IO /ws/chat]
-  WS[WebSocket /api/twilio/voice/stream]
+  subgraph platform [Healthcare Chat Bot — Express]
+    API[REST /api/*]
+    SIO[Socket.IO /ws/chat]
+    WS[WebSocket /api/twilio/voice/stream]
   end
 
   subgraph data [Data & AI]
-  MySQL[(MySQL)]
-  OpenAI[OpenAI]
-  DG[Deepgram]
-  EL[ElevenLabs]
-  Twilio[Twilio]
+    MySQL[(MySQL)]
+    OpenAI[OpenAI chat + Realtime]
+    Twilio[Twilio]
   end
 
+  Landing --> API
   WebChat --> SIO
   WebChat --> API
   Admin --> API
@@ -47,9 +53,7 @@ flowchart TB
   API --> MySQL
   SIO --> MySQL
   SIO --> OpenAI
-  WS --> DG
   WS --> OpenAI
-  WS --> EL
   API --> Twilio
 ```
 
@@ -57,20 +61,20 @@ flowchart TB
 
 - **Runtime:** Node.js, Express 5
 - **Database:** MySQL via Sequelize
-- **Realtime:** Socket.IO (chat), `ws` (Twilio Media Streams)
-- **AI:** OpenAI (chat, transcription, TTS, classifiers)
-- **Voice:** Deepgram (inbound STT), ElevenLabs (TTS), Twilio (telephony)
-- **Admin:** React 18, Vite, Tailwind, Radix UI
+- **Realtime:** Socket.IO (web chat), `ws` (Twilio Media Streams)
+- **AI:** OpenAI (chat completions, transcription/TTS for Socket.IO voice, **Realtime** for inbound PSTN)
+- **Telephony:** Twilio (inbound/outbound voice, SMS webhooks)
+- **Admin / landing:** React 18, Vite, TypeScript, Tailwind, Radix/shadcn, Framer Motion, Recharts
 
 ## Prerequisites
 
 - Node.js 18+ (20+ recommended)
 - MySQL 8+
-- API keys as needed for your deployment:
-  - **Required for chat:** `OPENAI_API_KEY`
+- API keys as needed:
+  - **Required for chat/voice:** `OPENAI_API_KEY`
   - **Required for DB:** `DB_*` variables
-  - **Inbound phone bot:** `DEEPGRAM_API_KEY`, Twilio account, per-clinic ElevenLabs config in admin
-  - **Optional:** Twilio (SMS/voice), SMTP (email alerts)
+  - **Inbound phone:** Twilio account + public HTTPS/WSS (`SERVER_URL`, optional `TWILIO_STREAM_WSS_URL`)
+  - **Optional:** SMTP (email alerts), Twilio SMS
 
 ## Quick start
 
@@ -80,7 +84,7 @@ flowchart TB
 cp .env.example .env
 ```
 
-Edit `.env` with your database credentials, `OPENAI_API_KEY`, and any integrations you plan to use. See [Environment variables](#environment-variables) below.
+Edit `.env` with database credentials, `OPENAI_API_KEY`, and any integrations you plan to use. See [Environment variables](#environment-variables).
 
 ### 2. Install dependencies
 
@@ -90,15 +94,13 @@ npm install
 
 ### 3. Initialize the database
 
-Creates or updates tables via Sequelize:
-
 ```bash
 npm run db:sync
 ```
 
 ### 4. Run the server
 
-Builds the admin SPA and starts the API with file watching:
+Builds the landing + admin SPAs and starts the API with file watching:
 
 ```bash
 npm start
@@ -106,65 +108,91 @@ npm start
 
 Default URL: `http://localhost:4000` (override with `PORT`).
 
-- Health check: `GET /health`
-- Admin dashboard: `http://localhost:4000/admin` (after build)
+| URL | Purpose |
+|-----|---------|
+| `GET /health` | Health check |
+| `http://localhost:4000/` | Landing site |
+| `http://localhost:4000/admin` | MedBot Admin (after build) |
 
-### Admin frontend — development
+### Frontend development
 
-Run the API (`npm start`) in one terminal and the Vite dev server in another for hot reload:
+Run the API (`npm start` or `node src/server.js` after a build) in one terminal, then:
 
 ```bash
-npm run admin:dev
+npm run admin:dev      # Vite HMR for admin (base /admin/)
+npm run landing:dev    # Vite HMR for landing
 ```
-
-The dev server uses base path `/admin/`. Point `VITE_API_BASE_URL` at your backend if you proxy API calls separately.
-
-Other scripts:
 
 | Script | Description |
 |--------|-------------|
-| `npm run admin:build` | Production build → `admin-frontend/dist` |
-| `npm run admin:preview` | Preview the built admin app |
-| `npm run db:sync` | Sync schema only (no server) |
+| `npm start` | Build landing + admin, then `nodemon src/server.js` |
+| `npm run landing:build` | Production landing → `landing-frontend/dist` |
+| `npm run admin:build` | Production admin → `admin-frontend/dist` |
+| `npm run admin:preview` | Preview built admin app |
+| `npm run db:sync` | Sync schema only |
+| `npm run signaling:build` | Obfuscate signaling bundle |
 
 ## Project structure
 
 ```
-Healthcare Chat Bot /
+mediback/
 ├── src/
 │   ├── server.js          # HTTP server, Socket.IO, inbound WS bootstrap
-│   ├── app.js             # Express app, routes, admin static hosting
+│   ├── app.js             # Express app, routes, static hosting
 │   ├── controllers/       # Request handlers
 │   ├── routes/            # Route definitions
-│   ├── services/          # Business logic (chat, Twilio, voice pipeline, AI)
+│   ├── services/          # Chat, Twilio, OpenAI Realtime, campaigns, audit
 │   ├── models/            # Sequelize models
 │   ├── realtime/          # Socket.IO + Twilio Media Stream handlers
 │   ├── db/                # Sequelize connection & sync
 │   └── middlewares/
-├── admin-frontend/        # React admin SPA (served at /admin)
-└── .env.example           # Environment template
+├── admin-frontend/        # MedBot Admin SPA → /admin
+├── landing-frontend/      # Marketing landing → /
+└── .env.example
 ```
 
-### Data models
+### Data models (high level)
 
-| Model | Purpose |
-|-------|---------|
-| `clinics` | Clinic profile, Twilio/ElevenLabs settings |
-| `users` | Admin and clinic staff accounts |
-| `knowledge` | Training content injected into prompts |
-| `conversations` / `messages` | Web chat sessions |
-| `calls` / `incoming_messages` | Inbound PSTN call logs and transcripts |
+| Area | Models / purpose |
+|------|------------------|
+| Clinics & staff | Clinics, users, doctors |
+| Bot config | Agents, conversation flows, knowledge |
+| Outreach | Campaigns, campaign contacts / patients |
+| Sessions | Conversations, messages, calls |
+| Care | Appointments |
+| Compliance | Audit logs |
+
+## MedBot Admin
+
+After build, open `http://localhost:4000/admin`.
+
+| Page | Path | Notes |
+|------|------|-------|
+| Dashboard | `/admin/dashboard` | KPIs, channel chart (7/30/60d), today’s appointments, clinic performance, inbox |
+| Clinics | `/admin/clinics` | Profiles, themes, greetings, integrations |
+| Appointments | `/admin/appointments` | Calendar / schedule |
+| Users | `/admin/users` | Admin & clinic staff |
+| Doctors | `/admin/doctors` | Provider roster |
+| Agents | `/admin/agents` | Bot config wizard; **Duplicate agent** |
+| Knowledge | `/admin/training` | Training content for prompts |
+| Flows | `/admin/flows` | Visual conversation graphs; **Duplicate flow** |
+| Campaigns | `/admin/campaigns` | Outbound dialing; **Duplicate campaign** |
+| Campaign patients | `/admin/campaigns/:id` | Import / sync / contact status |
+| Calls | `/admin/calls` | Inbound call history & transcripts |
+| Audit logs | `/admin/audit-logs` | Access trail, filters, rows-per-page |
+
+Sessions expire after idle timeout (see admin auth). If the admin build is missing, `/admin` returns HTTP 503 with build instructions.
 
 ## Environment variables
 
-Copy `.env.example` and set values for your environment. Grouped by concern:
+Copy `.env.example` and set values for your environment.
 
 ### Core
 
 | Variable | Description |
 |----------|-------------|
 | `PORT` | HTTP port (default `4000`) |
-| `SERVER_URL` | Public base URL Twilio uses for `<Play>` audio (e.g. `https://api.example.com`) |
+| `SERVER_URL` | Public base URL Twilio uses for callbacks / `<Play>` audio |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins for REST |
 | `ALLOWED_WS_ORIGINS` | Comma-separated origins for Socket.IO |
 
@@ -175,50 +203,48 @@ Copy `.env.example` and set values for your environment. Grouped by concern:
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | MySQL connection |
 | `DB_CHARSET`, `DB_TIMEZONE` | Optional Sequelize settings |
 
-### OpenAI
+### OpenAI (chat & Socket.IO voice)
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | **Required** for chat and voice features |
-| `OPENAI_MODEL` | Chat completion model (default `gpt-5.4-mini`) |
+| `OPENAI_API_KEY` | **Required** |
+| `OPENAI_MODEL` | Chat completion model |
 | `OPENAI_SYSTEM_PROMPT` | Base system prompt for web chat |
-| `OPENAI_MAX_COMPLETION_TOKENS` | Token limit for completions |
-| `OPENAI_TRANSCRIPTION_MODEL` | Speech-to-text model |
-| `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_FORMAT` | OpenAI TTS for Socket.IO voice replies |
+| `OPENAI_MAX_COMPLETION_TOKENS` | Completion token limit |
+| `OPENAI_TRANSCRIPTION_MODEL` | Speech-to-text for Socket.IO voice |
+| `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_FORMAT` | TTS for Socket.IO voice replies |
+| `CHAT_GREETING` | Default web chat greeting |
 
-### Inbound voice bot
+### Inbound voice (OpenAI Realtime + Twilio)
 
 | Variable | Description |
 |----------|-------------|
-| `DEEPGRAM_API_KEY` | Streaming STT for phone calls |
-| `DEEPGRAM_MULTILINGUAL_MODEL` | Model for inbound STT (default `nova-3`; always used with `language=multi`) |
-| `DEEPGRAM_FORCE_ENGLISH_STT` | Set `1` to disable multilingual mode and use English-only `DEEPGRAM_MODEL` |
-| `DEEPGRAM_MODEL` | Used only when `DEEPGRAM_FORCE_ENGLISH_STT=1` (e.g. `nova-2-phonecall`) |
+| `OPENAI_REALTIME_MODEL` | Realtime model (default `gpt-realtime-1.5`) |
+| `OPENAI_REALTIME_VOICE` | Default voice (e.g. `marin`) |
+| `OPENAI_REALTIME_TRANSCRIPTION_MODEL` | Input transcription model |
 | `VAD_SILENCE_MS` | Endpointing silence (default `300`) |
 | `BOT_SYSTEM_PROMPT` | Base prompt; clinic context appended automatically |
-| `OPENAI_INBOUND_MODEL` | Optional faster model for phone-only |
-| `TWILIO_INBOUND_VOICE_GREETING` | Greeting; `$clinic_name$` substituted from DB |
-| `ELEVENLABS_INBOUND_TTS_MODEL` | Low-latency model (default `eleven_flash_v2_5`) |
-| `TWILIO_STREAM_WSS_URL` | Optional dedicated WSS base if your proxy breaks upgrades |
-
-### Twilio & alerts
-
-| Variable | Description |
-|----------|-------------|
+| `TWILIO_INBOUND_VOICE_GREETING` | Greeting; `$clinic_name$` (and related) substituted |
+| `TWILIO_INBOUND_GREETING_CLINIC_FALLBACK` | Fallback clinic label |
+| `INBOUND_END_CALL_ENABLED` | `1` = detect goodbye and hang up |
+| `TWILIO_STREAM_WSS_URL` | Optional dedicated WSS base if the main proxy breaks upgrades |
 | `TWILIO_CALL_CALLBACK_URL` | Status callback URL |
-| `SMTP_*`, `ALERT_EMAIL` | Email alerts |
-| Per-clinic Twilio/ElevenLabs keys | Configured via admin API, not only `.env` |
 
-### Socket.IO
+Agent-level OpenAI / Twilio / meeting credentials are configured in **Admin → Agents** (not only `.env`).
+
+### Alerts & Socket.IO
 
 | Variable | Description |
 |----------|-------------|
-| `WEBSOCKET_CHAT_URL` | Socket.IO path (default `/ws/chat`) |
-| `WS_PING_INTERVAL_MS`, `WS_PING_TIMEOUT_MS` | Keepalive tuning |
+| `SMTP_*`, `ALERT_EMAIL` | Email alerts |
+| `APPOINTMENT_NOTIFY_EMAILS` | Appointment request notifications |
+| `CALL_ANALYSIS_NOTIFY_EMAILS` | Post-call analysis BCC list |
+| `WEBSOCKET_CHAT_URL` / `SOCKET_IO_PATH` | Socket.IO path (default `/ws/chat`) |
+| `SOCKET_IO_*`, `WS_PING_*` | Keepalive / upgrade tuning |
 
 ## API reference
 
-All JSON APIs are under `/api`. Errors return `{ "error": "..." }` unless noted.
+All JSON APIs are under `/api`. Errors typically return `{ "error": "..." }`.
 
 ### Health
 
@@ -229,102 +255,75 @@ GET /health
 
 ### Chat (`/api/chat`)
 
-| Method | Path | Body / params |
-|--------|------|----------------|
-| `POST` | `/conversation/start` | `{ "clinicId": 1, "userInfo": "..." }` → `{ "conversationId" }` |
-| `POST` | `/message` | `{ "conversationId": 1, "text": "Hi", "messageType": "chat" }` |
+| Method | Path | Notes |
+|--------|------|--------|
+| `POST` | `/conversation/start` | Start conversation |
+| `POST` | `/message` | Send text / chat message |
 | `GET` | `/conversation/:conversationId/messages` | Message history |
-| `GET` | `/call/:callSid/status?clinicId=1` | Twilio call status |
+| `GET` | `/call/:callSid/status` | Twilio call status |
 | `POST` | `/end-call` | End an active Twilio call |
 
 ### Notifications (`/api/notifications`)
 
-| Method | Path | Body |
-|--------|------|------|
-| `POST` | `/alert` | `{ "subject": "Alert", "message": "..." }` — email/SMS when configured |
+| Method | Path | Notes |
+|--------|------|--------|
+| `POST` | `/alert` | Email/SMS when configured |
 
 ### Admin auth (`/api/admin/auth`)
 
-| Method | Path | Body |
-|--------|------|------|
-| `POST` | `/login` | `{ "email", "password" }` |
-
-### Admin users (`/api/admin`)
-
-| Method | Path |
-|--------|------|
-| `GET` | `/users` |
-| `POST` | `/users` |
-| `PUT` | `/users/:id` |
-| `DELETE` | `/users/:id` |
-| `PATCH` | `/users/:id/password` |
-
-### Admin dashboard (`/api/admin/dashboard`)
-
 | Method | Path | Notes |
-|--------|------|-------|
-| `GET` | `/stats` | Dashboard metrics |
-| `GET` | `/clinics` | List clinics |
-| `POST` | `/clinics/sync-external` | Sync from external API |
-| `GET/PATCH` | `/clinics/:id/twilio` | Twilio config per clinic |
-| `GET/PATCH` | `/clinics/:id/elevenlabs` | ElevenLabs API key |
-| `GET` | `/clinics/:id/elevenlabs/voices` | Voice catalog |
-| `GET` | `/clinics/:id/elevenlabs/preview` | TTS preview |
-| `GET` | `/clinics/:clinicId/conversations` | Chat history by clinic |
-| `GET` | `/conversations/:conversationId/messages` | Messages in a conversation |
-| `GET` | `/calls` | Inbound call list |
-| `GET` | `/calls/:callId/messages` | Transcript for a call |
+|--------|------|--------|
+| `POST` | `/login` | `{ email, password }` |
 
-### Admin knowledge (`/api/admin/knowledge`)
+### Admin resources
 
-| Method | Path |
-|--------|------|
-| `GET` | `/` |
-| `POST` | `/` |
-| `PUT` | `/:id` |
-| `PATCH` | `/:id/status` |
-| `DELETE` | `/:id` |
+| Mount | Purpose |
+|-------|---------|
+| `/api/admin` | Users CRUD / password |
+| `/api/admin/dashboard` | Stats, clinics, conversations, messages, calls, appointments |
+| `/api/admin/knowledge` | Knowledge base |
+| `/api/admin/agents` | Agent profiles, models, voices, test lab |
+| `/api/admin/flows` | Conversation flow graphs |
+| `/api/admin/campaigns` | Campaigns, contacts, import / sync |
+| `/api/admin/doctors` | Doctors |
+| `/api/admin/audit-logs` | Audit trail list / clear |
 
 ### Twilio webhooks (`/api/twilio`)
-
-Configured in the Twilio console. Key endpoints:
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/voice/inbound` | Inbound call → TwiML + Media Stream |
-| `WS` | `/voice/stream` | Media Stream audio pipeline |
-| `POST` | `/voice/stream-status` | Stream lifecycle callbacks |
+| `WS` | `/voice/stream` | Media Stream ↔ OpenAI Realtime |
+| `POST` | `/voice/stream-status` | Stream lifecycle |
 | `POST` | `/call-status` | Call status updates |
-| `POST` | `/message/twiml` | Inbound SMS handling |
+| `POST` | `/message/twiml` | Inbound SMS |
 | `POST` | `/call/start`, `/call/stop`, `/call/mute` | Programmatic call control |
 
 **Inbound phone setup**
 
 1. Expose this server on HTTPS/WSS (e.g. ngrok or production load balancer).
 2. Set the Twilio number **Voice webhook** to `POST https://YOUR_HOST/api/twilio/voice/inbound`.
-3. Ensure `SERVER_URL` and optionally `TWILIO_STREAM_WSS_URL` match what Twilio can reach.
-4. Configure clinic Twilio and ElevenLabs settings in the admin UI.
+3. Ensure `SERVER_URL` (and optionally `TWILIO_STREAM_WSS_URL`) match what Twilio can reach.
+4. Configure agent / clinic Twilio settings in the admin UI.
 
 ## Socket.IO (web chat)
 
 - **Path:** `WEBSOCKET_CHAT_URL` (default `/ws/chat`)
-- **Event:** `message` (client and server both use this event name)
+- **Event:** `message` (client and server)
 - **Payload:** JSON object with a `type` field
 
 ### Client → server
 
-| `type` | Fields | Description |
-|--------|--------|-------------|
-| `connect` | `clinicId`, `conversationId?`, `userInfo?` | Start or resume a session |
-| `chat` | `message`, `conversationId?` | Text turn |
-| `voice` | audio payload per `chatService` | Voice turn (STT + reply + TTS) |
-| `pong` | — | Keepalive (ignored) |
+| `type` | Description |
+|--------|-------------|
+| `connect` | Start or resume a session (`clinicId`, optional `conversationId` / `userInfo`) |
+| `chat` | Text turn |
+| `voice` | Voice turn (STT + reply + TTS) |
+| `pong` | Keepalive |
 
 ### Server → client
 
-Uniform shape: `type`, `status`, `conversationId`, `response`, `transcriptText`, `audio`, `audioMimeType`, `callSid`, `twilioIntent`, etc.
-
-Example (text chat):
+Uniform shape includes `type`, `status`, `conversationId`, `response`, `transcriptText`, `audio`, etc.
 
 ```json
 // emit
@@ -334,23 +333,13 @@ Example (text chat):
 { "type": "chat", "status": "success", "response": "...", "conversationId": 1 }
 ```
 
-## Admin UI
-
-After `npm run admin:build` (included in `npm start`), open:
-
-```
-http://localhost:4000/admin
-```
-
-Pages include dashboard, clinics, users, training (knowledge base), and inbound call history. If the build is missing, `/admin` returns HTTP 503 with instructions to run `npm run admin:build`.
-
 ## Production notes
 
-- Set `ALLOWED_ORIGINS` and `ALLOWED_WS_ORIGINS` in production; empty lists allow all origins (dev-friendly only).
-- `npm start` runs `admin:build` on every start — for production, build once in CI and run `node src/server.js` if you prefer a slimmer process manager setup.
-- Twilio webhooks have no `Origin` header and are always accepted by CORS middleware.
-- OpenAI, Deepgram, and ElevenLabs calls fail gracefully or return errors when keys are missing; alert endpoints return `sent: false` without SMTP/Twilio credentials.
-- On boot, the server connects to MySQL and runs Sequelize sync (same as `db:sync` logic).
+- Set `ALLOWED_ORIGINS` and `ALLOWED_WS_ORIGINS` in production; empty lists allow all origins (dev-only).
+- `npm start` rebuilds landing + admin on every start — for production, build in CI and run `node src/server.js` under a process manager if you prefer.
+- Twilio webhooks have no `Origin` header and are accepted by CORS middleware.
+- OpenAI / Twilio / SMTP calls fail gracefully when credentials are missing.
+- On boot, the server connects to MySQL and runs Sequelize sync (same idea as `db:sync`).
 
 ## License
 

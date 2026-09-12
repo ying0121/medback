@@ -1,16 +1,27 @@
-# React + Vite
+# MedBot Admin frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite + TypeScript SPA for the MedBot clinical admin console.
 
-Currently, two official plugins are available:
+Served in production from the Express app at **`/admin`** (`admin-frontend/dist`).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Develop
 
-## React Compiler
+From the repo root (with the API running):
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm run admin:dev
+```
 
-## Expanding the ESLint configuration
+Build only:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npm run admin:build
+```
+
+## Stack
+
+- React 18, Vite 5, TypeScript
+- Tailwind CSS + Radix / shadcn UI
+- React Router, TanStack Query, Framer Motion, Recharts
+
+See the root [README.md](../README.md) for product features, API, and environment setup.
