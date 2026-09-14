@@ -1,6 +1,6 @@
-# Healthcare Chat Bot (MedBot)
+# Healthcare Chat Bot (Medical Bot Console)
 
-Clinic-facing AI front desk platform: web chat, inbound PSTN voice, appointment booking, outbound campaign calling, and a clinical **MedBot Admin** console.
+Clinic-facing AI front desk platform: web chat, inbound PSTN voice, appointment booking, outbound campaign calling, and a clinical **Medical Bot Console**.
 
 The Express API serves a marketing landing page at `/` and the admin SPA at `/admin`.
 
@@ -26,7 +26,7 @@ flowchart TB
   subgraph clients [Clients]
     Landing[Landing site]
     WebChat[Web / mobile chat]
-    Admin[MedBot Admin /admin]
+    Admin[Medical Bot Console /admin]
     Phone[Inbound PSTN caller]
   end
 
@@ -112,7 +112,7 @@ Default URL: `http://localhost:4000` (override with `PORT`).
 |-----|---------|
 | `GET /health` | Health check |
 | `http://localhost:4000/` | Landing site |
-| `http://localhost:4000/admin` | MedBot Admin (after build) |
+| `http://localhost:4000/admin` | Medical Bot Console (after build) |
 
 ### Frontend development
 
@@ -146,7 +146,7 @@ mediback/
 │   ├── realtime/          # Socket.IO + Twilio Media Stream handlers
 │   ├── db/                # Sequelize connection & sync
 │   └── middlewares/
-├── admin-frontend/        # MedBot Admin SPA → /admin
+├── admin-frontend/        # Medical Bot Console SPA → /admin
 ├── landing-frontend/      # Marketing landing → /
 └── .env.example
 ```
@@ -162,7 +162,7 @@ mediback/
 | Care | Appointments |
 | Compliance | Audit logs |
 
-## MedBot Admin
+## Medical Bot Console
 
 After build, open `http://localhost:4000/admin`.
 

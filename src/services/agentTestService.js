@@ -302,7 +302,7 @@ async function buildChannelPrompt({
 
   return {
     systemPrompt: [
-      `You are running inside the MedBot Agent Test Lab for agent "${config.title}".`,
+      `You are running inside the Medical Bot Console Agent Test Lab for agent "${config.title}".`,
       "Channel: webchat. Behave exactly as the production bot would with this agent profile.",
       "The tester may type or speak. Keep replies clear; when speaking aloud later, avoid heavy markdown.",
       ctx.systemPrompt || ""

@@ -1,18 +1,18 @@
 import { cn } from "@/lib/utils";
 import markUrl from "@/assets/bot-logo.png";
 
-type MedBotLogoProps = {
+type MedicalBotConsoleLogoProps = {
   size?: number;
   className?: string;
   alt?: string;
 };
 
-/** MedBot app mark for sidebar, login, and brand chrome. */
-export default function MedBotLogo({
+/** Medical Bot Console app mark for sidebar, login, and brand chrome. */
+export default function MedicalBotConsoleLogo({
   size = 40,
   className,
-  alt = "MedBot",
-}: MedBotLogoProps) {
+  alt = "Medical Bot Console",
+}: MedicalBotConsoleLogoProps) {
   return (
     <img
       src={markUrl}

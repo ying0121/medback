@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import MedBotLogo from "@/components/admin/MedBotLogo";
+import MedicalBotConsoleLogo from "@/components/admin/MedicalBotConsoleLogo";
 
 export default function Login() {
   const { user, signIn } = useAuth();
@@ -91,16 +91,16 @@ export default function Login() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
               >
-                <MedBotLogo
+                <MedicalBotConsoleLogo
                   size={80}
-                  alt="MedBot logo"
+                  alt="Medical Bot Console logo"
                   className="rounded-[1.35rem] shadow-elegant animate-float-soft"
                 />
               </motion.div>
             </div>
             <h2 className="font-display text-2xl font-semibold tracking-tight">Welcome back</h2>
             <p className="text-muted-foreground mt-1.5 text-sm">
-              Sign in to the Medical Bot Console console.
+              Sign in to the Medical Bot Console.
             </p>
           </div>
 
@@ -113,7 +113,7 @@ export default function Login() {
                 autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@medbot.com"
+                placeholder="admin@clinic.com"
                 required
                 className="h-11"
               />

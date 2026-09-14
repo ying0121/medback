@@ -18,7 +18,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
-import MedBotLogo from "@/components/admin/MedBotLogo";
+import MedicalBotConsoleLogo from "@/components/admin/MedicalBotConsoleLogo";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -188,15 +188,15 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.4, ease: pageEase }}
               >
-                <MedBotLogo
+                <MedicalBotConsoleLogo
                   size={collapsed ? 36 : 40}
                   className="rounded-[10px] shadow-md ring-1 ring-white/15"
                 />
               </motion.div>
               {!collapsed ? (
                 <div className="relative min-w-0 flex-1">
-                  <div className="font-display font-semibold tracking-tight text-[1.05rem]">
-                    MedBot
+                  <div className="font-display font-semibold tracking-tight text-[1.05rem] leading-tight">
+                    Medical Bot Console
                   </div>
                   <div className="text-[10px] uppercase tracking-[0.16em] text-sidebar-foreground/55">
                     Clinical admin

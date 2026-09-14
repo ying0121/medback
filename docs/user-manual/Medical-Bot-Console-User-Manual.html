@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Medical Bot Console User Manual — Healthcare Chat Bot</title>
+  <style>
+    :root {
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #e2e8f0;
+      --soft: #f8fafc;
+      --brand: #0d6e8a;
+      --brand-dark: #0a5368;
+      --accent: #1a8a6a;
+      --warn: #9a3412;
+      --card: #ffffff;
+      --radius: 10px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #eef2f6;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .page {
+      max-width: 920px;
+      margin: 0 auto;
+      background: var(--card);
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.06), 0 24px 60px rgba(15, 23, 42, 0.08);
+    }
+
+    /* Cover */
+    .cover {
+      padding: 56px 56px 48px;
+      background:
+        linear-gradient(160deg, #0a5368 0%, #0d6e8a 42%, #147a8f 70%, #1a8a6a 100%);
+      color: #fff;
+      position: relative;
+      overflow: hidden;
+    }
+    .cover::after {
+      content: "";
+      position: absolute;
+      inset: auto -20% -40% 40%;
+      height: 280px;
+      background: radial-gradient(circle, rgba(255,255,255,0.12), transparent 70%);
+      pointer-events: none;
+    }
+    .cover-brand {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 36px;
+    }
+    .cover-brand img {
+      width: 88px;
+      height: 88px;
+      border-radius: 18px;
+      background: #fff;
+      padding: 8px;
+      object-fit: contain;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    }
+    .logo-showcase {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin: 20px 0 24px;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--soft);
+    }
+    .logo-showcase img {
+      width: 96px;
+      height: 96px;
+      border-radius: 20px;
+      object-fit: contain;
+      background: #fff;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
+      flex-shrink: 0;
+    }
+    .logo-showcase .logo-meta {
+      min-width: 0;
+    }
+    .logo-showcase .logo-meta strong {
+      display: block;
+      font-size: 18px;
+      color: var(--brand-dark);
+      margin-bottom: 4px;
+    }
+    .logo-showcase .logo-meta p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .cover-brand-text {
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      opacity: 0.85;
+      font-weight: 600;
+    }
+    .cover h1 {
+      margin: 0 0 12px;
+      font-size: 42px;
+      line-height: 1.15;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .cover .subtitle {
+      margin: 0;
+      font-size: 18px;
+      max-width: 34em;
+      opacity: 0.95;
+      font-weight: 400;
+    }
+    .cover-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 28px;
+      margin-top: 40px;
+      font-size: 13px;
+      opacity: 0.9;
+    }
+    .cover-meta strong { font-weight: 600; opacity: 1; }
+
+    /* Body */
+    .content { padding: 40px 56px 64px; }
+    h2 {
+      margin: 48px 0 16px;
+      padding-top: 8px;
+      border-top: 2px solid var(--line);
+      font-size: 24px;
+      color: var(--brand-dark);
+      letter-spacing: -0.01em;
+    }
+    h2:first-of-type { margin-top: 0; border-top: none; padding-top: 0; }
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 17px;
+      color: var(--ink);
+    }
+    h4 {
+      margin: 20px 0 8px;
+      font-size: 15px;
+      color: var(--brand-dark);
+    }
+    p { margin: 0 0 12px; color: var(--ink); }
+    .lead { font-size: 16.5px; color: var(--muted); max-width: 48em; }
+
+    ul, ol { margin: 0 0 14px; padding-left: 1.35em; }
+    li { margin: 4px 0; }
+    li::marker { color: var(--brand); }
+
+    a { color: var(--brand); }
+    strong { font-weight: 650; }
+
+    .toc {
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 22px 26px;
+      margin: 28px 0 8px;
+    }
+    .toc h2 {
+      margin: 0 0 12px;
+      border: none;
+      padding: 0;
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .toc ol {
+      margin: 0;
+      columns: 1;
+      padding-left: 1.4em;
+    }
+    .toc li { margin: 6px 0; break-inside: avoid; }
+    .toc a { text-decoration: none; color: var(--ink); }
+    .toc a:hover { color: var(--brand); }
+
+    .figure {
+      margin: 20px 0 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #f1f5f9;
+    }
+    .figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: 360px;
+      object-fit: cover;
+      object-position: center top;
+    }
+    .figure figcaption {
+      padding: 10px 14px;
+      font-size: 12.5px;
+      color: var(--muted);
+      background: #fff;
+      border-top: 1px solid var(--line);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 16px 0 20px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      background: var(--soft);
+    }
+    .card h4 { margin-top: 0; }
+    .card p:last-child { margin-bottom: 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 20px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f1f5f9;
+      font-weight: 650;
+      color: var(--brand-dark);
+      font-size: 12.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tr:nth-child(even) td { background: #fafbfc; }
+
+    .callout {
+      border-left: 4px solid var(--brand);
+      background: #f0f9fb;
+      padding: 14px 16px;
+      margin: 16px 0 20px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+    .callout.warn {
+      border-left-color: #c2410c;
+      background: #fff7ed;
+    }
+    .callout.ok {
+      border-left-color: var(--accent);
+      background: #f0fdf8;
+    }
+    .callout .label {
+      display: block;
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--brand-dark);
+      margin-bottom: 4px;
+    }
+    .callout.warn .label { color: var(--warn); }
+    .callout.ok .label { color: #065f46; }
+    .callout p:last-child { margin-bottom: 0; }
+
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+      margin: 12px 0 20px;
+    }
+    .steps > li {
+      position: relative;
+      padding: 12px 14px 12px 52px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin: 0 0 10px;
+      background: #fff;
+    }
+    .steps > li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--brand);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 26px;
+      text-align: center;
+    }
+
+    .kbd {
+      display: inline-block;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12.5px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 1px 6px;
+    }
+
+    .footer {
+      margin-top: 48px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+
+    .nav-path {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12.5px;
+      color: var(--brand-dark);
+      background: #eef8fa;
+      padding: 2px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 720px) {
+      .cover, .content { padding: 28px 22px; }
+      .cover h1 { font-size: 30px; }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .page { box-shadow: none; max-width: none; }
+      .cover { break-after: page; }
+      h2 { break-after: avoid; }
+      .figure, .card, table, .callout, .steps > li { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <!-- ===================== COVER ===================== -->
+    <header class="cover">
+      <div class="cover-brand">
+        <img src="images/admin-logo.png" alt="Medical Bot Console admin logo" />
+        <div>
+          <div class="cover-brand-text">Healthcare Chat Bot</div>
+          <div style="font-size:22px;font-weight:700;margin-top:2px;">Medical Bot Console</div>
+        </div>
+      </div>
+      <h1>User Manual</h1>
+      <p class="subtitle">
+        A complete operating guide for clinic administrators and front-desk staff.
+        Learn how to configure, monitor, and use Medical Bot Console as your AI-assisted clinic front desk.
+      </p>
+      <div class="cover-meta">
+        <div><strong>Document type:</strong> Clinic operations manual</div>
+        <div><strong>Audience:</strong> Clinic Admin &amp; Clinic Staff</div>
+        <div><strong>Product:</strong> Medical Bot Console</div>
+        <div><strong>Version:</strong> 1.0</div>
+      </div>
+    </header>
+
+    <main class="content">
+
+      <p class="lead">
+        Medical Bot Console is a clinic-facing AI front desk. It answers patient questions from your clinic knowledge,
+        handles inbound phone calls, books appointments, runs outbound outreach campaigns, and gives your
+        team a secure console to review conversations, calls, and schedules — day or night.
+      </p>
+
+      <nav class="toc" aria-label="Table of contents">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#s1">Introduction &amp; what Medical Bot Console does</a></li>
+          <li><a href="#s2">How patients reach the bot</a></li>
+          <li><a href="#s3">Signing in &amp; user roles</a></li>
+          <li><a href="#s4">Recommended go-live checklist</a></li>
+          <li><a href="#s5">Dashboard &amp; conversation inbox</a></li>
+          <li><a href="#s6">Clinics</a></li>
+          <li><a href="#s7">Agents (bot profiles)</a></li>
+          <li><a href="#s8">Knowledge (training content)</a></li>
+          <li><a href="#s9">Conversation flows</a></li>
+          <li><a href="#s10">Appointments &amp; doctors</a></li>
+          <li><a href="#s11">Outbound campaigns</a></li>
+          <li><a href="#s12">Calling history</a></li>
+          <li><a href="#s13">Users &amp; audit logs</a></li>
+          <li><a href="#s14">Testing with Agent Test Lab</a></li>
+          <li><a href="#s15">Safety, privacy &amp; clinical boundaries</a></li>
+          <li><a href="#s16">Day-to-day staff workflows</a></li>
+          <li><a href="#s17">Troubleshooting</a></li>
+          <li><a href="#s18">Glossary</a></li>
+          <li><a href="#s19">Support &amp; document control</a></li>
+        </ol>
+      </nav>
+
+      <!-- ===================== 1 ===================== -->
+      <h2 id="s1">1. Introduction &amp; what Medical Bot Console does</h2>
+
+      <p>
+        Medical Bot Console (product name: <strong>Healthcare Chat Bot</strong>) acts as an always-available digital
+        front desk for your medical practice. It is designed to reduce missed calls, standardize patient
+        intake, and keep appointment booking consistent — while keeping clinical decision-making with
+        licensed staff.
+      </p>
+
+      <figure class="figure">
+        <img src="images/hero-clinic-ai.png" alt="Medical Bot Console assisting clinic front desk operations" />
+        <figcaption>Figure 1. Medical Bot Console supports clinic operations across chat, phone, and scheduling.</figcaption>
+      </figure>
+
+      <h3>1.1 Core capabilities</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>What it means for your clinic</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Web chat</strong></td>
+            <td>Patients message your clinic assistant in the browser. Answers are based on your clinic knowledge and safety rules.</td>
+          </tr>
+          <tr>
+            <td><strong>Inbound phone (voice AI)</strong></td>
+            <td>When patients call your clinic number, Medical Bot Console can greet them, answer questions, and collect booking details using natural conversation.</td>
+          </tr>
+          <tr>
+            <td><strong>Appointment booking</strong></td>
+            <td>The bot collects required intake fields, confirms the visit, and creates an appointment visible in the Appointments calendar.</td>
+          </tr>
+          <tr>
+            <td><strong>Knowledge base</strong></td>
+            <td>You control what the bot says — FAQs, clinic policies, hours, directions, and safety prompts.</td>
+          </tr>
+          <tr>
+            <td><strong>Conversation flows</strong></td>
+            <td>Visual call/chat scripts (Start → questions/actions → End) so conversations follow your clinic process.</td>
+          </tr>
+          <tr>
+            <td><strong>Campaigns</strong></td>
+            <td>Outbound dialing to patient lists for reminders, follow-ups, or outreach — with status tracking per contact.</td>
+          </tr>
+          <tr>
+            <td><strong>Operations console</strong></td>
+            <td>Dashboard KPIs, inbox, call transcripts, doctor roster, user management, and audit logs.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>1.2 What Medical Bot Console is not</h3>
+      <div class="callout warn">
+        <span class="label">Important clinical boundary</span>
+        <p>
+          Medical Bot Console is an <strong>informational and operational assistant</strong>. It does not diagnose conditions,
+          prescribe treatment, or replace a licensed clinician. Emergency situations should be directed to
+          <strong>911</strong> or urgent care according to your clinic policy.
+        </p>
+      </div>
+
+      <!-- ===================== 2 ===================== -->
+      <h2 id="s2">2. How patients reach the bot</h2>
+
+      <p>Patients interact with Medical Bot Console through these channels:</p>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4>Web chat</h4>
+          <p>
+            A clinic web chat widget (connected to Medical Bot Console) lets patients type questions or use voice
+            in the browser. Theme colors and clinic identity can match your clinic branding.
+          </p>
+        </div>
+        <div class="card">
+          <h4>Inbound phone</h4>
+          <p>
+            Calls to your Twilio-connected clinic number are answered by the assigned Agent.
+            The assistant greets the caller, follows your flow/knowledge, and can book appointments.
+          </p>
+        </div>
+      </div>
+
+      <figure class="figure">
+        <img src="images/carousel-web-chat.png" alt="Web chat channel illustration" />
+        <figcaption>Figure 2. Web chat — patients ask questions and book visits from the browser.</figcaption>
+      </figure>
+
+      <figure class="figure">
+        <img src="images/carousel-voice-ai.png" alt="Inbound voice AI illustration" />
+        <figcaption>Figure 3. Inbound voice — Medical Bot Console handles phone conversations with natural speech.</figcaption>
+      </figure>
+
+      <h3>2.1 Typical patient journey</h3>
+      <ol class="steps">
+        <li><strong>Welcome &amp; intent.</strong> The bot greets the patient and identifies why they are contacting the clinic (information, booking, existing appointment, etc.).</li>
+        <li><strong>Knowledge-aware answers.</strong> For FAQs and clinic information, Medical Bot Console answers from your Knowledge content and safety prompts.</li>
+        <li><strong>Structured booking (when requested).</strong> The bot collects required intake fields and confirms the appointment.</li>
+        <li><strong>Handoff / continuity.</strong> Staff can review the conversation or call transcript in Medical Bot Console and follow up as needed.</li>
+      </ol>
+
+      <figure class="figure">
+        <img src="images/carousel-workflow.png" alt="Patient conversation workflow" />
+        <figcaption>Figure 4. High-level patient conversation workflow.</figcaption>
+      </figure>
+
+      <!-- ===================== 3 ===================== -->
+      <h2 id="s3">3. Signing in &amp; user roles</h2>
+
+      <h3>3.1 Accessing Medical Bot Console</h3>
+
+      <div class="logo-showcase">
+        <img src="images/admin-logo.png" alt="Medical Bot Console admin logo" />
+        <div class="logo-meta">
+          <strong>Medical Bot Console</strong>
+          <p>
+            Look for this admin logo on the sign-in page and in the left sidebar after you log in.
+            It identifies the official Medical Bot Console used by your clinic.
+          </p>
+        </div>
+      </div>
+
+      <ol>
+        <li>Open your clinic’s Medical Bot Console URL (typically ending with <span class="kbd">/admin</span>).</li>
+        <li>Confirm you see the <strong>Medical Bot Console</strong> logo on the login screen.</li>
+        <li>Sign in with the email and password provided by your administrator.</li>
+        <li>After a successful login you land on the <strong>Dashboard</strong>. The same logo appears at the top of the sidebar.</li>
+      </ol>
+
+      <div class="callout">
+        <span class="label">Session security</span>
+        <p>
+          Sessions expire after <strong>60 minutes</strong> of use. When the session expires, sign in again.
+          Do not share login credentials. Always sign out on shared workstations.
+        </p>
+      </div>
+
+      <h3>3.2 Roles and permissions</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Can access</th>
+            <th>Typical use</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Admin</strong></td>
+            <td>
+              Dashboard, Clinics, Appointments, Users, Doctors, Agents, Knowledge, Flows,
+              Campaigns, Calls, Audit logs
+            </td>
+            <td>Full platform configuration and oversight across clinics</td>
+          </tr>
+          <tr>
+            <td><strong>Clinic Staff</strong></td>
+            <td>
+              Dashboard, Appointments, Doctors, Agents, Knowledge, Flows, Campaigns, Calls
+              <br /><em>(not Clinics, Users, or Audit logs)</em>
+            </td>
+            <td>Day-to-day operations for assigned clinic(s)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Clinic Staff accounts are limited to the clinics assigned to them. Admins can manage all clinics
+        and user accounts.
+      </p>
+
+      <h3>3.3 Navigation overview</h3>
+      <p>The left sidebar lists the modules available to your role:</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Menu item</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Dashboard</td><td>Operations overview, KPIs, and conversation inbox</td></tr>
+          <tr><td>Clinics</td><td>Clinic profiles, branding, and agent assignment (Admin)</td></tr>
+          <tr><td>Appointments</td><td>Calendar of booked visits (Eastern Time)</td></tr>
+          <tr><td>Users</td><td>Create and manage Admin / Clinic Staff accounts (Admin)</td></tr>
+          <tr><td>Doctors</td><td>Provider roster used by the clinic</td></tr>
+          <tr><td>Agents</td><td>Bot profiles (AI, voice, phone, meeting, flow, knowledge)</td></tr>
+          <tr><td>Knowledge</td><td>Prompts and uploaded clinic documents / FAQs</td></tr>
+          <tr><td>Flows</td><td>Visual conversation graphs</td></tr>
+          <tr><td>Campaigns</td><td>Outbound calling programs and patient lists</td></tr>
+          <tr><td>Calls</td><td>Inbound call history and transcripts</td></tr>
+          <tr><td>Audit logs</td><td>Who accessed what, when, and from where (Admin)</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ===================== 4 ===================== -->
+      <h2 id="s4">4. Recommended go-live checklist</h2>
+
+      <p>
+        Use this sequence when bringing a new clinic onto Medical Bot Console. Complete each step before going live
+        with patients.
+      </p>
+
+      <ol class="steps">
+        <li>
+          <strong>Create users.</strong> In <span class="nav-path">Users</span>, create Admin and Clinic Staff
+          accounts. Assign Clinic Staff to the correct clinic(s).
+        </li>
+        <li>
+          <strong>Prepare Knowledge.</strong> In <span class="nav-path">Knowledge</span>, review the default
+          safety prompts and add clinic-specific FAQs, hours, insurance notes, and policies.
+        </li>
+        <li>
+          <strong>Build or select a Flow.</strong> In <span class="nav-path">Flows</span>, design the
+          conversation path (greeting → questions → booking actions → End).
+        </li>
+        <li>
+          <strong>Configure an Agent.</strong> In <span class="nav-path">Agents</span>, complete the wizard:
+          General → OpenAI → Voice → Twilio → Meeting → Flow &amp; knowledge.
+        </li>
+        <li>
+          <strong>Register the Clinic.</strong> In <span class="nav-path">Clinics</span>, enter profile details,
+          upload an avatar, choose a theme color, and assign the Agent.
+        </li>
+        <li>
+          <strong>Add Doctors.</strong> In <span class="nav-path">Doctors</span>, maintain the provider roster
+          patients and staff will reference.
+        </li>
+        <li>
+          <strong>Connect telephony.</strong> Ensure the clinic’s Twilio voice number points to the Medical Bot Console
+          inbound webhook (configured by your technical team).
+        </li>
+        <li>
+          <strong>Test thoroughly.</strong> Use <strong>Agent Test Lab</strong> (flask icon on Agents / Clinics)
+          for Webchat, Inbound, and Campaign simulations before enabling live traffic.
+        </li>
+      </ol>
+
+      <div class="callout ok">
+        <span class="label">Best practice</span>
+        <p>
+          Go live with Knowledge and Test Lab validated first. Outbound Campaigns should be enabled only
+          after inbound chat/phone behavior is approved by clinic leadership.
+        </p>
+      </div>
+
+      <!-- ===================== 5 ===================== -->
+      <h2 id="s5">5. Dashboard &amp; conversation inbox</h2>
+
+      <p>
+        The <strong>Dashboard</strong> is the home screen for daily operations. It summarizes activity and
+        gives quick access to recent conversations.
+      </p>
+
+      <h3>5.1 What you will see</h3>
+      <ul>
+        <li><strong>KPI cards</strong> — conversations, messages, calls, and appointments at a glance.</li>
+        <li><strong>Daily channel volume chart</strong> — switch between 7 / 30 / 60 day views to spot trends.</li>
+        <li><strong>Today’s appointments</strong> — visits scheduled for the current day.</li>
+        <li><strong>Clinic performance</strong> — comparative activity across clinics (when applicable).</li>
+        <li><strong>Inbox</strong> — recent patient conversation threads for review.</li>
+      </ul>
+
+      <h3>5.2 Using the inbox</h3>
+      <ol>
+        <li>Open <span class="nav-path">Dashboard</span>.</li>
+        <li>Select a conversation in the inbox panel.</li>
+        <li>Review the message history to understand patient intent and what the bot already collected.</li>
+        <li>Follow up by phone or in person if the conversation needs human attention.</li>
+      </ol>
+
+      <div class="callout">
+        <span class="label">Staff tip</span>
+        <p>
+          Check the inbox at the start of each shift and after busy periods. Flag incomplete bookings
+          (missing phone/email/DOB) and complete them manually if needed.
+        </p>
+      </div>
+
+      <!-- ===================== 6 ===================== -->
+      <h2 id="s6">6. Clinics</h2>
+
+      <p>
+        <span class="nav-path">Clinics</span> (Admin only) stores each practice location’s identity and
+        which Agent serves that location.
+      </p>
+
+      <figure class="figure">
+        <img src="images/carousel-multi-clinic.png" alt="Multi-clinic management illustration" />
+        <figcaption>Figure 5. Medical Bot Console supports one or many clinic locations under a shared console.</figcaption>
+      </figure>
+
+      <h3>6.1 Clinic profile fields</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Name</td><td>Full clinic name shown to staff and used in greetings</td></tr>
+          <tr><td>Acronym</td><td>Short code used in templates (e.g. greeting placeholders)</td></tr>
+          <tr><td>Clinic ID</td><td>External or internal identifier for the location</td></tr>
+          <tr><td>Address / phone / email / website / portal</td><td>Contact and location details</td></tr>
+          <tr><td>Avatar</td><td>Clinic image used in the console and patient-facing branding</td></tr>
+          <tr><td>Theme color</td><td>Brand color passed to the web chat experience</td></tr>
+          <tr><td>Assigned agent</td><td>Which bot profile answers for this clinic</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.2 Assigning an agent</h3>
+      <ol>
+        <li>Open the clinic record.</li>
+        <li>Select an active Agent from the assignment control.</li>
+        <li>Save. New chat and phone sessions for that clinic use the assigned Agent.</li>
+      </ol>
+
+      <p>
+        Admins may also use <strong>Import from API</strong> to sync clinic records from an external source
+        when that integration is enabled for your organization.
+      </p>
+
+      <h3>6.3 Greeting placeholders</h3>
+      <p>Greetings can include dynamic clinic values:</p>
+      <ul>
+        <li><span class="kbd">$clinic_name$</span> — full clinic name</li>
+        <li><span class="kbd">$clinic_acronym$</span> — short name</li>
+        <li><span class="kbd">$clinic_city$</span> — city from the clinic address</li>
+      </ul>
+
+      <!-- ===================== 7 ===================== -->
+      <h2 id="s7">7. Agents (bot profiles)</h2>
+
+      <p>
+        An <strong>Agent</strong> is the complete bot configuration for how Medical Bot Console speaks, thinks, dials,
+        and books. One Agent is typically assigned to one Clinic, though you may maintain multiple Agents
+        (for example, inbound vs. campaign).
+      </p>
+
+      <h3>7.1 Creating or editing an Agent</h3>
+      <p>Open <span class="nav-path">Agents</span> and use the setup wizard. Steps:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>What you configure</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1. General</strong></td>
+            <td>Title, status (active/inactive), description of the agent’s purpose</td>
+          </tr>
+          <tr>
+            <td><strong>2. OpenAI</strong></td>
+            <td>API key and models for chat, realtime voice, transcription, and TTS</td>
+          </tr>
+          <tr>
+            <td><strong>3. Voice</strong></td>
+            <td>Realtime voice selection and preview so the phone experience matches your brand tone</td>
+          </tr>
+          <tr>
+            <td><strong>4. Twilio</strong></td>
+            <td>Telephony credentials used for inbound/outbound calling for this agent</td>
+          </tr>
+          <tr>
+            <td><strong>5. Meeting</strong></td>
+            <td>
+              Meeting/calendar provider:
+              <strong>Google</strong> (Meet + OAuth fields),
+              <strong>ECW</strong>, or
+              <strong>Azul</strong> (API endpoint)
+            </td>
+          </tr>
+          <tr>
+            <td><strong>6. Flow &amp; knowledge</strong></td>
+            <td>Link the conversation flow and knowledge documents this agent should use</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>7.2 Duplicating an Agent</h3>
+      <p>
+        Use <strong>Duplicate</strong> to copy an existing Agent into a prefilled create form. This is useful
+        when opening a second location with similar settings — then adjust clinic-specific Twilio, meeting,
+        or knowledge links before saving.
+      </p>
+
+      <div class="callout warn">
+        <span class="label">Credential care</span>
+        <p>
+          OpenAI and Twilio credentials are sensitive. Only Admins or authorized staff should enter them.
+          Rotate keys if a staff member with access leaves the organization.
+        </p>
+      </div>
+
+      <!-- ===================== 8 ===================== -->
+      <h2 id="s8">8. Knowledge (training content)</h2>
+
+      <p>
+        <span class="nav-path">Knowledge</span> controls what the bot is allowed to say. Keeping this section
+        accurate is the single most important quality factor for patient experience.
+      </p>
+
+      <figure class="figure">
+        <img src="images/carousel-knowledge.png" alt="Knowledge base illustration" />
+        <figcaption>Figure 6. Knowledge content trains Medical Bot Console on your clinic’s information and policies.</figcaption>
+      </figure>
+
+      <h3>8.1 Built-in prompt categories</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Prompt</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Assistant &amp; safety</strong></td>
+            <td>
+              Core behavioral rules: no diagnosis, HIPAA-aware handling, off-topic deflection,
+              OTC-only medication mentions, red-flag escalation, multilingual warm tone.
+            </td>
+          </tr>
+          <tr>
+            <td><strong>Voice style</strong></td>
+            <td>Keeps phone replies short, natural, and free of markdown or lists.</td>
+          </tr>
+          <tr>
+            <td><strong>Appointment booking</strong></td>
+            <td>Guides how booking language and confirmation should work for your clinic.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>8.2 Adding clinic documents</h3>
+      <ol>
+        <li>Go to <span class="nav-path">Knowledge</span>.</li>
+        <li>Create or edit a knowledge item and attach documents as needed.</li>
+        <li>
+          Supported uploads include <strong>.txt</strong>, <strong>.md</strong>, <strong>.csv</strong>,
+          <strong>.pdf</strong>, and <strong>.docx</strong>.
+        </li>
+        <li>Assign the knowledge to the relevant clinic(s) and set it Active.</li>
+        <li>Link the knowledge from the Agent’s <strong>Flow &amp; knowledge</strong> step.</li>
+      </ol>
+
+      <h3>8.3 What to put in Knowledge</h3>
+      <ul>
+        <li>Office hours, holiday closures, parking, and directions</li>
+        <li>Accepted insurance plans and referral requirements</li>
+        <li>New patient vs. established patient instructions</li>
+        <li>Preparation notes (fasting, bring ID/insurance card, arrive early)</li>
+        <li>Clinic phone numbers and when to call vs. use the bot</li>
+        <li>Approved FAQ answers reviewed by clinical leadership</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="label">Do not upload</span>
+        <p>
+          Do not place protected health information (PHI) from real patients into Knowledge documents.
+          Knowledge is for general clinic information and approved educational content only.
+        </p>
+      </div>
+
+      <!-- ===================== 9 ===================== -->
+      <h2 id="s9">9. Conversation flows</h2>
+
+      <p>
+        <span class="nav-path">Flows</span> is a visual builder for structured conversations. Flows tell the
+        bot how to move from greeting to questions, actions, and ending the call.
+      </p>
+
+      <h3>9.1 Node types</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Behavior</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Start</strong></td><td>Entry point of the conversation</td></tr>
+          <tr><td><strong>Message</strong></td><td>Says a fixed or templated message to the patient</td></tr>
+          <tr><td><strong>Question</strong></td><td>Asks for information and waits for a reply</td></tr>
+          <tr><td><strong>Function</strong></td><td>Runs a clinic action (book, cancel, SMS, transfer, etc.)</td></tr>
+          <tr><td><strong>Branch</strong></td><td>Routes the path based on the patient’s answer</td></tr>
+          <tr><td><strong>End</strong></td><td>Ends the conversation / hangs up the call</td></tr>
+        </tbody>
+      </table>
+
+      <h3>9.2 Available function actions</h3>
+      <ul>
+        <li>Book appointment</li>
+        <li>Cancel appointment</li>
+        <li>Reschedule appointment</li>
+        <li>Send appointment reminder</li>
+        <li>Send voicemail</li>
+        <li>Send text message</li>
+        <li>Send email</li>
+        <li>Transfer to human</li>
+        <li>Collect payment</li>
+        <li>Update patient info</li>
+      </ul>
+
+      <p>
+        You can <strong>Duplicate</strong> a flow to create a deep copy of the graph for another clinic or
+        campaign variant.
+      </p>
+
+      <div class="callout">
+        <span class="label">Design tip</span>
+        <p>
+          Keep flows short. Collect only what staff need. Always provide a path to transfer to a human
+          for clinical concerns, billing disputes, or frustrated callers.
+        </p>
+      </div>
+
+      <!-- ===================== 10 ===================== -->
+      <h2 id="s10">10. Appointments &amp; doctors</h2>
+
+      <figure class="figure">
+        <img src="images/carousel-appointments.png" alt="Appointments calendar illustration" />
+        <figcaption>Figure 7. Appointments booked by Medical Bot Console appear on the clinic calendar.</figcaption>
+      </figure>
+
+      <h3>10.1 Appointment calendar</h3>
+      <p>
+        Open <span class="nav-path">Appointments</span> to view the schedule in month or week views.
+        All appointment times are managed in <strong>Eastern Time (America/New_York)</strong>.
+      </p>
+      <ul>
+        <li>Review today’s and upcoming visits from the Dashboard and Appointments pages.</li>
+        <li>Cancel appointments from the calendar when a visit should not proceed.</li>
+        <li>After cancellation, notify the patient through your normal clinic process if needed.</li>
+      </ul>
+
+      <h3>10.2 What the bot collects during booking</h3>
+      <p>When a patient requests an appointment, Medical Bot Console gathers these required fields:</p>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Field</th>
+            <th>Example prompt to patient</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Full name</td><td>What is your full name?</td></tr>
+          <tr><td>2</td><td>Phone number</td><td>What is the best phone number to reach you?</td></tr>
+          <tr><td>3</td><td>Email address</td><td>What is your email address?</td></tr>
+          <tr><td>4</td><td>Date of birth</td><td>What is your date of birth?</td></tr>
+          <tr><td>5</td><td>New or existing patient</td><td>Are you a new patient or an existing patient?</td></tr>
+          <tr><td>6</td><td>Preferred date &amp; time</td><td>What date and time would you like for the appointment?</td></tr>
+        </tbody>
+      </table>
+
+      <figure class="figure">
+        <img src="images/carousel-intake.png" alt="Patient intake illustration" />
+        <figcaption>Figure 8. Structured intake ensures bookings arrive complete for front-desk staff.</figcaption>
+      </figure>
+
+      <p>
+        After intake is complete, Medical Bot Console confirms the visit, creates the appointment record, and may
+        generate a meeting link (for example Google Meet) when the Agent’s meeting provider is configured.
+        Staff notification emails can also be sent when email alerts are enabled.
+      </p>
+
+      <h3>10.3 Doctors</h3>
+      <p>
+        Use <span class="nav-path">Doctors</span> to maintain provider profiles (name, photo, and related
+        details). Keep this roster current so patients and staff see the correct providers.
+      </p>
+
+      <!-- ===================== 11 ===================== -->
+      <h2 id="s11">11. Outbound campaigns</h2>
+
+      <figure class="figure">
+        <img src="images/carousel-followup.png" alt="Campaign follow-up illustration" />
+        <figcaption>Figure 9. Campaigns support outbound reminders and patient follow-up calls.</figcaption>
+      </figure>
+
+      <h3>11.1 Campaign lifecycle</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Meaning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Draft</strong></td><td>Being configured; not ready to dial</td></tr>
+          <tr><td><strong>Ready</strong></td><td>Configured and awaiting schedule / start</td></tr>
+          <tr><td><strong>Running</strong></td><td>Actively placing outbound calls</td></tr>
+          <tr><td><strong>Paused</strong></td><td>Temporarily stopped by staff</td></tr>
+          <tr><td><strong>Completed</strong></td><td>Finished dialing the list</td></tr>
+        </tbody>
+      </table>
+
+      <h3>11.2 Creating a campaign</h3>
+      <ol class="steps">
+        <li>Open <span class="nav-path">Campaigns</span> and create a new campaign (or duplicate an existing one).</li>
+        <li>Select the clinic, active Agent, and conversation Flow.</li>
+        <li>Set the schedule window and retry behavior according to clinic policy.</li>
+        <li>Save as Draft, then move to Ready when configuration is complete.</li>
+        <li>Open the campaign detail page to manage the patient list.</li>
+      </ol>
+
+      <h3>11.3 Importing patients</h3>
+      <ol>
+        <li>On the campaign detail page, upload an Excel (<strong>.xlsx / .xls</strong>) or <strong>CSV</strong> file.</li>
+        <li>Map columns (name, phone, and other fields) in the import dialog.</li>
+        <li>Confirm the import and review the contact list.</li>
+        <li>Optionally sync patients from an external API if your organization uses that integration.</li>
+      </ol>
+
+      <h3>11.4 Contact outcome statuses</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Meaning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Pending</td><td>Not yet called</td></tr>
+          <tr><td>Calling</td><td>Call in progress</td></tr>
+          <tr><td>Success</td><td>Completed successfully per campaign criteria</td></tr>
+          <tr><td>Reject</td><td>Declined or unsuccessful</td></tr>
+          <tr><td>Interesting</td><td>Engaged / needs follow-up (positive interest)</td></tr>
+          <tr><td>Not interesting</td><td>No interest expressed</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn">
+        <span class="label">Compliance note</span>
+        <p>
+          Only call patients who have consented to outreach under your clinic’s policies and applicable
+          regulations. Respect quiet hours and do-not-call preferences.
+        </p>
+      </div>
+
+      <p>
+        <strong>Duplicate campaign</strong> copies campaign configuration only — patient lists are not copied.
+        Re-import or re-sync contacts for the new campaign.
+      </p>
+
+      <!-- ===================== 12 ===================== -->
+      <h2 id="s12">12. Calling history</h2>
+
+      <p>
+        <span class="nav-path">Calls</span> stores inbound phone sessions for quality review and continuity of care coordination.
+      </p>
+      <ul>
+        <li>Open a call record to review the transcript.</li>
+        <li>Listen to recorded audio when available (waveform player).</li>
+        <li>Delete records only when authorized by your clinic’s retention policy.</li>
+      </ul>
+
+      <div class="callout">
+        <span class="label">Quality assurance</span>
+        <p>
+          Spot-check several calls each week. Confirm greetings, booking accuracy, escalation language,
+          and whether Knowledge answers match current clinic policy.
+        </p>
+      </div>
+
+      <!-- ===================== 13 ===================== -->
+      <h2 id="s13">13. Users &amp; audit logs</h2>
+
+      <h3>13.1 User management (Admin)</h3>
+      <ol>
+        <li>Open <span class="nav-path">Users</span>.</li>
+        <li>Create a user with email, password, and role (<strong>Admin</strong> or <strong>Clinic Staff</strong>).</li>
+        <li>For Clinic Staff, assign one or more clinics.</li>
+        <li>Update or deactivate accounts when staff change roles.</li>
+      </ol>
+
+      <h3>13.2 Audit logs (Admin)</h3>
+      <p>
+        <span class="nav-path">Audit logs</span> provide a HIPAA-oriented access trail showing
+        <strong>who</strong> performed <strong>what</strong> action, <strong>when</strong>, and from
+        <strong>where</strong>. Use filters and page size controls to investigate activity. Clearing logs
+        should follow your organization’s compliance policy.
+      </p>
+
+      <figure class="figure">
+        <img src="images/carousel-trust.png" alt="Trust and compliance illustration" />
+        <figcaption>Figure 10. Access controls and audit logging support accountable clinic operations.</figcaption>
+      </figure>
+
+      <!-- ===================== 14 ===================== -->
+      <h2 id="s14">14. Testing with Agent Test Lab</h2>
+
+      <p>
+        Before exposing patients to a new Agent, Flow, or Knowledge change, validate behavior in
+        <strong>Agent Test Lab</strong> (flask / test icon from Agents or Clinics).
+      </p>
+
+      <h3>14.1 Test modes</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Tab</th>
+            <th>Use it to verify</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Webchat</strong></td><td>Browser chat answers, tone, booking intake, and knowledge accuracy</td></tr>
+          <tr><td><strong>Inbound</strong></td><td>Phone-style conversation, greeting, and voice flow behavior</td></tr>
+          <tr><td><strong>Campaign</strong></td><td>Outbound script behavior before launching a live campaign</td></tr>
+        </tbody>
+      </table>
+
+      <h3>14.2 Suggested test script</h3>
+      <ol>
+        <li>Ask an on-topic FAQ (hours, parking, insurance).</li>
+        <li>Ask an off-topic question — confirm polite deflection.</li>
+        <li>Request an appointment and complete all intake fields.</li>
+        <li>Provide incomplete or invalid details — confirm the bot asks again.</li>
+        <li>Describe an emergency symptom — confirm 911 / urgent care guidance.</li>
+        <li>Ask for a diagnosis — confirm the bot refuses and redirects appropriately.</li>
+        <li>Verify the appointment appears on the Appointments calendar.</li>
+      </ol>
+
+      <!-- ===================== 15 ===================== -->
+      <h2 id="s15">15. Safety, privacy &amp; clinical boundaries</h2>
+
+      <p>
+        Medical Bot Console ships with mandatory safety behavior in the <strong>Assistant &amp; safety</strong> knowledge
+        prompt. Clinic leadership should review these rules and keep them enabled.
+      </p>
+
+      <h3>15.1 Built-in safety principles</h3>
+      <ul>
+        <li><strong>No diagnosis</strong> — the bot must not say or imply “you have X.”</li>
+        <li><strong>No clinical replacement</strong> — it is a support tool, not a clinician.</li>
+        <li><strong>Limited medication guidance</strong> — OTC mentions only; no personalized dosing.</li>
+        <li><strong>Red-flag escalation</strong> — directs callers to urgent care or 911 when warranted.</li>
+        <li><strong>Privacy awareness</strong> — avoid collecting unnecessary identifiers in Knowledge or free-form chat.</li>
+        <li><strong>Off-topic deflection</strong> — stays focused on clinic services and general health information.</li>
+        <li><strong>Multilingual replies</strong> — answers in the patient’s language when possible, in a warm, clear style.</li>
+      </ul>
+
+      <h3>15.2 Recommended clinic policies</h3>
+      <ul>
+        <li>Designate a clinical reviewer for Knowledge content changes.</li>
+        <li>Train staff on when to take over from the bot (complex clinical questions, angry callers, emergencies).</li>
+        <li>Define retention periods for call recordings and transcripts.</li>
+        <li>Use unique staff accounts — never share passwords.</li>
+        <li>Review Audit logs periodically.</li>
+      </ul>
+
+      <!-- ===================== 16 ===================== -->
+      <h2 id="s16">16. Day-to-day staff workflows</h2>
+
+      <h3>16.1 Opening checklist (each morning)</h3>
+      <ol>
+        <li>Sign in to Medical Bot Console.</li>
+        <li>Review Dashboard KPIs and today’s appointments.</li>
+        <li>Scan the inbox for overnight conversations needing follow-up.</li>
+        <li>Check Calls for any incomplete or escalated overnight phone sessions.</li>
+        <li>Confirm any Running campaigns are behaving as expected.</li>
+      </ol>
+
+      <h3>16.2 During the day</h3>
+      <ul>
+        <li>Monitor new appointments created by the bot; complete chart prep as usual.</li>
+        <li>Update Knowledge immediately when hours, providers, or policies change.</li>
+        <li>Pause campaigns during unexpected clinic closures.</li>
+        <li>Transfer complex callers to human staff per clinic protocol.</li>
+      </ul>
+
+      <h3>16.3 Closing checklist</h3>
+      <ul>
+        <li>Reconcile same-day bot bookings against the practice management / EHR schedule.</li>
+        <li>Note any Knowledge corrections for the next business day.</li>
+        <li>Sign out of shared workstations.</li>
+      </ul>
+
+      <!-- ===================== 17 ===================== -->
+      <h2 id="s17">17. Troubleshooting</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Symptom</th>
+            <th>Likely cause</th>
+            <th>What to try</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Cannot sign in</td>
+            <td>Wrong password or expired/disabled account</td>
+            <td>Verify email; ask Admin to reset credentials; confirm role is active</td>
+          </tr>
+          <tr>
+            <td>Session ends unexpectedly</td>
+            <td>60-minute session timeout</td>
+            <td>Sign in again; avoid leaving the console idle mid-task</td>
+          </tr>
+          <tr>
+            <td>Bot gives outdated answers</td>
+            <td>Stale Knowledge content</td>
+            <td>Update Knowledge; confirm Agent still links to the correct knowledge items; re-test in Test Lab</td>
+          </tr>
+          <tr>
+            <td>Phone not answered by Medical Bot Console</td>
+            <td>Twilio / Agent / clinic assignment issue</td>
+            <td>Confirm clinic has an active assigned Agent; verify Twilio settings with your technical team</td>
+          </tr>
+          <tr>
+            <td>Appointments not appearing</td>
+            <td>Incomplete intake or timezone confusion</td>
+            <td>Check Calls/Inbox for missing fields; remember calendar uses Eastern Time</td>
+          </tr>
+          <tr>
+            <td>Campaign not dialing</td>
+            <td>Status not Running, empty list, or inactive Agent</td>
+            <td>Confirm status, patient import, schedule window, and active Agent/Flow</td>
+          </tr>
+          <tr>
+            <td>Menu items missing</td>
+            <td>Role permissions</td>
+            <td>Clinic Staff cannot open Clinics, Users, or Audit logs — ask an Admin</td>
+          </tr>
+          <tr>
+            <td>Web chat theme wrong</td>
+            <td>Clinic theme color not set</td>
+            <td>Update Theme color on the Clinics page and re-test the widget</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- ===================== 18 ===================== -->
+      <h2 id="s18">18. Glossary</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Term</th>
+            <th>Definition</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Healthcare Chat Bot</td><td>Public product name of the platform</td></tr>
+          <tr><td>Medical Bot Console</td><td>Brand name of the clinical operations console</td></tr>
+          <tr><td>Agent</td><td>Full bot behavior profile (AI, voice, phone, meeting, flow, knowledge)</td></tr>
+          <tr><td>Clinic</td><td>A practice location with its own profile and assigned Agent</td></tr>
+          <tr><td>Knowledge</td><td>Training content and safety prompts that shape bot answers</td></tr>
+          <tr><td>Flow</td><td>Visual conversation graph from Start to End</td></tr>
+          <tr><td>Campaign</td><td>Scheduled outbound calling program with a patient list</td></tr>
+          <tr><td>Webchat</td><td>Browser-based patient chat channel</td></tr>
+          <tr><td>Inbound</td><td>Patient calls the clinic phone number</td></tr>
+          <tr><td>Appointment intake</td><td>Structured collection of booking fields</td></tr>
+          <tr><td>Meeting provider</td><td>Google / ECW / Azul integration used when creating visits</td></tr>
+          <tr><td>Clinic Staff</td><td>Role with clinic-scoped operational access</td></tr>
+          <tr><td>Audit log</td><td>Record of administrative access and actions</td></tr>
+          <tr><td>Eastern Time (ET)</td><td>System timezone for appointment scheduling</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ===================== 19 ===================== -->
+      <h2 id="s19">19. Support &amp; document control</h2>
+
+      <h3>19.1 Getting help</h3>
+      <ol>
+        <li>Check this manual’s Troubleshooting section.</li>
+        <li>Escalate configuration issues (Twilio, OpenAI keys, server URL) to your technical administrator.</li>
+        <li>Escalate clinical content questions to your clinic’s designated Knowledge reviewer.</li>
+      </ol>
+
+      <h3>19.2 Document information</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Document title</td><td>Medical Bot Console User Manual</td></tr>
+          <tr><td>Product</td><td>Healthcare Chat Bot (Medical Bot Console)</td></tr>
+          <tr><td>Version</td><td>1.0</td></tr>
+          <tr><td>Audience</td><td>Medical clinic administrators and front-desk staff</td></tr>
+          <tr><td>Classification</td><td>Internal clinic operations — do not include patient PHI in printed copies beyond operational need</td></tr>
+        </tbody>
+      </table>
+
+      <div class="footer">
+        <p>
+          © Healthcare Chat Bot / Medical Bot Console. This manual describes the Medical Bot Console for clinic operations.
+          Screen labels and features reflect the current product. For a printable PDF, open this file in a browser
+          and use <strong>Print → Save as PDF</strong>.
+        </p>
+      </div>
+
+    </main>
+  </div>
+</body>
+</html>
