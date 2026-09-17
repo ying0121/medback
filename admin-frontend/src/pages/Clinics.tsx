@@ -56,7 +56,6 @@ import {
 } from "@/lib/api";
 import {
   CLINIC_THEME_COLORS,
-  getThemeColorOption,
   normalizeClinicThemeColor,
   themeGradient,
 } from "@/lib/themeColors";
@@ -514,15 +513,14 @@ export default function Clinics() {
 
               <Field label="Theme color" className="col-span-12">
                 <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
-                  {CLINIC_THEME_COLORS.map((value) => {
-                    const opt = getThemeColorOption(value);
-                    const selected = form.themeColor === value;
+                  {CLINIC_THEME_COLORS.map((opt) => {
+                    const selected = form.themeColor === opt.value;
                     return (
                       <button
-                        key={value}
+                        key={opt.value}
                         type="button"
-                        title={opt.value}
-                        onClick={() => setForm({ ...form, themeColor: value })}
+                        title={opt.label}
+                        onClick={() => setForm({ ...form, themeColor: opt.value })}
                         className={cn(
                           "rounded-lg border p-1.5 text-left transition-colors",
                           selected
@@ -535,7 +533,7 @@ export default function Clinics() {
                           style={{ background: themeGradient(opt.from, opt.to) }}
                         />
                         <span className="mt-1 block truncate text-[10px] leading-tight text-muted-foreground">
-                          {opt.value}
+                          {opt.label}
                         </span>
                       </button>
                     );
