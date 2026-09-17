@@ -51,13 +51,17 @@ class InboundCallSession {
     this._userTurnMulawChunks = [];
     this._userCapturing = false;
 
+    const agent = opts.agent || null;
     this.realtime = new OpenAIRealtimeBridge(callSid, {
       instructions: buildRealtimeInstructions({
+        systemPrompt: opts.systemPrompt || null,
         clinicPrompt: opts.clinicPrompt || null,
         knowledgePrompt: opts.knowledgePrompt || null,
         flowInstructions: opts.flowInstructions || null
       }),
-      voice: opts.openaiVoice || null
+      voice: opts.openaiVoice || null,
+      apiKey: agent?.openaiApiKey || opts.apiKey || null,
+      model: agent?.openaiRealtimeModel || opts.realtimeModel || null
     });
 
     this.streamSid = null;

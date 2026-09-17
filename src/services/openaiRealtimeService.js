@@ -24,6 +24,8 @@ class OpenAIRealtimeBridge extends EventEmitter {
    * @param {{
    *   instructions: string,
    *   voice: string|null,
+   *   apiKey?: string|null,
+   *   model?: string|null,
    * }} opts
    */
   constructor(callSid, opts = {}) {
@@ -31,6 +33,9 @@ class OpenAIRealtimeBridge extends EventEmitter {
     this.callSid = callSid;
     this.instructions = String(opts.instructions || "").trim();
     this.voice = resolveOpenAiVoice(opts.voice);
+    this.apiKey = String(opts.apiKey || process.env.OPENAI_API_KEY || "").trim();
+    this.model =
+      String(opts.model || process.env.OPENAI_REALTIME_MODEL || "").trim() || DEFAULT_MODEL;
     this.ws = null;
     this.isOpen = false;
     this._sessionReady = false;
@@ -41,12 +46,12 @@ class OpenAIRealtimeBridge extends EventEmitter {
   }
 
   connect() {
-    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const apiKey = this.apiKey;
     if (!apiKey) {
       return Promise.reject(new Error("Missing OPENAI_API_KEY"));
     }
 
-    const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(DEFAULT_MODEL)}`;
+    const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.model)}`;
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -69,7 +74,7 @@ class OpenAIRealtimeBridge extends EventEmitter {
 
       const onOpen = () => {
         this.isOpen = true;
-        console.log(`[OpenAIRealtime] connected callSid=${this.callSid} model=${DEFAULT_MODEL}`);
+        console.log(`[OpenAIRealtime] connected callSid=${this.callSid} model=${this.model}`);
         this._sendSessionUpdate();
       };
 
@@ -287,10 +292,20 @@ class OpenAIRealtimeBridge extends EventEmitter {
 
 /**
  * Build the system instructions for an inbound call session.
- * @param {{ clinicPrompt: string|null, knowledgePrompt: string|null }} ctx
+ * Prefer full agent systemPrompt (agent + clinic + flow + knowledge) when present.
+ * @param {{ systemPrompt?: string|null, clinicPrompt?: string|null, knowledgePrompt?: string|null, flowInstructions?: string|null }} ctx
  * @returns {string}
  */
 function buildRealtimeInstructions(ctx = {}) {
+  const full = String(ctx.systemPrompt || "").trim();
+  if (full) {
+    return [
+      full,
+      "Keep replies under 3 sentences for phone. Speak naturally — no markdown, no lists, no special characters.",
+      "When the caller wants to end the call, say a brief warm goodbye."
+    ].join("\n\n");
+  }
+
   const parts = [];
   if (ctx.clinicPrompt) parts.push(ctx.clinicPrompt);
   if (ctx.flowInstructions) {

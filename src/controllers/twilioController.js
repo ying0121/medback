@@ -240,7 +240,7 @@ module.exports = {
         greetingText = resolveInboundGreeting(clinicRow || { name: clinicContext.clinicName });
         // eslint-disable-next-line no-console
         console.log(
-          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} agent=${clinicContext.agent?.id || "-"} voice=${clinicContext.openaiVoice || "-"} flow=${clinicContext.flowId || "-"} customGreeting=${!!clinicRow?.inboundGreeting}`
+          `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} agent=${clinicContext.agent?.id || "-"} voice=${clinicContext.openaiVoice || "-"} flow=${clinicContext.flowId || "-"} knowledge=${clinicContext.knowledgeCount || 0} customGreeting=${!!clinicRow?.inboundGreeting}`
         );
       } catch (err) {
         // eslint-disable-next-line no-console

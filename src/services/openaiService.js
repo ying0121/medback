@@ -289,9 +289,17 @@ async function analyzeInboundEndCallTurn({ text, clinicPrompt = null, knowledgeP
  * Classify chat/voice user intent in one OpenAI round-trip.
  * @returns {"normal"|"twilio"|"appointment"}
  */
-async function analyzeChatIntent({ text, clinicPrompt = null, knowledgePrompt = null }) {
+async function analyzeChatIntent({
+  text,
+  clinicPrompt = null,
+  knowledgePrompt = null,
+  systemPrompt = null,
+  apiKey = null,
+  model = null
+} = {}) {
   if (!text || !String(text).trim()) return "normal";
-  if (!openaiApiKey) return "normal";
+  const key = String(apiKey || openaiApiKey || "").trim();
+  if (!key) return "normal";
 
   const intentPrompt = [
     "Classify the user's intent for a medical clinic assistant.",
@@ -301,14 +309,19 @@ async function analyzeChatIntent({ text, clinicPrompt = null, knowledgePrompt = 
     "- normal: all other messages."
   ].join(" ");
 
-  const completion = await client.chat.completions.create({
-    model: openaiModel,
+  const intentClient = key === openaiApiKey ? client : new OpenAI({ apiKey: key });
+  const intentModel = String(model || openaiModel || "").trim() || openaiModel;
+  const completion = await intentClient.chat.completions.create({
+    model: intentModel,
     temperature: 0,
     max_completion_tokens: 8,
     messages: [
       { role: "system", content: intentPrompt },
-      ...(clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
-      ...(knowledgePrompt ? [{ role: "system", content: knowledgePrompt }] : []),
+      ...(systemPrompt ? [{ role: "system", content: String(systemPrompt) }] : []),
+      ...(!systemPrompt && clinicPrompt ? [{ role: "system", content: clinicPrompt }] : []),
+      ...(!systemPrompt && knowledgePrompt
+        ? [{ role: "system", content: knowledgePrompt }]
+        : []),
       { role: "user", content: String(text).trim() }
     ]
   });

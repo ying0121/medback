@@ -218,21 +218,53 @@ async function resolveConversationOnConnect({ conversationId, clinicId, userInfo
 
 /**
  * Build clinic + agent behavior prompts for chat mode.
- * Prefer clinic.agentId → flow + knowledge; fall back to clinic-scoped knowledge.
- * Flow + knowledge are merged into knowledgePrompt so existing OpenAI call sites pick them up.
+ * Always prefers clinic.agentId → Agent flow + knowledge + OpenAI settings
+ * (same behavior source as Agent Test Lab).
  */
 async function buildContextPrompts(clinicId) {
   const ctx = await buildChatBehaviorByBusinessClinicId(clinicId);
-  const behaviorParts = [];
-  if (ctx.flowInstructions) {
-    behaviorParts.push(`CONVERSATION FLOW (must follow):\n${ctx.flowInstructions}`);
+  const agent = ctx.agent || null;
+
+  if (clinicId && !agent) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[Webchat] Clinic ${clinicId} has no assigned agent — using clinic knowledge / env defaults. Assign an agent for flow + knowledge.`
+    );
+  } else if (agent) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Webchat] Using agent id=${agent.id} title="${agent.title}" flowId=${ctx.flowId || "none"} knowledgeCount=${ctx.knowledgeCount || 0}`
+    );
   }
-  if (ctx.knowledgePrompt) behaviorParts.push(ctx.knowledgePrompt);
+
   return {
-    clinicPrompt: ctx.clinicPrompt,
-    knowledgePrompt: behaviorParts.length ? behaviorParts.join("\n\n") : null,
-    openaiVoice: ctx.openaiVoice,
-    agentId: ctx.agent?.id || null
+    clinicPrompt: ctx.clinicPrompt || null,
+    knowledgePrompt: ctx.knowledgePrompt || null,
+    flowInstructions: ctx.flowInstructions || null,
+    // Full assembled prompt: agent identity + clinic + flow + knowledge
+    systemPrompt: ctx.systemPrompt || null,
+    openaiVoice: ctx.openaiVoice || null,
+    agentId: agent?.id || null,
+    flowId: ctx.flowId || null,
+    knowledgeCount: ctx.knowledgeCount || 0,
+    apiKey: agent?.openaiApiKey || null,
+    model: agent?.openaiModel || null,
+    transcriptionModel: agent?.openaiTranscriptionModel || null,
+    ttsModel: agent?.openaiTtsModel || null
+  };
+}
+
+/** Options for OpenAI chat calls — prefer full agent systemPrompt (Test Lab parity). */
+function chatLlmOptions(contextPrompts = {}) {
+  const hasSystem = Boolean(String(contextPrompts.systemPrompt || "").trim());
+  return {
+    apiKey: contextPrompts.apiKey || undefined,
+    model: contextPrompts.model || undefined,
+    systemPrompt: hasSystem ? contextPrompts.systemPrompt : undefined,
+    // Avoid duplicating pieces already inside systemPrompt
+    clinicPrompt: hasSystem ? null : contextPrompts.clinicPrompt || null,
+    knowledgePrompt: hasSystem ? null : contextPrompts.knowledgePrompt || null,
+    flowInstructions: hasSystem ? null : contextPrompts.flowInstructions || null
   };
 }
 
@@ -321,7 +353,11 @@ async function continueAppointmentIntake({
   formPatientInfo = {},
   clinicPrompt = null,
   knowledgePrompt = null,
-  aiMessages = []
+  aiMessages = [],
+  llmOptions = null,
+  openaiVoice = null,
+  apiKey = null,
+  ttsModel = null
 }) {
   if (isAppointmentCancelRequest(currentText)) {
     const conversation = await Conversation.findByPk(conversationId, { attributes: ["id", "userInfo"] });
@@ -371,7 +407,7 @@ async function continueAppointmentIntake({
 
   await saveIntakeDraft(conversation, draft, { appointmentIntakeActive: true });
 
-  if (knowledgePrompt) {
+  if (knowledgePrompt || (llmOptions && llmOptions.systemPrompt)) {
     const info = readUserInfoObject(conversation.userInfo);
     if (hasNameAndEmail(draft) && !info.appointmentRequestSent) {
       await processAppointmentRequest({
@@ -405,8 +441,13 @@ async function continueAppointmentIntake({
   let audioBase64 = null;
   let audioMimeType = null;
   if (normalizedReplyType === "voice") {
-    const voice = await getClinicOpenAiVoice(clinicId);
-    const speech = await generateSpeechFromText({ text: question, voice });
+    const voice = openaiVoice || (await getClinicOpenAiVoice(clinicId));
+    const speech = await generateSpeechFromText({
+      text: question,
+      voice,
+      apiKey,
+      model: ttsModel
+    });
     audioBase64 = speech.audioBase64;
     audioMimeType = speech.audioMimeType;
   }
@@ -457,7 +498,12 @@ async function processIncomingMessage({
 
   if (type === "voice") {
     try {
-      const transcriptText = await transcribeAudioBase64({ audioBase64, audioMimeType });
+      const transcriptText = await transcribeAudioBase64({
+        audioBase64,
+        audioMimeType,
+        apiKey: contextPrompts.apiKey,
+        model: contextPrompts.transcriptionModel
+      });
 
       await createMessage({
         conversationId: ensuredConversationId,
@@ -469,10 +515,10 @@ async function processIncomingMessage({
         status: "success"
       });
 
+      const llm = chatLlmOptions(contextPrompts);
       const chatIntent = await analyzeChatIntent({
         text: transcriptText,
-        clinicPrompt: contextPrompts.clinicPrompt,
-        knowledgePrompt: contextPrompts.knowledgePrompt
+        ...llm
       });
 
       if (chatIntent === "twilio") {
@@ -510,20 +556,26 @@ async function processIncomingMessage({
         formPatientInfo,
         clinicPrompt: contextPrompts.clinicPrompt,
         knowledgePrompt: contextPrompts.knowledgePrompt,
-        aiMessages: [...aiMessages, { role: "user", content: transcriptText }]
+        aiMessages: [...aiMessages, { role: "user", content: transcriptText }],
+        llmOptions: llm,
+        openaiVoice: contextPrompts.openaiVoice,
+        apiKey: contextPrompts.apiKey,
+        ttsModel: contextPrompts.ttsModel
       });
       if (intake) return intake;
 
       const assistantText = await generateAssistantReply(
         [...aiMessages, { role: "user", content: transcriptText }],
-        {
-          clinicPrompt: contextPrompts.clinicPrompt,
-          knowledgePrompt: contextPrompts.knowledgePrompt
-        }
+        llm
       );
-      const voice = await getClinicOpenAiVoice(conversation.clinicId);
+      const voice = contextPrompts.openaiVoice || (await getClinicOpenAiVoice(conversation.clinicId));
       const { audioBase64: audioBase64Out, audioMimeType: audioMimeTypeOut } =
-        await generateSpeechFromText({ text: assistantText, voice });
+        await generateSpeechFromText({
+          text: assistantText,
+          voice,
+          apiKey: contextPrompts.apiKey,
+          model: contextPrompts.ttsModel
+        });
 
       await createMessage({
         conversationId: ensuredConversationId,
@@ -586,10 +638,10 @@ async function processIncomingMessage({
   const updatedAiMessages = toAiMessages(updatedDbMessages);
 
   try {
+    const llm = chatLlmOptions(contextPrompts);
     const chatIntent = await analyzeChatIntent({
       text,
-      clinicPrompt: contextPrompts.clinicPrompt,
-      knowledgePrompt: contextPrompts.knowledgePrompt
+      ...llm
     });
 
     if (chatIntent === "twilio") {
@@ -623,14 +675,15 @@ async function processIncomingMessage({
       formPatientInfo,
       clinicPrompt: contextPrompts.clinicPrompt,
       knowledgePrompt: contextPrompts.knowledgePrompt,
-      aiMessages: updatedAiMessages
+      aiMessages: updatedAiMessages,
+      llmOptions: llm,
+      openaiVoice: contextPrompts.openaiVoice,
+      apiKey: contextPrompts.apiKey,
+      ttsModel: contextPrompts.ttsModel
     });
     if (intake) return intake;
 
-    const assistantReply = await generateAssistantReply(updatedAiMessages, {
-      clinicPrompt: contextPrompts.clinicPrompt,
-      knowledgePrompt: contextPrompts.knowledgePrompt
-    });
+    const assistantReply = await generateAssistantReply(updatedAiMessages, llm);
 
     await createMessage({
       conversationId: ensuredConversationId,

@@ -149,6 +149,14 @@ async function buildAgentBehaviorContext({
     knowledgePrompt = knowledge.knowledgePrompt;
     knowledgeCount = knowledge.count;
 
+    // Agent assigned but no knowledge linked → fall back to clinic knowledge so
+    // webchat/inbound still have clinic FAQs instead of going silent.
+    if (!knowledgePrompt && fallbackClinicKnowledge && clinic?.clinicId) {
+      const rows = await loadActiveKnowledge(clinic.clinicId);
+      knowledgePrompt = formatKnowledgePrompt(rows);
+      knowledgeCount = rows.length;
+    }
+
     flow = await loadFlowById(agent.flowId);
     if (flow) {
       flowInstructions = await buildCampaignFlowInstructionsWithKnowledge({
