@@ -100,7 +100,7 @@ npm run db:sync
 
 ### 4. Run the server
 
-Builds the landing + admin SPAs and starts the API with file watching:
+Builds the landing, admin, and webchat CDN bundle, then starts the API with file watching:
 
 ```bash
 npm start
@@ -113,6 +113,7 @@ Default URL: `http://localhost:4000` (override with `PORT`).
 | `GET /health` | Health check |
 | `http://localhost:4000/` | Landing site |
 | `http://localhost:4000/admin` | Medical Bot Console (after build) |
+| `http://localhost:4000/cdn/webchat.js` | Embeddable webchat widget (CDN) |
 
 ### Frontend development
 
@@ -121,14 +122,17 @@ Run the API (`npm start` or `node src/server.js` after a build) in one terminal,
 ```bash
 npm run admin:dev      # Vite HMR for admin (base /admin/)
 npm run landing:dev    # Vite HMR for landing
+npm run webchat:dev    # Vite HMR for webchat widget (:8080)
 ```
 
 | Script | Description |
 |--------|-------------|
-| `npm start` | Build landing + admin, then `nodemon src/server.js` |
+| `npm start` | Build landing + admin + webchat, then `nodemon src/server.js` |
 | `npm run landing:build` | Production landing → `landing-frontend/dist` |
 | `npm run admin:build` | Production admin → `admin-frontend/dist` |
 | `npm run admin:preview` | Preview built admin app |
+| `npm run webchat:build` | Production webchat IIFE → `webchat-frontend/dist` (served at `/cdn/webchat.js`) |
+| `npm run webchat:dev` | Vite HMR for webchat widget |
 | `npm run db:sync` | Sync schema only |
 | `npm run signaling:build` | Obfuscate signaling bundle |
 
@@ -148,6 +152,7 @@ mediback/
 │   └── middlewares/
 ├── admin-frontend/        # Medical Bot Console SPA → /admin
 ├── landing-frontend/      # Marketing landing → /
+├── webchat-frontend/      # Embeddable widget → /cdn/webchat.js
 └── .env.example
 ```
 
@@ -183,6 +188,22 @@ After build, open `http://localhost:4000/admin`.
 
 Sessions expire after idle timeout (see admin auth). If the admin build is missing, `/admin` returns HTTP 503 with build instructions.
 
+## Webchat CDN embed
+
+Clinics embed the chat widget with **one script tag** (the mount `<div>` is injected automatically):
+
+```html
+<script src="https://YOUR_API_HOST/cdn/webchat.js?clinicId=YOUR_CLINIC_ID" defer></script>
+```
+
+| URL | Purpose |
+|-----|---------|
+| `/cdn/webchat.js` | Widget bundle |
+| `/webchat/embed.js` | Same bundle (alias) |
+| `/cdn/medi-bot.png` | Default avatar |
+
+Backend URL defaults to the CDN script’s origin. Add clinic website origins to `ALLOWED_WS_ORIGINS` (and `ALLOWED_ORIGINS` for REST). See `webchat-frontend/README.md`.
+
 ## Environment variables
 
 Copy `.env.example` and set values for your environment.
@@ -193,8 +214,8 @@ Copy `.env.example` and set values for your environment.
 |----------|-------------|
 | `PORT` | HTTP port (default `4000`) |
 | `SERVER_URL` | Public base URL Twilio uses for callbacks / `<Play>` audio |
-| `ALLOWED_ORIGINS` | Comma-separated CORS origins for REST |
-| `ALLOWED_WS_ORIGINS` | Comma-separated origins for Socket.IO |
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins for REST (include clinic sites that embed the widget) |
+| `ALLOWED_WS_ORIGINS` | Comma-separated origins allowed to open native webchat WebSocket (`/ws/chat`) |
 
 ### Database
 

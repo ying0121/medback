@@ -7,3 +7,7 @@ admin-frontend/dist
 landing-frontend/dist
 signaling/
 scripts/
+webchat-frontend/node_modules
+webchat-frontend/dist
+webchat-frontend/.env
+webchat-frontend/package-lock.json

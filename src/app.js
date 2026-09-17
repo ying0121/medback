@@ -55,6 +55,9 @@ app.options("/{*path}", cors(corsOptions));
 
 app.use(
   helmet({
+    // Allow clinic websites to load /cdn/webchat.js and related assets cross-origin.
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false,
     contentSecurityPolicy: {
       directives: {
         ...helmet.contentSecurityPolicy.getDefaultDirectives(),
@@ -107,6 +110,36 @@ const adminIndexPath = path.join(adminDistPath, "index.html");
 const hasAdminBuild = fs.existsSync(adminIndexPath);
 const adminRouteMatcher = /^\/admin(?:\/.*)?$/;
 
+const webchatDistPath = path.resolve(__dirname, "../webchat-frontend/dist");
+const webchatIifePath = path.join(webchatDistPath, "medical-chatbot.iife.js");
+
+const getWebchatIifePath = () =>
+  fs.existsSync(webchatIifePath) ? webchatIifePath : null;
+
+const sendWebchatScript = (req, res) => {
+  const filePath = getWebchatIifePath();
+  if (!filePath) {
+    return res.status(503).type("application/javascript").send(
+      "console.error('[MedicalChatbot] CDN build missing. On the API server run: npm run webchat:build');"
+    );
+  }
+  res.set({
+    "Content-Type": "application/javascript; charset=utf-8",
+    "Cache-Control": "public, max-age=300",
+    "Access-Control-Allow-Origin": "*",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+  });
+  return res.sendFile(filePath);
+};
+
+const sendWebchatBuildMissing = (req, res) => {
+  res.status(503).json({
+    error: "Webchat CDN build not found.",
+    fix: "On the API host run: npm --prefix webchat-frontend install && npm run webchat:build  (then restart the server if needed)",
+    expectedFile: "webchat-frontend/dist/medical-chatbot.iife.js",
+  });
+};
+
 if (hasLandingBuild) {
   app.use(express.static(landingDistPath, { index: false }));
 
@@ -152,6 +185,31 @@ if (hasAdminBuild) {
   });
 }
 
+// Embeddable webchat widget CDN:
+//   https://YOUR_HOST/cdn/webchat.js
+//   https://YOUR_HOST/webchat/embed.js  (alias)
+// Check the built file on each request so a post-start `webchat:build` works
+// after the next hit (no boot-time-only flag).
+app.get(["/cdn/webchat.js", "/webchat/embed.js", "/cdn/medical-chatbot.iife.js"], sendWebchatScript);
+
+app.use(
+  "/cdn",
+  (req, res, next) => {
+    if (!getWebchatIifePath() && (req.path === "/" || req.path === "")) {
+      return sendWebchatBuildMissing(req, res);
+    }
+    return next();
+  },
+  express.static(webchatDistPath, {
+    index: false,
+    setHeaders(res) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      res.setHeader("Cache-Control", "public, max-age=300");
+    },
+  })
+);
+
 // Webchat uses native WebSocket at /ws/chat. Plain HTTP (e.g. old Socket.IO
 // polling: ?EIO=4&transport=polling) must not be redirected to the HTML 404 page.
 const chatWsPath = String(process.env.WEBSOCKET_CHAT_URL || "/ws/chat").trim() || "/ws/chat";
@@ -174,6 +232,8 @@ app.get("/{*path}", (req, res, next) => {
   if (p.startsWith("/api/")) return next();
   if (p === "/" || p === "/404") return next();
   if (p.startsWith("/admin")) return next();
+  if (p.startsWith("/cdn")) return next();
+  if (p.startsWith("/webchat")) return next();
   if (p === chatWsPathNormalized || p === `${chatWsPathNormalized}/`) return next();
   return res.redirect("/404");
 });
