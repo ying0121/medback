@@ -98,6 +98,7 @@ export const PERMISSIONS = {
     "campaigns",
     "conversations",
     "calls",
+    "alerts",
     "users",
     "audit-logs",
   ] as const,
@@ -111,6 +112,7 @@ export const PERMISSIONS = {
     "campaigns",
     "conversations",
     "calls",
+    "alerts",
   ] as const,
 };
 

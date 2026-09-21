@@ -16,6 +16,7 @@ const adminCampaignRoutes = require("./routes/adminCampaignRoutes");
 const adminDoctorRoutes = require("./routes/adminDoctorRoutes");
 const adminAgentRoutes = require("./routes/adminAgentRoutes");
 const adminAuditLogRoutes = require("./routes/adminAuditLogRoutes");
+const adminAlertRoutes = require("./routes/adminAlertRoutes");
 const twilioRoutes = require("./routes/twilioRoutes");
 const errorHandler = require("./middlewares/errorHandler");
 const { auditAdminAccess } = require("./middlewares/auditAdminAccess");
@@ -99,6 +100,7 @@ app.use("/api/admin/campaigns", adminCampaignRoutes);
 app.use("/api/admin/doctors", adminDoctorRoutes);
 app.use("/api/admin/agents", adminAgentRoutes);
 app.use("/api/admin/audit-logs", adminAuditLogRoutes);
+app.use("/api/admin/alerts", adminAlertRoutes);
 app.use("/api/twilio", twilioRoutes);
 
 const landingDistPath = path.resolve(__dirname, "../landing-frontend/dist");

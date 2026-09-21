@@ -175,5 +175,6 @@ module.exports = {
   sendAppointmentRequestEmail,
   sendCallAnalysisEmail,
   sendPatientMeetingNotificationEmail,
-  resolvePatientEmail
+  resolvePatientEmail,
+  sendMailSafe
 };

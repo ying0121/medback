@@ -2174,4 +2174,132 @@ export async function clearAllAuditLogs() {
   });
 }
 
+// ---------- System alerts ----------
+export type AlertPriority = "critical" | "high" | "medium" | "low";
+export type AlertStatus = "open" | "acknowledged" | "resolved";
+export type AlertSourceType = "conversation" | "call" | "campaign";
+
+export interface SystemAlertItem {
+  id: string;
+  sourceType: AlertSourceType;
+  sourceId: string;
+  clinicId: string | null;
+  priority: AlertPriority;
+  title: string;
+  analysisResult: string;
+  reason: string;
+  recommendation: string;
+  status: AlertStatus;
+  notifiedEmailAt: string | null;
+  notifiedVoiceAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface SystemAlertListResult {
+  alerts: SystemAlertItem[];
+  total: number;
+  page: number;
+  limit: number;
+  openCount: number;
+  criticalCount: number;
+}
+
+export async function listSystemAlerts(params?: {
+  q?: string;
+  priority?: string;
+  status?: string;
+  sourceType?: string;
+  clinicId?: string;
+  page?: number;
+  limit?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params?.q) search.set("q", params.q);
+  if (params?.priority) search.set("priority", params.priority);
+  if (params?.status) search.set("status", params.status);
+  if (params?.sourceType) search.set("sourceType", params.sourceType);
+  if (params?.clinicId) search.set("clinicId", params.clinicId);
+  if (params?.page) search.set("page", String(params.page));
+  if (params?.limit) search.set("limit", String(params.limit));
+  const qs = search.toString();
+  return request<SystemAlertListResult>(
+    qs ? `/api/admin/alerts?${qs}` : "/api/admin/alerts"
+  );
+}
+
+export async function runSystemAlertAnalysis(body?: {
+  lookbackDays?: number;
+  limit?: number;
+  enrich?: boolean;
+}) {
+  return request<{
+    success: boolean;
+    created: number;
+    bySource: { call: number; conversation: number; campaign: number };
+    openCount: number;
+  }>("/api/admin/alerts/analyze", {
+    method: "POST",
+    body: JSON.stringify(body || {}),
+  });
+}
+
+export async function deleteSystemAlert(id: string) {
+  return request<{ success: boolean; deleted: number }>(
+    `/api/admin/alerts/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function deleteAllSystemAlerts() {
+  return request<{ success: boolean; deleted: number }>("/api/admin/alerts", {
+    method: "DELETE",
+  });
+}
+
+export async function updateSystemAlertStatus(id: string, status: AlertStatus) {
+  return request<{ success: boolean; alert: SystemAlertItem }>(
+    `/api/admin/alerts/${encodeURIComponent(id)}/status`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }
+  );
+}
+
+export async function notifySystemAlertEmail(
+  id: string,
+  body?: { doctorId?: string | number; toEmail?: string }
+) {
+  return request<{ success: boolean; to: string; alert: SystemAlertItem }>(
+    `/api/admin/alerts/${encodeURIComponent(id)}/notify-email`,
+    {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }
+  );
+}
+
+export async function notifySystemAlertVoice(
+  id: string,
+  body?: {
+    doctorId?: string | number;
+    toPhone?: string;
+    toEmail?: string;
+    clinicId?: string;
+  }
+) {
+  return request<{
+    success: boolean;
+    channel: "voice" | "sms";
+    to: string;
+    sid?: string;
+    alert: SystemAlertItem;
+  }>(`/api/admin/alerts/${encodeURIComponent(id)}/notify-voice`, {
+    method: "POST",
+    body: JSON.stringify(body || {}),
+  });
+}
+
 

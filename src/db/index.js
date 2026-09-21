@@ -17,6 +17,7 @@ const Doctor = require("../models/doctor");
 const Agent = require("../models/agent");
 const AgentBrainTemplate = require("../models/agentBrainTemplate");
 const AuditLog = require("../models/auditLog");
+const SystemAlert = require("../models/systemAlert");
 
 Conversation.hasMany(Message, {
   foreignKey: "conversationId",
@@ -164,6 +165,7 @@ async function syncDatabase() {
   await Agent.sync();
   await AgentBrainTemplate.sync();
   await AuditLog.sync();
+  await SystemAlert.sync();
 
   // Versioned schema migrations (src/db/migrations/*)
   await runMigrations();
@@ -200,6 +202,7 @@ module.exports = {
   Agent,
   AgentBrainTemplate,
   AuditLog,
+  SystemAlert,
   connectDatabase,
   syncDatabase,
   initializeDatabase

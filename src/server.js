@@ -50,6 +50,13 @@ connectDatabase()
     } catch (err) {
       logErr(`Signaling server failed to start: ${err.message}`);
     }
+
+    try {
+      const { startSystemAlertDailyJob } = require("./jobs/systemAlertDailyJob");
+      startSystemAlertDailyJob();
+    } catch (err) {
+      logErr(`System alert daily job failed to start: ${err.message}`);
+    }
   })
   .catch((err) => {
     logErr(`Server startup failed: ${err.message}`);

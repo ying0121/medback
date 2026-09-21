@@ -142,6 +142,41 @@ async function sendAlertSms({ body, clinicId, toPhoneNumber }) {
   return { sent: true, sid: response.sid };
 }
 
+/**
+ * Place an outbound call that speaks an alert message via TwiML &lt;Say&gt;.
+ */
+async function sendVoiceAlertSay({ clinicId, toPhoneNumber, message }) {
+  const cfg = await getClinicTwilioConfigByClinicId(clinicId);
+  const to = normalizePhone(toPhoneNumber);
+  if (!to) {
+    return { sent: false, reason: "Destination phone number is required." };
+  }
+  const spoken = String(message || "")
+    .replace(/[<>&]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 900);
+  if (!spoken) {
+    return { sent: false, reason: "Voice message is empty." };
+  }
+
+  const twiml = new twilio.twiml.VoiceResponse();
+  twiml.say(
+    { voice: "Polly.Joanna", language: "en-US" },
+    `This is a MedBot clinic alert. ${spoken}`
+  );
+  twiml.pause({ length: 1 });
+  twiml.say({ voice: "Polly.Joanna", language: "en-US" }, "End of alert. Goodbye.");
+
+  const call = await getClient(cfg).calls.create({
+    to,
+    from: cfg.twilioPhoneNumber,
+    twiml: twiml.toString()
+  });
+
+  return { sent: true, sid: call.sid, status: call.status };
+}
+
 async function initiateCall({ toPhoneNumber, patientPhoneNumber, callbackUrl, clinicId }) {
   const cfg = await getClinicTwilioConfigByClinicId(clinicId);
   if (!toPhoneNumber) {
@@ -412,6 +447,7 @@ async function downloadTwilioRecording(
 
 module.exports = {
   sendAlertSms,
+  sendVoiceAlertSay,
   initiateCall,
   getCallStatus,
   endCall,

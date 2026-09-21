@@ -17,9 +17,11 @@ import {
   Bot,
   ShieldCheck,
   MessagesSquare,
+  Bell,
 } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
 import MedicalBotConsoleLogo from "@/components/admin/MedicalBotConsoleLogo";
+import AlertBellMenu from "@/components/admin/AlertBellMenu";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -117,6 +119,14 @@ const NAV = [
     key: "users",
     tint: "bg-med-indigo/20 text-med-indigo",
     rail: "bg-med-indigo",
+  },
+  {
+    to: "/alerts",
+    label: "Alerts",
+    icon: Bell,
+    key: "alerts",
+    tint: "bg-med-amber/20 text-med-amber",
+    rail: "bg-med-amber",
   },
   {
     to: "/audit-logs",
@@ -442,14 +452,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                   </div>
                 </div>
               </div>
-              <div className="hidden sm:flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-mint-soft text-med-mint px-2.5 py-1 text-[11px] font-medium">
+              <div className="flex items-center gap-2">
+                <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-mint-soft text-med-mint px-2.5 py-1 text-[11px] font-medium">
                   <span className="h-1.5 w-1.5 rounded-full bg-med-mint animate-pulse" />
                   Live
                 </span>
-                <span className="inline-flex items-center rounded-full bg-sky-soft text-med-sky px-2.5 py-1 text-[11px] font-medium">
-                  Teal clinical theme
-                </span>
+                {canAccess(user.role, "alerts") ? <AlertBellMenu /> : null}
               </div>
             </div>
             <div className={cn("h-0.5 w-full", current.rail)} />
