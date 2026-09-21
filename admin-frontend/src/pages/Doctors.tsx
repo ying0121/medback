@@ -31,16 +31,24 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   listDoctors,
   createDoctor,
   updateDoctor,
   deleteDoctor,
+  listClinics,
   type Doctor,
   type DoctorGender,
   type DoctorInput,
+  type Clinic,
 } from "@/lib/api";
+import {
+  defaultWeeklyHours,
+  normalizeDailyLimit,
+  normalizeWeeklyHours,
+} from "@/lib/scheduleHours";
+import WeeklyHoursEditor from "@/components/admin/WeeklyHoursEditor";
 import { toast } from "sonner";
 
 const EMPTY: DoctorInput = {
@@ -54,6 +62,10 @@ const EMPTY: DoctorInput = {
   address2: "",
   photo: "",
   status: "active",
+  clinicId: null,
+  weeklyHours: defaultWeeklyHours(),
+  slotDurationMinutes: null,
+  doctorDailyLimit: null,
 };
 
 const LANGUAGE_OPTIONS = [
@@ -126,20 +138,26 @@ function Field({
 
 export default function Doctors() {
   const [data, setData] = useState<Doctor[]>([]);
+  const [clinics, setClinics] = useState<Clinic[]>([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Doctor | null>(null);
   const [form, setForm] = useState<DoctorInput>(EMPTY);
   const [confirmDelete, setConfirmDelete] = useState<Doctor | null>(null);
   const [saving, setSaving] = useState(false);
+  const [formTab, setFormTab] = useState("general");
 
   const refresh = () => listDoctors().then(setData).catch((err) => toast.error(err.message));
   useEffect(() => {
     refresh();
+    listClinics()
+      .then(setClinics)
+      .catch(() => setClinics([]));
   }, []);
 
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY);
+    setFormTab("general");
     setOpen(true);
   };
 
@@ -156,7 +174,12 @@ export default function Doctors() {
       address2: d.address2,
       photo: d.photo || "",
       status: d.status,
+      clinicId: d.clinicId || null,
+      weeklyHours: normalizeWeeklyHours(d.weeklyHours),
+      slotDurationMinutes: d.slotDurationMinutes ?? null,
+      doctorDailyLimit: normalizeDailyLimit(d.doctorDailyLimit),
     });
+    setFormTab("general");
     setOpen(true);
   };
 
@@ -164,13 +187,20 @@ export default function Doctors() {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       return toast.error("First & last name required");
     }
+    const doctorLimit = normalizeDailyLimit(form.doctorDailyLimit);
     setSaving(true);
     try {
+      const payload: DoctorInput = {
+        ...form,
+        clinicId: form.clinicId || null,
+        weeklyHours: normalizeWeeklyHours(form.weeklyHours),
+        doctorDailyLimit: doctorLimit,
+      };
       if (editing) {
-        await updateDoctor(editing.id, form);
+        await updateDoctor(editing.id, payload);
         toast.success("Doctor updated");
       } else {
-        await createDoctor(form);
+        await createDoctor(payload);
         toast.success("Doctor added");
       }
       setOpen(false);
@@ -253,6 +283,14 @@ export default function Doctors() {
       render: (r) => <span className="text-sm">{r.language || "—"}</span>,
     },
     {
+      key: "clinic",
+      header: "Clinic",
+      searchable: (r) => r.clinicName || "",
+      render: (r) => (
+        <span className="text-sm text-muted-foreground">{r.clinicName || "—"}</span>
+      ),
+    },
+    {
       key: "phone",
       header: "Phone",
       searchable: (r) => r.phone,
@@ -299,7 +337,7 @@ export default function Doctors() {
       <PageHeader
         accent={4}
         title="Doctors"
-        description="Manage doctor profiles, contact details, and photos."
+        description="Manage doctor profiles, clinic assignment, and Bot Calendar schedule overrides."
         actions={
           <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
             <Plus className="h-4 w-4 mr-1" /> Add doctor
@@ -315,166 +353,254 @@ export default function Doctors() {
       />
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] min-h-0 overflow-hidden flex flex-col">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90vh] min-h-0 max-w-3xl flex-col gap-0 overflow-hidden p-6">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{editing ? "Edit doctor" : "Add doctor"}</DialogTitle>
             <DialogDescription>
-              Photo must be 360 × 360 pixels or smaller.
+              Profile details and optional Bot Calendar schedule overrides. Photo max 360 × 360.
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">
-            <div className="grid grid-cols-12 gap-4 py-2 pr-2">
-              <div className="col-span-12 md:col-span-4 rounded-lg border border-border p-4">
-                <Label className="text-xs text-muted-foreground mb-3 block">Photo</Label>
-                <div className="mx-auto mb-3 h-28 w-28 rounded-full bg-muted overflow-hidden flex items-center justify-center">
-                  {form.photo ? (
-                    <img src={form.photo} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    <span className="text-2xl text-muted-foreground">DR</span>
-                  )}
-                </div>
-                <Label htmlFor="doctor-photo-upload" className="cursor-pointer">
-                  <div className="inline-flex items-center gap-2 rounded-md border border-input px-3 py-2 text-sm hover:bg-muted">
-                    <Upload className="h-4 w-4" /> Upload photo
-                  </div>
-                </Label>
-                <Input
-                  id="doctor-photo-upload"
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => onPhotoUpload(e.target.files?.[0] || null)}
-                />
-                {form.photo ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="mt-2 w-full text-muted-foreground"
-                    onClick={() => setForm((f) => ({ ...f, photo: "" }))}
-                  >
-                    Remove photo
-                  </Button>
-                ) : null}
-                <p className="mt-2 text-[11px] text-muted-foreground">Max size 360 × 360</p>
-              </div>
-
-              <div className="col-span-12 md:col-span-8 grid grid-cols-12 gap-4">
-                <Field label="First name *" className="col-span-12 md:col-span-6">
-                  <Input
-                    value={form.firstName}
-                    onChange={(e) => setForm({ ...form, firstName: e.target.value })}
-                  />
-                </Field>
-                <Field label="Last name *" className="col-span-12 md:col-span-6">
-                  <Input
-                    value={form.lastName}
-                    onChange={(e) => setForm({ ...form, lastName: e.target.value })}
-                  />
-                </Field>
-                <Field label="Gender" className="col-span-12 md:col-span-6">
-                  <Select
-                    value={form.gender}
-                    onValueChange={(v) => setForm({ ...form, gender: v as DoctorGender })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="z-[80]">
-                      <SelectItem value="Male">Male</SelectItem>
-                      <SelectItem value="Female">Female</SelectItem>
-                      <SelectItem value="Other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Language" className="col-span-12 md:col-span-6">
-                  <Select
-                    value={
-                      LANGUAGE_OPTIONS.filter((l) => l !== "Other").includes(form.language)
-                        ? form.language
-                        : "Other"
-                    }
-                    onValueChange={(v) => {
-                      if (v === "Other") {
-                        const known = LANGUAGE_OPTIONS.filter((l) => l !== "Other");
-                        setForm({
-                          ...form,
-                          language: known.includes(form.language) ? "" : form.language,
-                        });
-                        return;
-                      }
-                      setForm({ ...form, language: v });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select language" />
-                    </SelectTrigger>
-                    <SelectContent className="z-[80] max-h-72">
-                      {LANGUAGE_OPTIONS.map((lang) => (
-                        <SelectItem key={lang} value={lang}>
-                          {lang}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                {!LANGUAGE_OPTIONS.filter((l) => l !== "Other").includes(form.language) ? (
-                  <Field label="Custom language" className="col-span-12 md:col-span-6">
+          <Tabs
+            value={formTab}
+            onValueChange={setFormTab}
+            className="flex flex-1 min-h-0 flex-col gap-0"
+          >
+            <TabsList className="grid w-full grid-cols-2 shrink-0 mb-3">
+              <TabsTrigger value="general">General</TabsTrigger>
+              <TabsTrigger value="schedule">Schedule</TabsTrigger>
+            </TabsList>
+            <div
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-6 px-6 [scrollbar-gutter:stable]"
+              role="region"
+              aria-label="Doctor form"
+            >
+              <TabsContent value="general" className="mt-0 focus-visible:ring-0">
+                <div className="grid grid-cols-12 gap-4 py-2 pr-2 pb-4">
+                  <div className="col-span-12 md:col-span-4 rounded-lg border border-border p-4">
+                    <Label className="text-xs text-muted-foreground mb-3 block">Photo</Label>
+                    <div className="mx-auto mb-3 h-28 w-28 rounded-full bg-muted overflow-hidden flex items-center justify-center">
+                      {form.photo ? (
+                        <img src={form.photo} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <span className="text-2xl text-muted-foreground">DR</span>
+                      )}
+                    </div>
+                    <Label htmlFor="doctor-photo-upload" className="cursor-pointer">
+                      <div className="inline-flex items-center gap-2 rounded-md border border-input px-3 py-2 text-sm hover:bg-muted">
+                        <Upload className="h-4 w-4" /> Upload photo
+                      </div>
+                    </Label>
                     <Input
-                      value={form.language === "Other" ? "" : form.language}
-                      placeholder="Type language name"
-                      onChange={(e) =>
-                        setForm({ ...form, language: e.target.value.trim() || "Other" })
-                      }
+                      id="doctor-photo-upload"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => onPhotoUpload(e.target.files?.[0] || null)}
+                    />
+                    {form.photo ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-2 w-full text-muted-foreground"
+                        onClick={() => setForm((f) => ({ ...f, photo: "" }))}
+                      >
+                        Remove photo
+                      </Button>
+                    ) : null}
+                    <p className="mt-2 text-[11px] text-muted-foreground">Max size 360 × 360</p>
+                  </div>
+
+                  <div className="col-span-12 md:col-span-8 grid grid-cols-12 gap-4">
+                    <Field label="First name *" className="col-span-12 md:col-span-6">
+                      <Input
+                        value={form.firstName}
+                        onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Last name *" className="col-span-12 md:col-span-6">
+                      <Input
+                        value={form.lastName}
+                        onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Gender" className="col-span-12 md:col-span-6">
+                      <Select
+                        value={form.gender}
+                        onValueChange={(v) => setForm({ ...form, gender: v as DoctorGender })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="z-[80]">
+                          <SelectItem value="Male">Male</SelectItem>
+                          <SelectItem value="Female">Female</SelectItem>
+                          <SelectItem value="Other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Language" className="col-span-12 md:col-span-6">
+                      <Select
+                        value={
+                          LANGUAGE_OPTIONS.filter((l) => l !== "Other").includes(form.language)
+                            ? form.language
+                            : "Other"
+                        }
+                        onValueChange={(v) => {
+                          if (v === "Other") {
+                            const known = LANGUAGE_OPTIONS.filter((l) => l !== "Other");
+                            setForm({
+                              ...form,
+                              language: known.includes(form.language) ? "" : form.language,
+                            });
+                            return;
+                          }
+                          setForm({ ...form, language: v });
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select language" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[80] max-h-72">
+                          {LANGUAGE_OPTIONS.map((lang) => (
+                            <SelectItem key={lang} value={lang}>
+                              {lang}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    {!LANGUAGE_OPTIONS.filter((l) => l !== "Other").includes(form.language) ? (
+                      <Field label="Custom language" className="col-span-12 md:col-span-6">
+                        <Input
+                          value={form.language === "Other" ? "" : form.language}
+                          placeholder="Type language name"
+                          onChange={(e) =>
+                            setForm({ ...form, language: e.target.value.trim() || "Other" })
+                          }
+                        />
+                      </Field>
+                    ) : null}
+                    <Field label="Phone" className="col-span-12 md:col-span-6">
+                      <Input
+                        value={form.phone}
+                        onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Email" className="col-span-12 md:col-span-6">
+                      <Input
+                        type="email"
+                        value={form.email}
+                        onChange={(e) => setForm({ ...form, email: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Status" className="col-span-12 md:col-span-6">
+                      <Select
+                        value={form.status}
+                        onValueChange={(v) =>
+                          setForm({ ...form, status: v as Doctor["status"] })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="z-[80]">
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="inactive">Inactive</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Clinic" className="col-span-12 md:col-span-6">
+                      <Select
+                        value={form.clinicId || "__none__"}
+                        onValueChange={(v) =>
+                          setForm({ ...form, clinicId: v === "__none__" ? null : v })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Unassigned" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[80] max-h-72">
+                          <SelectItem value="__none__">Unassigned</SelectItem>
+                          {clinics.map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+
+                  <Field label="Address 1" className="col-span-12">
+                    <Input
+                      value={form.address1}
+                      onChange={(e) => setForm({ ...form, address1: e.target.value })}
                     />
                   </Field>
-                ) : null}
-                <Field label="Phone" className="col-span-12 md:col-span-6">
-                  <Input
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  />
-                </Field>
-                <Field label="Email" className="col-span-12 md:col-span-6">
-                  <Input
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  />
-                </Field>
-                <Field label="Status" className="col-span-12 md:col-span-6">
-                  <Select
-                    value={form.status}
-                    onValueChange={(v) =>
-                      setForm({ ...form, status: v as Doctor["status"] })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="z-[80]">
-                      <SelectItem value="active">Active</SelectItem>
-                      <SelectItem value="inactive">Inactive</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </div>
+                  <Field label="Address 2" className="col-span-12">
+                    <Input
+                      value={form.address2}
+                      onChange={(e) => setForm({ ...form, address2: e.target.value })}
+                    />
+                  </Field>
+                </div>
+              </TabsContent>
 
-              <Field label="Address 1" className="col-span-12">
-                <Input
-                  value={form.address1}
-                  onChange={(e) => setForm({ ...form, address1: e.target.value })}
-                />
-              </Field>
-              <Field label="Address 2" className="col-span-12">
-                <Input
-                  value={form.address2}
-                  onChange={(e) => setForm({ ...form, address2: e.target.value })}
-                />
-              </Field>
+              <TabsContent value="schedule" className="mt-0 focus-visible:ring-0">
+                <div className="space-y-4 py-2 pr-2 pb-4">
+                  <div>
+                    <div className="font-medium text-sm">Bot Calendar schedule</div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Optional overrides when this doctor is linked to a clinic. Weekly hours use
+                      Eastern Time. Leave limits blank to inherit the clinic settings.
+                    </p>
+                  </div>
+                  <WeeklyHoursEditor
+                    value={normalizeWeeklyHours(form.weeklyHours)}
+                    onChange={(weeklyHours) => setForm({ ...form, weeklyHours })}
+                  />
+                  <div className="grid grid-cols-12 gap-3">
+                    <Field label="Slot duration (minutes)" className="col-span-12 md:col-span-6">
+                      <Input
+                        type="number"
+                        min={5}
+                        max={480}
+                        placeholder="Inherit clinic"
+                        value={form.slotDurationMinutes ?? ""}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            slotDurationMinutes:
+                              e.target.value === "" ? null : Number(e.target.value) || null,
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="Doctor daily limit" className="col-span-12 md:col-span-6">
+                      <Input
+                        type="number"
+                        min={1}
+                        placeholder="e.g. 20"
+                        value={form.doctorDailyLimit ?? ""}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            doctorDailyLimit: e.target.value === "" ? null : Number(e.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Doctor daily limit caps Bot Calendar bookings for this day when set. Blank values
+                    inherit the clinic settings (slot duration included).
+                  </p>
+                </div>
+              </TabsContent>
             </div>
-          </ScrollArea>
-          <DialogFooter>
+          </Tabs>
+          <DialogFooter className="shrink-0 border-t border-border/60 pt-4 sm:justify-end">
             <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
               Cancel
             </Button>

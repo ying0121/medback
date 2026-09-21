@@ -28,6 +28,16 @@ const Call = sequelize.define(
       type: DataTypes.STRING(64),
       allowNull: true
     },
+    agentId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "agent_id"
+    },
+    clinicId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "clinic_id"
+    },
     createdAt: {
       type: DataTypes.DATE,
       allowNull: false,

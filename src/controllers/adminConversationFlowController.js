@@ -95,17 +95,18 @@ async function createFlow(req, res, next) {
     if (!name) return res.status(400).json({ error: "Name is required." });
 
     const businessIds = await resolveClinicIdsFromBody(body);
-    if (!businessIds.length) {
-      return res.status(400).json({ error: "Select at least one clinic." });
-    }
 
-    const clinics = await Clinic.findAll({ where: { id: { [Op.in]: businessIds } } });
-    if (!clinics.length) return res.status(400).json({ error: "No valid clinics found." });
+    let clinicIds = businessIds;
+    if (businessIds.length) {
+      const clinics = await Clinic.findAll({ where: { id: { [Op.in]: businessIds } } });
+      if (!clinics.length) return res.status(400).json({ error: "No valid clinics found." });
+      clinicIds = clinics.map((c) => Number(c.id));
+    }
 
     const graph = normalizeGraph(body.graph || createDefaultFlowGraph());
 
     const created = await ConversationFlow.create({
-      clinicIds: businessIds,
+      clinicIds,
       name,
       description: description || null,
       graph,
@@ -138,12 +139,13 @@ async function updateFlow(req, res, next) {
     }
     if (body.clinicIds != null || body.clinicId != null) {
       const businessIds = await resolveClinicIdsFromBody(body);
-      if (!businessIds.length) {
-        return res.status(400).json({ error: "Select at least one clinic." });
+      if (businessIds.length) {
+        const clinics = await Clinic.findAll({ where: { id: { [Op.in]: businessIds } } });
+        if (!clinics.length) return res.status(400).json({ error: "No valid clinics found." });
+        row.clinicIds = clinics.map((c) => Number(c.id));
+      } else {
+        row.clinicIds = [];
       }
-      const clinics = await Clinic.findAll({ where: { id: { [Op.in]: businessIds } } });
-      if (!clinics.length) return res.status(400).json({ error: "No valid clinics found." });
-      row.clinicIds = businessIds;
     }
     if (body.status === "active" || body.status === "inactive") {
       row.status = body.status;

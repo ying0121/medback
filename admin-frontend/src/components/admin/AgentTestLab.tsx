@@ -91,6 +91,8 @@ type Props = {
   draft?: Partial<AgentInput> & { title?: string };
   /** Prefill clinic when opened from Clinics page */
   clinicId?: string | null;
+  /** Optional scenario chips that seed the first user message */
+  scenarios?: { id: string; label: string; firstMessage: string }[];
 };
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -113,6 +115,7 @@ export default function AgentTestLab({
   agentTitle,
   draft,
   clinicId: prefClinicId,
+  scenarios,
 }: Props) {
   const [channel, setChannel] = useState<AgentTestChannel>("webchat");
   const [messages, setMessages] = useState<AgentTestMessage[]>([]);
@@ -132,12 +135,50 @@ export default function AgentTestLab({
   const [patientFirst, setPatientFirst] = useState("Alex");
   const [patientLast, setPatientLast] = useState("Patient");
   const [recording, setRecording] = useState(false);
+  const [runHistory, setRunHistory] = useState<
+    { id: string; at: string; channel: string; turns: number; preview: string }[]
+  >([]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+
+  const historyKey = `agent-test-history:${agentId || draft?.title || "draft"}`;
+
+  useEffect(() => {
+    if (!open) return;
+    try {
+      const raw = sessionStorage.getItem(historyKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setRunHistory(Array.isArray(parsed) ? parsed.slice(0, 8) : []);
+    } catch {
+      setRunHistory([]);
+    }
+  }, [open, historyKey]);
+
+  const pushRunHistory = useCallback(
+    (turns: number, preview: string) => {
+      const entry = {
+        id: `${Date.now()}`,
+        at: new Date().toISOString(),
+        channel,
+        turns,
+        preview: preview.slice(0, 80),
+      };
+      setRunHistory((prev) => {
+        const next = [entry, ...prev].slice(0, 8);
+        try {
+          sessionStorage.setItem(historyKey, JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        return next;
+      });
+    },
+    [channel, historyKey]
+  );
 
   const channelMeta = CHANNELS.find((c) => c.id === channel)!;
   const phoneMode = channel === "inbound" || channel === "campaign";
@@ -164,6 +205,14 @@ export default function AgentTestLab({
     setInput("");
     setSessionLive(false);
   }, []);
+
+  const resetAndArchive = () => {
+    if (messages.length > 0) {
+      const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+      pushRunHistory(messages.length, lastAssistant?.content || messages[0]?.content || "Session");
+    }
+    resetSession();
+  };
 
   useEffect(() => {
     if (!open) {
@@ -623,7 +672,7 @@ export default function AgentTestLab({
               {channel === "inbound" ? "Answer call" : "Place dial"}
             </Button>
           ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={resetSession}>
+          <Button type="button" variant="outline" size="sm" onClick={resetAndArchive}>
             <RotateCcw className="h-3.5 w-3.5 mr-1" /> Reset
           </Button>
         </div>
@@ -641,6 +690,7 @@ export default function AgentTestLab({
             </Badge>
             <Badge variant="outline" className="text-[10px]">
               Flow: {meta.flowName || "none"}
+              {meta.flowId ? ` · ${meta.flowId}` : ""}
             </Badge>
             <Badge variant="outline" className="text-[10px]">
               Knowledge: {meta.knowledgeCount}
@@ -660,6 +710,41 @@ export default function AgentTestLab({
                 Patient: {meta.patientName}
               </Badge>
             ) : null}
+          </div>
+        ) : null}
+
+        {scenarios && scenarios.length > 0 && messages.length === 0 && !(needsStart && !sessionLive) ? (
+          <div className="px-6 pt-3 flex flex-wrap gap-1.5">
+            <span className="text-[11px] text-muted-foreground self-center mr-1">Scenarios:</span>
+            {scenarios.map((s) => (
+              <Button
+                key={s.id}
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 rounded-full text-xs"
+                onClick={() => setInput(s.firstMessage)}
+              >
+                {s.label}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+
+        {runHistory.length > 0 && messages.length === 0 ? (
+          <div className="px-6 pt-2 pb-1">
+            <div className="text-[11px] font-medium text-muted-foreground mb-1.5">Recent test runs</div>
+            <div className="flex flex-col gap-1 max-h-24 overflow-y-auto rounded-lg border border-border/60 bg-muted/10 p-2">
+              {runHistory.map((h) => (
+                <div key={h.id} className="text-[11px] text-muted-foreground flex items-center gap-2">
+                  <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                    {h.channel}
+                  </Badge>
+                  <span className="tabular-nums shrink-0">{h.turns} turns</span>
+                  <span className="truncate flex-1">{h.preview}</span>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 

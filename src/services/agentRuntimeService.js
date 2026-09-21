@@ -16,6 +16,7 @@ const {
   loadActiveKnowledge
 } = require("./contextPromptService");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
+const { formatScheduleBookingRulesPrompt } = require("../constants/scheduleHours");
 
 function parseIdList(raw) {
   if (!raw) return [];
@@ -29,6 +30,18 @@ function parseIdList(raw) {
   }
 }
 
+function parseGraph(raw) {
+  if (!raw) return null;
+  if (typeof raw === "object" && raw.nodes) return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.nodes)) return parsed;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 function normalizeAgentRow(row) {
   if (!row) return null;
   return {
@@ -36,6 +49,10 @@ function normalizeAgentRow(row) {
     title: String(row.title || "").trim() || "Agent",
     description: String(row.description || "").trim(),
     status: row.status || "active",
+    agentType: String(row.agentType || "").trim() || null,
+    creationSource: String(row.creationSource || "").trim() || null,
+    templateId: String(row.templateId || "").trim() || null,
+    graph: parseGraph(row.graph),
     openaiApiKey: String(row.openaiApiKey || "").trim(),
     openaiModel: String(row.openaiModel || "").trim(),
     openaiRealtimeModel: String(row.openaiRealtimeModel || "").trim(),
@@ -43,6 +60,13 @@ function normalizeAgentRow(row) {
     openaiTtsModel: String(row.openaiTtsModel || "").trim(),
     openaiInboundModel: String(row.openaiInboundModel || "").trim(),
     openaiVoice: resolveOpenAiVoice(row.openaiVoice) || "marin",
+    meetingProvider: String(row.meetingProvider || "google").trim().toLowerCase() || "google",
+    googleClientId: String(row.googleClientId || "").trim(),
+    googleClientSecret: String(row.googleClientSecret || "").trim(),
+    googleRefreshToken: String(row.googleRefreshToken || "").trim(),
+    googleCreateMeet: Boolean(row.googleCreateMeet),
+    ecwApiEndpoint: String(row.ecwApiEndpoint || "").trim(),
+    azulApiEndpoint: String(row.azulApiEndpoint || "").trim(),
     flowId: row.flowId != null && row.flowId !== "" ? String(row.flowId) : null,
     knowledgeIds: parseIdList(row.knowledgeIds)
   };
@@ -99,6 +123,30 @@ async function loadFlowById(flowId) {
   return ConversationFlow.findByPk(id);
 }
 
+/**
+ * Prefer the agent's embedded brain graph; fall back to linked conversation_flows row.
+ */
+async function resolveFlowForAgent(agent) {
+  if (!agent) return null;
+  if (agent.graph && Array.isArray(agent.graph.nodes) && agent.graph.nodes.length) {
+    return {
+      id: agent.flowId || null,
+      name: agent.title || "Agent brain",
+      graph: agent.graph
+    };
+  }
+  if (agent.flowId) {
+    const row = await loadFlowById(agent.flowId);
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      name: row.name || agent.title || "Flow",
+      graph: parseGraph(row.graph) || row.graph
+    };
+  }
+  return null;
+}
+
 async function loadAgentKnowledgePrompt(knowledgeIds = []) {
   const ids = knowledgeIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
   if (!ids.length) return { knowledgePrompt: null, count: 0, rows: [] };
@@ -140,11 +188,11 @@ async function buildAgentBehaviorContext({
   let knowledgeCount = 0;
   let flow = null;
   let flowInstructions = null;
-  let openaiVoice = resolveOpenAiVoice(clinic?.openaiVoice);
+  const agentVoiceRaw = String(agent?.openaiVoice || "").trim();
+  const clinicVoiceRaw = String(clinic?.openaiVoice || "").trim();
+  const openaiVoice = resolveOpenAiVoice(agentVoiceRaw || clinicVoiceRaw || null);
 
   if (agent) {
-    openaiVoice = resolveOpenAiVoice(agent.openaiVoice) || openaiVoice;
-
     const knowledge = await loadAgentKnowledgePrompt(agent.knowledgeIds);
     knowledgePrompt = knowledge.knowledgePrompt;
     knowledgeCount = knowledge.count;
@@ -157,7 +205,7 @@ async function buildAgentBehaviorContext({
       knowledgeCount = rows.length;
     }
 
-    flow = await loadFlowById(agent.flowId);
+    flow = await resolveFlowForAgent(agent);
     if (flow) {
       flowInstructions = await buildCampaignFlowInstructionsWithKnowledge({
         flow: {
@@ -194,6 +242,13 @@ async function buildAgentBehaviorContext({
     );
   }
   if (clinicPrompt) parts.push(clinicPrompt);
+  if (clinic) {
+    const meetingProvider = normalizeMeetingProvider(
+      clinic?.meetingProvider || agent?.meetingProvider
+    );
+    const scheduleRules = formatScheduleBookingRulesPrompt(clinic, { meetingProvider });
+    if (scheduleRules) parts.push(scheduleRules);
+  }
   if (flowInstructions) {
     parts.push("CONVERSATION FLOW (must follow):\n" + flowInstructions);
   } else if (agent) {
@@ -207,7 +262,13 @@ async function buildAgentBehaviorContext({
     agent,
     clinic,
     flow,
-    flowId: flow ? String(flow.id) : agent?.flowId || null,
+    flowId: flow
+      ? flow.id != null
+        ? String(flow.id)
+        : agent?.id
+          ? `agent:${agent.id}`
+          : null
+      : agent?.flowId || null,
     flowName: flow?.name || null,
     clinicPrompt,
     knowledgePrompt,
@@ -340,6 +401,32 @@ async function buildCampaignBehavior(campaign, contact = null) {
   };
 }
 
+const MEETING_PROVIDERS = new Set(["google", "ecw", "azul", "bot"]);
+
+function normalizeMeetingProvider(value, fallback = "google") {
+  const provider = String(value || "").trim().toLowerCase();
+  return MEETING_PROVIDERS.has(provider) ? provider : fallback;
+}
+
+/**
+ * Resolve which calendar mode the clinic's assigned agent uses.
+ * Bot Calendar → save to Appointments. Google/ECW/Azul → external only (no local save).
+ */
+async function resolveMeetingConfigForBusinessClinicId(businessClinicId) {
+  const { clinic, agent } = await resolveAgentForClinic({ businessClinicId });
+  const meetingProvider = normalizeMeetingProvider(
+    clinic?.meetingProvider || agent?.meetingProvider,
+    "google"
+  );
+  return {
+    clinic,
+    agent,
+    meetingProvider,
+    persistLocalAppointment: meetingProvider === "bot",
+    useGoogleCalendar: meetingProvider === "google"
+  };
+}
+
 module.exports = {
   parseIdList,
   normalizeAgentRow,
@@ -347,9 +434,12 @@ module.exports = {
   resolveAgentForClinic,
   resolveAgentForCampaign,
   loadFlowById,
+  resolveFlowForAgent,
   loadAgentKnowledgePrompt,
   buildAgentBehaviorContext,
   buildChatBehaviorByBusinessClinicId,
   buildInboundBehaviorBySystemClinicId,
-  buildCampaignBehavior
+  buildCampaignBehavior,
+  normalizeMeetingProvider,
+  resolveMeetingConfigForBusinessClinicId
 };

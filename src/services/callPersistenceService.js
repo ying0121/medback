@@ -33,18 +33,33 @@ function normalizePhoneForCallRow(fromValue) {
  * Look up the `calls` row for this CallSid, creating one with seconds=0 if it
  * does not yet exist. Safe to call from any inbound webhook handler.
  */
-async function findOrCreateCallBySid({ callSid, from, status = null }) {
+async function findOrCreateCallBySid({
+  callSid,
+  from,
+  status = null,
+  agentId = null,
+  clinicId = null
+}) {
   if (!callSid) return null;
 
   let call = await Call.findOne({ where: { callSid } });
   if (!call) {
     call = await Call.create({
       callSid,
-      phone:   normalizePhoneForCallRow(from),
+      phone: normalizePhoneForCallRow(from),
       seconds: 0,
-      status:  status || null
+      status: status || null,
+      agentId: agentId != null && Number(agentId) ? Number(agentId) : null,
+      clinicId: clinicId != null && Number(clinicId) ? Number(clinicId) : null
     });
+    return call;
   }
+
+  const patch = {};
+  if (status && !call.status) patch.status = status;
+  if (agentId != null && Number(agentId) && !call.agentId) patch.agentId = Number(agentId);
+  if (clinicId != null && Number(clinicId) && !call.clinicId) patch.clinicId = Number(clinicId);
+  if (Object.keys(patch).length) await call.update(patch);
   return call;
 }
 
@@ -132,7 +147,10 @@ async function saveIncomingMessageRow({
  * does not POST /call-status (common for inbound numbers without StatusCallback).
  * Safe to call from stream stop, WS close, or stream-status webhooks.
  */
-async function finalizeInboundCallRecord(callSid, { status = "completed", clinicId = null } = {}) {
+async function finalizeInboundCallRecord(
+  callSid,
+  { status = "completed", clinicId = null, agentId = null } = {}
+) {
   const sid = String(callSid || "").trim();
   if (!sid || sid === "-" || sid === "unknown") return null;
 
@@ -142,13 +160,21 @@ async function finalizeInboundCallRecord(callSid, { status = "completed", clinic
       callSid: sid,
       phone: "unknown",
       seconds: 0,
-      status: status || null
+      status: status || null,
+      clinicId: clinicId != null && Number(clinicId) ? Number(clinicId) : null,
+      agentId: agentId != null && Number(agentId) ? Number(agentId) : null
     });
   }
 
   const normalizedStatus = String(status || "completed").toLowerCase();
   const isCompleted = normalizedStatus === "completed";
   const updates = { status: normalizedStatus };
+  if (clinicId != null && Number(clinicId) && !call.clinicId) {
+    updates.clinicId = Number(clinicId);
+  }
+  if (agentId != null && Number(agentId) && !call.agentId) {
+    updates.agentId = Number(agentId);
+  }
 
   const finalSeconds = computeFinalCallSeconds({
     callDurationFromTwilio: NaN,
@@ -162,7 +188,7 @@ async function finalizeInboundCallRecord(callSid, { status = "completed", clinic
   await call.update(updates);
 
   if (isCompleted) {
-    scheduleCallAnalysis(call, { clinicId });
+    scheduleCallAnalysis(call, { clinicId: clinicId || call.clinicId });
   }
 
   return call;

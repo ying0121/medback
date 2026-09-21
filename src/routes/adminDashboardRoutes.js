@@ -5,6 +5,8 @@ const {
   updateClinic,
   getClinicBotVoice,
   updateClinicBotVoice,
+  getClinicOpenAiConfig,
+  updateClinicOpenAiConfig,
   getClinicTwilioConfig,
   updateClinicTwilioConfig,
   getClinicGoogleConfig,
@@ -36,6 +38,8 @@ router.get("/clinics/:id/bot-voice/voices", listClinicBotVoices);
 router.get("/clinics/:id/bot-voice/preview", previewClinicBotVoice);
 router.get("/clinics/:id/bot-voice", getClinicBotVoice);
 router.patch("/clinics/:id/bot-voice", updateClinicBotVoice);
+router.get("/clinics/:id/openai", getClinicOpenAiConfig);
+router.patch("/clinics/:id/openai", updateClinicOpenAiConfig);
 router.get("/clinics/:id/twilio", getClinicTwilioConfig);
 router.patch("/clinics/:id/twilio", updateClinicTwilioConfig);
 router.get("/clinics/:id/google", getClinicGoogleConfig);

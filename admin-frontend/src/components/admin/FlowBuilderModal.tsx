@@ -11,7 +11,6 @@ import {
   Link2,
   Search,
   BookOpen,
-  Building2,
   Check,
   Bot,
   GitFork,
@@ -48,7 +47,6 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import type {
-  Clinic,
   FlowEdge,
   FlowGraph,
   FlowNode,
@@ -63,17 +61,16 @@ type Props = {
   title: string;
   name: string;
   description: string;
-  clinicIds: string[];
-  clinics: Clinic[];
   knowledgeItems: KnowledgeItem[];
   graph: FlowGraph;
   saving?: boolean;
-  onNameChange: (v: string) => void;
-  onDescriptionChange: (v: string) => void;
-  onClinicIdsChange: (ids: string[]) => void;
-  onGraphChange: (g: FlowGraph) => void;
+  /** Browse-only: pan/zoom + select nodes to read prompts; no edit/save. */
+  readOnly?: boolean;
+  onNameChange?: (v: string) => void;
+  onDescriptionChange?: (v: string) => void;
+  onGraphChange?: (g: FlowGraph) => void;
   onClose: () => void;
-  onSave: () => void;
+  onSave?: () => void;
 };
 
 type ToolPickerMode = "add" | "change";
@@ -183,20 +180,6 @@ function edgeArrowPoints(x1: number, y1: number, x2: number, y2: number, size = 
   return `${x2},${y2} ${baseX + px * half},${baseY + py * half} ${baseX - px * half},${baseY - py * half}`;
 }
 
-function clinicSelectionSummary(ids: string[], clinics: Clinic[], map: Record<string, Clinic>) {
-  if (!ids.length) return { title: "No clinics selected", detail: "Pick clinics from the list" };
-  if (clinics.length > 0 && ids.length >= clinics.length) {
-    return { title: "All clinics", detail: `${ids.length} selected` };
-  }
-  const names = ids.map((id) => map[id]?.name || id).filter(Boolean);
-  if (names.length === 1) return { title: names[0], detail: "1 clinic" };
-  if (names.length === 2) return { title: `${names[0]}, ${names[1]}`, detail: "2 clinics" };
-  return {
-    title: `${names[0]}, ${names[1]}`,
-    detail: `+${names.length - 2} more · ${names.length} total`,
-  };
-}
-
 const NODE_STYLE: Record<
   FlowNodeType,
   { ring: string; bg: string; icon: typeof Play; title: string; description: string }
@@ -257,18 +240,18 @@ export default function FlowBuilderModal({
   title,
   name,
   description,
-  clinicIds,
-  clinics,
   knowledgeItems,
   graph,
   saving,
+  readOnly = false,
   onNameChange,
   onDescriptionChange,
-  onClinicIdsChange,
   onGraphChange,
   onClose,
   onSave,
 }: Props) {
+  const canEdit = !readOnly;
+  const changeGraph = onGraphChange ?? (() => {});
   const [selectedId, setSelectedId] = useState<string | null>("start");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -285,7 +268,6 @@ export default function FlowBuilderModal({
   } | null>(null);
   const didPanRef = useRef(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const [clinicQuery, setClinicQuery] = useState("");
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [toolPickerOpen, setToolPickerOpen] = useState(false);
   const [toolPickerMode, setToolPickerMode] = useState<ToolPickerMode>("add");
@@ -301,42 +283,21 @@ export default function FlowBuilderModal({
     [graph.nodes]
   );
 
-  const clinicMap = useMemo(
-    () => Object.fromEntries(clinics.map((c) => [String(c.id), c])),
-    [clinics]
-  );
-
-  const filteredClinics = useMemo(() => {
-    const q = clinicQuery.trim().toLowerCase();
-    if (!q) return clinics;
-    return clinics.filter((c) =>
-      [c.name, c.acronym, c.clinicId, c.city].filter(Boolean).join(" ").toLowerCase().includes(q)
-    );
-  }, [clinics, clinicQuery]);
-
-  const availableKnowledge = useMemo(() => {
-    if (!clinicIds.length) return knowledgeItems;
-    const allowed = new Set(clinicIds.map(String));
-    return knowledgeItems.filter((k) => {
-      const ids = (k.clinicIds?.length ? k.clinicIds : k.clinicId ? [k.clinicId] : []).map(String);
-      return ids.some((id) => allowed.has(id));
-    });
-  }, [knowledgeItems, clinicIds]);
-
   const filteredKnowledge = useMemo(() => {
     const q = knowledgeQuery.trim().toLowerCase();
-    if (!q) return availableKnowledge;
-    return availableKnowledge.filter((k) =>
+    if (!q) return knowledgeItems;
+    return knowledgeItems.filter((k) =>
       [knowledgeLabel(k), k.knowledge, k.promptKey, k.documentName]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
         .includes(q)
     );
-  }, [availableKnowledge, knowledgeQuery]);
+  }, [knowledgeItems, knowledgeQuery]);
 
   const updateNode = (id: string, patch: Partial<FlowNode>) => {
-    onGraphChange({
+    if (!canEdit) return;
+    changeGraph({
       ...graph,
       nodes: graph.nodes.map((n) => {
         if (n.id !== id) return n;
@@ -351,8 +312,9 @@ export default function FlowBuilderModal({
   };
 
   const setDefaultEdge = (source: string, target: string) => {
+    if (!canEdit) return;
     const without = graph.edges.filter((e) => !(e.source === source && !e.sourceHandle));
-    onGraphChange({
+    changeGraph({
       ...graph,
       edges: [...without, { id: uid("e"), source, target, label: "" }],
     });
@@ -360,11 +322,6 @@ export default function FlowBuilderModal({
 
   const defaultTarget = (nodeId: string) =>
     graph.edges.find((e) => e.source === nodeId && !e.sourceHandle)?.target || "";
-
-  const toggleClinic = (id: string) => {
-    if (clinicIds.includes(id)) onClinicIdsChange(clinicIds.filter((x) => x !== id));
-    else onClinicIdsChange([...clinicIds, id]);
-  };
 
   const toggleKnowledge = (nodeId: string, knowledgeId: string) => {
     const node = graph.nodes.find((n) => n.id === nodeId);
@@ -382,6 +339,7 @@ export default function FlowBuilderModal({
   };
 
   const addNode = (type: "message" | "question" | "subagent" | "branch", tool?: FlowSubagentTool) => {
+    if (!canEdit) return;
     const id = uid(type);
     const canvas = canvasRef.current;
     const placeX = canvas
@@ -438,7 +396,7 @@ export default function FlowBuilderModal({
     };
 
     // Add as a disconnected node — user links it explicitly via ports or Next node
-    onGraphChange({ nodes: [...graph.nodes, node], edges: graph.edges });
+    changeGraph({ nodes: [...graph.nodes, node], edges: graph.edges });
     setSelectedId(id);
     setSelectedEdgeId(null);
   };
@@ -461,6 +419,7 @@ export default function FlowBuilderModal({
   };
 
   const removeNode = (id: string) => {
+    if (!canEdit) return;
     if (id === "start" || id === "end") return;
     const nodes = graph.nodes.filter((n) => n.id !== id);
     const edges = graph.edges.filter((e) => e.source !== id && e.target !== id);
@@ -493,7 +452,7 @@ export default function FlowBuilderModal({
       }
       return next;
     });
-    onGraphChange({ nodes: cleanedNodes, edges });
+    changeGraph({ nodes: cleanedNodes, edges });
     setSelectedId("start");
     setSelectedEdgeId(null);
   };
@@ -504,6 +463,7 @@ export default function FlowBuilderModal({
     sourceHandle: string | null,
     label = ""
   ) => {
+    if (!canEdit) return;
     if (source === target) return;
     const without = graph.edges.filter(
       (e) => !(e.source === source && (e.sourceHandle || null) === sourceHandle)
@@ -541,10 +501,11 @@ export default function FlowBuilderModal({
       return n;
     });
 
-    onGraphChange({ nodes, edges: nextEdges });
+    changeGraph({ nodes, edges: nextEdges });
   };
 
   const removeEdge = (edgeId: string) => {
+    if (!canEdit) return;
     const edge = graph.edges.find((e) => e.id === edgeId);
     if (!edge) return;
     const edges = graph.edges.filter((e) => e.id !== edgeId);
@@ -574,12 +535,12 @@ export default function FlowBuilderModal({
       }
       return n;
     });
-    onGraphChange({ nodes, edges });
+    changeGraph({ nodes, edges });
     setSelectedEdgeId(null);
   };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !canEdit) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Delete" && e.key !== "Backspace") return;
       const el = e.target as HTMLElement | null;
@@ -604,7 +565,7 @@ export default function FlowBuilderModal({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, selectedEdgeId, selectedId, graph, onGraphChange]);
+  }, [open, canEdit, selectedEdgeId, selectedId, graph, onGraphChange]);
 
   const clientToCanvas = (el: HTMLDivElement, clientX: number, clientY: number) => {
     const rect = el.getBoundingClientRect();
@@ -686,8 +647,6 @@ export default function FlowBuilderModal({
     setSelectedEdgeId(null);
   };
 
-  const clinicSummary = clinicSelectionSummary(clinicIds, clinics, clinicMap);
-
   const selectedKnowledgeIds = selected?.data.knowledgeIds || [];
   const selectedTool =
     selected?.type === "subagent"
@@ -706,22 +665,28 @@ export default function FlowBuilderModal({
           </div>
           <Input
             value={name}
-            onChange={(e) => onNameChange(e.target.value)}
+            onChange={(e) => onNameChange?.(e.target.value)}
             placeholder="Flow name"
-            className="mt-0.5 h-9 max-w-lg font-semibold border-0 shadow-none px-0 text-lg focus-visible:ring-0 bg-transparent"
+            readOnly={!canEdit}
+            className={cn(
+              "mt-0.5 h-9 max-w-lg font-semibold border-0 shadow-none px-0 text-lg focus-visible:ring-0 bg-transparent",
+              !canEdit && "cursor-default"
+            )}
           />
         </div>
         <div className="relative flex items-center gap-2">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             <X className="h-4 w-4 mr-1.5" /> Close
           </Button>
-          <Button
-            className="bg-gradient-primary text-primary-foreground"
-            onClick={onSave}
-            disabled={saving}
-          >
-            <Save className="h-4 w-4 mr-1.5" /> {saving ? "Saving…" : "Save flow"}
-          </Button>
+          {canEdit ? (
+            <Button
+              className="bg-gradient-primary text-primary-foreground"
+              onClick={() => onSave?.()}
+              disabled={saving}
+            >
+              <Save className="h-4 w-4 mr-1.5" /> {saving ? "Saving…" : "Save flow"}
+            </Button>
+          ) : null}
         </div>
       </header>
 
@@ -731,89 +696,14 @@ export default function FlowBuilderModal({
             <Label className="text-xs text-muted-foreground">Description</Label>
             <Textarea
               value={description}
-              onChange={(e) => onDescriptionChange(e.target.value)}
+              onChange={(e) => onDescriptionChange?.(e.target.value)}
               placeholder="What this bot work mode does…"
-              className="mt-1.5 min-h-[72px]"
+              readOnly={!canEdit}
+              className={cn("mt-1.5 min-h-[72px]", !canEdit && "cursor-default bg-muted/30")}
             />
           </div>
 
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <Building2 className="h-3.5 w-3.5" /> Clinics
-              </Label>
-              <div className="flex items-center gap-2 text-[11px]">
-                <button
-                  type="button"
-                  className="text-primary hover:underline"
-                  onClick={() => onClinicIdsChange(clinics.map((c) => String(c.id)))}
-                >
-                  All
-                </button>
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:underline"
-                  onClick={() => onClinicIdsChange([])}
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {clinicIds.length === 0
-                ? "Select at least one clinic"
-                : `${clinicIds.length} clinic${clinicIds.length === 1 ? "" : "s"} selected`}
-            </p>
-            {clinicIds.length > 0 ? (
-              <div className="mt-2 rounded-xl border border-border/80 bg-background px-3 py-2.5">
-                <div className="text-sm font-medium truncate" title={clinicSummary.title}>
-                  {clinicSummary.title}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">{clinicSummary.detail}</div>
-              </div>
-            ) : null}
-            <div className="mt-2 rounded-xl border border-border bg-background overflow-hidden">
-              <div className="p-2 border-b border-border">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input
-                    value={clinicQuery}
-                    onChange={(e) => setClinicQuery(e.target.value)}
-                    placeholder="Search clinics…"
-                    className="h-8 pl-8 text-sm"
-                  />
-                </div>
-              </div>
-              <div className="max-h-40 overflow-y-auto p-1">
-                {filteredClinics.map((c) => {
-                  const selectedClinic = clinicIds.includes(String(c.id));
-                  return (
-                    <label
-                      key={c.id}
-                      className={cn(
-                        "flex w-full cursor-pointer items-start gap-2 rounded-lg px-2.5 py-1.5 text-sm hover:bg-secondary",
-                        selectedClinic && "bg-secondary/80"
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-1 h-3.5 w-3.5 accent-primary"
-                        checked={selectedClinic}
-                        onChange={() => toggleClinic(String(c.id))}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <div className="truncate font-medium text-[13px]">{c.name}</div>
-                        <div className="text-[11px] text-muted-foreground truncate">
-                          {c.acronym || "-"}
-                        </div>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
+          {canEdit ? (
           <div>
             <div className="text-xs font-medium text-muted-foreground mb-2">Add node</div>
             <TooltipProvider delayDuration={200}>
@@ -866,6 +756,11 @@ export default function FlowBuilderModal({
               Drag from an output port (bottom) to an input port (top) to connect nodes.
             </p>
           </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Read-only view. Pan and zoom the canvas, then select a node to inspect its prompt.
+            </p>
+          )}
         </aside>
 
         <div
@@ -929,7 +824,7 @@ export default function FlowBuilderModal({
             </Button>
           </div>
 
-          {selectedEdgeId ? (
+          {selectedEdgeId && canEdit ? (
             <div
               data-flow-chrome
               className="absolute top-3 left-3 z-20 flex items-center gap-2 rounded-xl border border-border bg-card/95 backdrop-blur px-3 py-2 shadow-soft"
@@ -944,7 +839,9 @@ export default function FlowBuilderModal({
               data-flow-chrome
               className="absolute top-3 left-3 z-10 rounded-lg border border-border/70 bg-card/90 backdrop-blur px-2.5 py-1.5 text-[11px] text-muted-foreground pointer-events-none"
             >
-              Drag canvas to pan · Click empty area to clear · Del removes selection
+              {canEdit
+                ? "Drag canvas to pan · Click empty area to clear · Del removes selection"
+                : "Drag canvas to pan · Click a node to inspect"}
             </div>
           )}
 
@@ -1126,6 +1023,7 @@ export default function FlowBuilderModal({
                     e.stopPropagation();
                     setSelectedId(node.id);
                     setSelectedEdgeId(null);
+                    if (!canEdit) return;
                     const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
                     setDragOffset({
                       x: (e.clientX - rect.left) / zoom,
@@ -1135,7 +1033,7 @@ export default function FlowBuilderModal({
                   }}
                 >
                   {/* Input port */}
-                  {node.type !== "start" ? (
+                  {node.type !== "start" && canEdit ? (
                     <button
                       type="button"
                       data-port="in"
@@ -1160,7 +1058,10 @@ export default function FlowBuilderModal({
                     />
                   ) : null}
 
-                  <div className="flex items-center gap-2 mb-1.5 cursor-grab active:cursor-grabbing">
+                  <div className={cn(
+                    "flex items-center gap-2 mb-1.5",
+                    canEdit && "cursor-grab active:cursor-grabbing"
+                  )}>
                     <Icon className="h-4 w-4 shrink-0" />
                     <div className="text-sm font-semibold truncate">
                       {node.data.label || style.title}
@@ -1210,7 +1111,7 @@ export default function FlowBuilderModal({
                   </div>
 
                   {/* Output ports */}
-                  {node.type !== "end"
+                  {node.type !== "end" && canEdit
                     ? ports.map((port) => {
                         const left = portX(0, port.index, port.total);
                         return (
@@ -1266,7 +1167,9 @@ export default function FlowBuilderModal({
 
         <aside className="w-[22rem] shrink-0 border-l border-border p-4 overflow-y-auto bg-card">
           {!selected ? (
-            <div className="text-sm text-muted-foreground">Select a node to edit.</div>
+            <div className="text-sm text-muted-foreground">
+              {canEdit ? "Select a node to edit." : "Select a node to inspect."}
+            </div>
           ) : (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-2">
@@ -1279,7 +1182,7 @@ export default function FlowBuilderModal({
                     {NODE_STYLE[selected.type].description}
                   </p>
                 </div>
-                {selected.type !== "start" && selected.type !== "end" ? (
+                {canEdit && selected.type !== "start" && selected.type !== "end" ? (
                   <Button
                     variant="ghost"
                     size="icon"
@@ -1291,7 +1194,88 @@ export default function FlowBuilderModal({
                 ) : null}
               </div>
 
-              {selected.type !== "end" ? (
+              {!canEdit ? (
+                <div className="space-y-3 text-sm">
+                  {selected.type === "end" ? (
+                    <p className="text-muted-foreground">
+                      Call finishes automatically when this node is reached.
+                    </p>
+                  ) : null}
+                  {selected.type !== "start" && selected.data.label ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Label</Label>
+                      <p className="mt-1 font-medium">{selected.data.label}</p>
+                    </div>
+                  ) : null}
+                  {selected.data.prompt ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">
+                        {selected.type === "question" ? "Question prompt" : "Message prompt"}
+                      </Label>
+                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground leading-relaxed">
+                        {selected.data.prompt}
+                      </p>
+                    </div>
+                  ) : null}
+                  {selected.data.guideText ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Guide text</Label>
+                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground leading-relaxed">
+                        {selected.data.guideText}
+                      </p>
+                    </div>
+                  ) : null}
+                  {selected.type === "subagent" && (selected.data.toolName || selected.data.toolId) ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Tool</Label>
+                      <p className="mt-1">{selected.data.toolName || selected.data.toolId}</p>
+                    </div>
+                  ) : null}
+                  {selected.type === "question" && selected.data.options?.length ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Answers</Label>
+                      <ul className="mt-1.5 space-y-1.5">
+                        {selected.data.options.map((o) => {
+                          const targetLabel =
+                            graph.nodes.find((n) => n.id === o.target)?.data.label || o.target;
+                          return (
+                            <li key={o.id} className="text-muted-foreground">
+                              <span className="font-medium text-foreground">{o.label}</span>
+                              {o.target ? ` → ${targetLabel}` : ""}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {selected.type === "branch" && selected.data.branches?.length ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Paths</Label>
+                      <ul className="mt-1.5 space-y-1.5">
+                        {selected.data.branches.map((b) => {
+                          const targetLabel =
+                            graph.nodes.find((n) => n.id === b.target)?.data.label || b.target;
+                          return (
+                            <li key={b.id} className="text-muted-foreground">
+                              <span className="font-medium text-foreground">{b.label}</span>
+                              {b.target ? ` → ${targetLabel}` : ""}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {selected.type !== "subagent" && selected.data.knowledgeIds?.length ? (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Knowledge</Label>
+                      <p className="mt-1 text-muted-foreground">
+                        {selected.data.knowledgeIds.length} item
+                        {selected.data.knowledgeIds.length === 1 ? "" : "s"} attached
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              ) : selected.type !== "end" ? (
                 <>
                   {selected.type !== "start" ? (
                     <div>
@@ -1397,13 +1381,9 @@ export default function FlowBuilderModal({
                         </div>
                       </div>
                       <div className="max-h-48 overflow-y-auto p-1">
-                        {!clinicIds.length ? (
+                        {filteredKnowledge.length === 0 ? (
                           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                            Select clinics first to filter knowledge
-                          </div>
-                        ) : filteredKnowledge.length === 0 ? (
-                          <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                            No knowledge for selected clinics
+                            No knowledge items available
                           </div>
                         ) : (
                           filteredKnowledge.map((k) => {
@@ -1559,7 +1539,7 @@ export default function FlowBuilderModal({
                             const without = graph.edges.filter(
                               (e) => !(e.source === selected.id && e.sourceHandle === opt.id)
                             );
-                            onGraphChange({
+                            changeGraph({
                               ...graph,
                               nodes: graph.nodes.map((n) =>
                                 n.id === selected.id
@@ -1581,7 +1561,7 @@ export default function FlowBuilderModal({
                           const without = graph.edges.filter(
                             (e) => !(e.source === selected.id && e.sourceHandle === opt.id)
                           );
-                          onGraphChange({
+                          changeGraph({
                             ...graph,
                             nodes: graph.nodes.map((n) =>
                               n.id === selected.id
@@ -1667,7 +1647,7 @@ export default function FlowBuilderModal({
                             const without = graph.edges.filter(
                               (e) => !(e.source === selected.id && e.sourceHandle === branch.id)
                             );
-                            onGraphChange({
+                            changeGraph({
                               ...graph,
                               nodes: graph.nodes.map((n) =>
                                 n.id === selected.id
@@ -1689,7 +1669,7 @@ export default function FlowBuilderModal({
                           const without = graph.edges.filter(
                             (e) => !(e.source === selected.id && e.sourceHandle === branch.id)
                           );
-                          onGraphChange({
+                          changeGraph({
                             ...graph,
                             nodes: graph.nodes.map((n) =>
                               n.id === selected.id

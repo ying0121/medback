@@ -6,6 +6,8 @@
   "scripts": {
     "start": "npm run landing:build && npm run admin:build && npm run webchat:build && nodemon src/server.js",
     "db:sync": "node src/db/sync.js",
+    "db:migrate": "node src/db/migrate.js",
+    "db:migrate:status": "node src/db/migrate.js status",
     "landing:build": "vite build --config landing-frontend/vite.config.js",
     "landing:dev": "vite --config landing-frontend/vite.config.js",
     "admin:build": "vite build --config admin-frontend/vite.config.js",

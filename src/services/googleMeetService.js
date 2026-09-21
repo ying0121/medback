@@ -65,6 +65,7 @@ async function getClinicGoogleConfig(clinicId) {
     attributes: [
       "id",
       "name",
+      "agentId",
       "meetingProvider",
       "googleClientId",
       "googleClientSecret",
@@ -74,14 +75,45 @@ async function getClinicGoogleConfig(clinicId) {
   });
   if (!clinic) return null;
 
-  const meetingProvider = String(clinic.meetingProvider || "google").trim().toLowerCase();
+  // Prefer clinic meeting settings; fall back to assigned agent credentials if needed.
+  let source = clinic;
+  let meetingProvider = String(clinic.meetingProvider || "google").trim().toLowerCase();
+  if (clinic.agentId) {
+    const { Agent } = require("../db");
+    const agent = await Agent.findByPk(clinic.agentId, {
+      attributes: [
+        "id",
+        "meetingProvider",
+        "googleClientId",
+        "googleClientSecret",
+        "googleRefreshToken",
+        "googleCreateMeet"
+      ]
+    });
+    if (agent) {
+      if (!meetingProvider || meetingProvider === "google") {
+        const clinicHasCreds = Boolean(
+          readGoogleCredential(clinic, "googleClientId", "google_client_id") &&
+            readGoogleCredential(clinic, "googleClientSecret", "google_client_secret") &&
+            readGoogleCredential(clinic, "googleRefreshToken", "google_refresh_token")
+        );
+        if (!clinicHasCreds) {
+          meetingProvider = String(agent.meetingProvider || meetingProvider || "google")
+            .trim()
+            .toLowerCase();
+          source = agent;
+        }
+      }
+    }
+  }
+
   if (meetingProvider && meetingProvider !== "google") {
     return null;
   }
 
-  const googleClientId = readGoogleCredential(clinic, "googleClientId", "google_client_id");
-  const googleClientSecret = readGoogleCredential(clinic, "googleClientSecret", "google_client_secret");
-  const googleRefreshToken = readGoogleCredential(clinic, "googleRefreshToken", "google_refresh_token");
+  const googleClientId = readGoogleCredential(source, "googleClientId", "google_client_id");
+  const googleClientSecret = readGoogleCredential(source, "googleClientSecret", "google_client_secret");
+  const googleRefreshToken = readGoogleCredential(source, "googleRefreshToken", "google_refresh_token");
   if (!googleClientId || !googleClientSecret || !googleRefreshToken) {
     // eslint-disable-next-line no-console
     console.error(
@@ -96,7 +128,7 @@ async function getClinicGoogleConfig(clinicId) {
     googleClientId,
     googleClientSecret,
     googleRefreshToken,
-    googleCreateMeet: Boolean(clinic.googleCreateMeet)
+    googleCreateMeet: Boolean(source.googleCreateMeet)
   };
 }
 

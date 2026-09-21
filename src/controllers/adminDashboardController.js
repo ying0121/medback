@@ -14,6 +14,7 @@ const {
   buildGreetingPanel
 } = require("../services/greetingService");
 const { normalizeThemeColor } = require("../constants/themeColors");
+const { normalizeScheduleFields, scheduleFieldsToDto } = require("../constants/scheduleHours");
 const { parseClinicAvatar } = require("../utils/clinicAvatar");
 const { listAppointments: listAppointmentRows, cancelAppointment: cancelAppointmentRow } = require("../services/appointmentService");
 const {
@@ -43,7 +44,7 @@ function normalizeAudioPayload(rawAudio) {
   };
 }
 
-const MEETING_PROVIDERS = new Set(["google", "ecw", "azul"]);
+const MEETING_PROVIDERS = new Set(["google", "ecw", "azul", "bot"]);
 
 function normalizeMeetingProvider(value) {
   const provider = String(value || "").trim().toLowerCase();
@@ -61,6 +62,7 @@ function isHttpUrl(value) {
 
 function isMeetingConfigured(row) {
   const provider = normalizeMeetingProvider(row?.meetingProvider);
+  if (provider === "bot") return true;
   if (provider === "ecw") return Boolean(String(row?.ecwApiEndpoint || "").trim());
   if (provider === "azul") return Boolean(String(row?.azulApiEndpoint || "").trim());
   return Boolean(
@@ -68,6 +70,22 @@ function isMeetingConfigured(row) {
       String(row?.googleClientSecret || "").trim() &&
       String(row?.googleRefreshToken || "").trim()
   );
+}
+
+function maskSecret(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.length <= 8) return "••••••••";
+  return `${raw.slice(0, 4)}…${raw.slice(-4)}`;
+}
+
+function pickSecret(incoming, existing, { clear = false } = {}) {
+  if (clear) return null;
+  const next = String(incoming ?? "").trim();
+  if (!next || next.includes("…") || next.includes("•")) {
+    return existing == null ? null : String(existing);
+  }
+  return next;
 }
 
 function makeClinicSummary(clinicId) {
@@ -122,7 +140,8 @@ function mapClinicRowToApi(row, agentMeta = null) {
     botVoiceConfigured: Boolean(row.openaiVoice),
     openaiVoice: row.openaiVoice ? String(row.openaiVoice) : null,
     greetingConfigured: Boolean(String(row.inboundGreeting || "").trim()),
-    chatGreetingConfigured: Boolean(String(row.chatGreeting || "").trim())
+    chatGreetingConfigured: Boolean(String(row.chatGreeting || "").trim()),
+    ...scheduleFieldsToDto(row)
   };
 }
 
@@ -151,21 +170,29 @@ function clinicPayloadFromBody(body) {
     if (Number.isFinite(n) && n > 0) agentId = n;
   }
 
+  const schedule = normalizeScheduleFields(body || {}, { partial: false });
+  if (schedule.error) {
+    return { error: schedule.error };
+  }
+
   return {
-    clinicId: Number.isFinite(clinicId) && clinicId > 0 ? clinicId : null,
-    name: sanitizeText(body?.name),
-    acronym: sanitizeText(body?.acronym),
-    address1: sanitizeText(body?.address1),
-    address2: sanitizeText(body?.address2),
-    city: sanitizeText(body?.city),
-    state: sanitizeText(body?.state),
-    zip: sanitizeText(body?.zip),
-    phone: sanitizeText(body?.tel || body?.phone),
-    web: sanitizeText(body?.web),
-    portal: sanitizeText(body?.portal),
-    themeColor: normalizeThemeColor(body?.themeColor),
-    avatar: parseClinicAvatar(body),
-    agentId
+    value: {
+      clinicId: Number.isFinite(clinicId) && clinicId > 0 ? clinicId : null,
+      name: sanitizeText(body?.name),
+      acronym: sanitizeText(body?.acronym),
+      address1: sanitizeText(body?.address1),
+      address2: sanitizeText(body?.address2),
+      city: sanitizeText(body?.city),
+      state: sanitizeText(body?.state),
+      zip: sanitizeText(body?.zip),
+      phone: sanitizeText(body?.tel || body?.phone),
+      web: sanitizeText(body?.web),
+      portal: sanitizeText(body?.portal),
+      themeColor: normalizeThemeColor(body?.themeColor),
+      avatar: parseClinicAvatar(body),
+      agentId,
+      ...schedule.value
+    }
   };
 }
 
@@ -252,7 +279,11 @@ async function listClinics(req, res, next) {
 
 async function createClinic(req, res, next) {
   try {
-    const payload = clinicPayloadFromBody(req.body);
+    const parsed = clinicPayloadFromBody(req.body);
+    if (parsed.error) {
+      return res.status(400).json({ error: parsed.error });
+    }
+    const payload = parsed.value;
     if (!payload.name) {
       return res.status(400).json({ error: "name is required." });
     }
@@ -288,7 +319,11 @@ async function updateClinic(req, res, next) {
       return res.status(404).json({ error: "Clinic not found." });
     }
 
-    const payload = clinicPayloadFromBody(req.body);
+    const parsed = clinicPayloadFromBody(req.body);
+    if (parsed.error) {
+      return res.status(400).json({ error: parsed.error });
+    }
+    const payload = parsed.value;
     if (!payload.name) {
       return res.status(400).json({ error: "name is required." });
     }
@@ -591,6 +626,85 @@ function normalizeTwilioUsPhoneNumber(value) {
   return null;
 }
 
+async function getClinicOpenAiConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+    const clinic = await Clinic.findByPk(id, {
+      attributes: [
+        "id",
+        "openaiApiKey",
+        "openaiModel",
+        "openaiRealtimeModel",
+        "openaiTranscriptionModel",
+        "openaiTtsModel",
+        "openaiInboundModel",
+        "openaiVoice"
+      ]
+    });
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+    return res.status(200).json({
+      openaiApiKey: "",
+      openaiApiKeySet: Boolean(clinic.openaiApiKey),
+      openaiModel: clinic.openaiModel ? String(clinic.openaiModel) : "",
+      openaiRealtimeModel: clinic.openaiRealtimeModel
+        ? String(clinic.openaiRealtimeModel)
+        : "",
+      openaiTranscriptionModel: clinic.openaiTranscriptionModel
+        ? String(clinic.openaiTranscriptionModel)
+        : "",
+      openaiTtsModel: clinic.openaiTtsModel ? String(clinic.openaiTtsModel) : "",
+      openaiInboundModel: clinic.openaiInboundModel
+        ? String(clinic.openaiInboundModel)
+        : "",
+      openaiVoice: clinic.openaiVoice ? String(clinic.openaiVoice) : ""
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function updateClinicOpenAiConfig(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid clinic id." });
+    }
+    const clinic = await Clinic.findByPk(id);
+    if (!clinic) {
+      return res.status(404).json({ error: "Clinic not found." });
+    }
+
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const patch = {
+      openaiApiKey: pickSecret(body.openaiApiKey, clinic.openaiApiKey, {
+        clear: body.clearOpenaiApiKey === true
+      }),
+      openaiModel: String(body.openaiModel || "").trim() || null,
+      openaiRealtimeModel: String(body.openaiRealtimeModel || "").trim() || null,
+      openaiTranscriptionModel: String(body.openaiTranscriptionModel || "").trim() || null,
+      openaiTtsModel: String(body.openaiTtsModel || "").trim() || null,
+      openaiInboundModel: String(body.openaiInboundModel || "").trim() || null
+    };
+    if (body.openaiVoice !== undefined && body.openaiVoice !== null && body.openaiVoice !== "") {
+      patch.openaiVoice = resolveOpenAiVoice(body.openaiVoice);
+    }
+
+    await clinic.update(patch);
+    return res.status(200).json({
+      success: true,
+      openaiApiKeySet: Boolean(clinic.openaiApiKey),
+      openaiVoice: clinic.openaiVoice ? String(clinic.openaiVoice) : ""
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 async function updateClinicBotVoice(req, res, next) {
   try {
     const id = Number(req.params.id);
@@ -766,7 +880,7 @@ async function updateClinicGoogleConfig(req, res, next) {
       nextValues.googleCreateMeet = googleCreateMeet;
     } else if (meetingProvider === "ecw") {
       nextValues.ecwApiEndpoint = ecwApiEndpoint;
-    } else {
+    } else if (meetingProvider === "azul") {
       nextValues.azulApiEndpoint = azulApiEndpoint;
     }
 
@@ -1169,6 +1283,8 @@ module.exports = {
   updateClinic,
   updateClinicBotVoice,
   getClinicBotVoice,
+  getClinicOpenAiConfig,
+  updateClinicOpenAiConfig,
   updateClinicTwilioConfig,
   getClinicTwilioConfig,
   updateClinicGoogleConfig,

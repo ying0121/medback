@@ -51,6 +51,26 @@ const Doctor = sequelize.define(
       allowNull: true,
       field: "address2"
     },
+    clinicId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "clinic_id"
+    },
+    weeklyHours: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      field: "weekly_hours"
+    },
+    slotDurationMinutes: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "slot_duration_minutes"
+    },
+    doctorDailyLimit: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "doctor_daily_limit"
+    },
     /** Base64 / data-URL photo; max display size enforced client-side at 360×360 */
     photo: {
       type: DataTypes.TEXT("long"),
@@ -63,6 +83,7 @@ const Doctor = sequelize.define(
     }
   },
   {
+    engine: "MyISAM",
     tableName: "doctors",
     timestamps: true,
     underscored: true,

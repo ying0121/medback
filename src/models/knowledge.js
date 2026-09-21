@@ -63,7 +63,7 @@ const Knowledge = sequelize.define(
     }
   },
   {
-    engine: "InnoDB",
+    engine: "MyISAM",
     tableName: "knowledges",
     timestamps: false
   }

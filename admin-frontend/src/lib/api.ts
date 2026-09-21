@@ -8,11 +8,18 @@ import {
   THEME_COLOR_OPTIONS,
   type ClinicThemeColor
 } from "./themeColors";
+import {
+  defaultWeeklyHours,
+  normalizeDailyLimit,
+  normalizeSlotDuration,
+  normalizeWeeklyHours,
+  type WeeklyHours
+} from "./scheduleHours";
 
-export type { ClinicThemeColor };
+export type { ClinicThemeColor, WeeklyHours };
 export { CLINIC_THEME_COLORS, DEFAULT_CLINIC_THEME_COLOR, THEME_COLOR_OPTIONS };
 
-export type ClinicMeetingProvider = "google" | "ecw" | "azul";
+export type ClinicMeetingProvider = "google" | "ecw" | "azul" | "bot";
 
 export interface Clinic {
   id: string;
@@ -49,6 +56,10 @@ export interface Clinic {
   chatGreetingConfigured?: boolean;
   /** Chat frontend theme token (WebSocket connect). */
   themeColor?: ClinicThemeColor;
+  /** Bot Calendar weekly hours */
+  weeklyHours?: WeeklyHours;
+  slotDurationMinutes?: number;
+  doctorDailyLimit?: number | null;
 }
 
 export interface GreetingPlaceholder {
@@ -112,6 +123,12 @@ export interface Doctor {
   address2: string;
   photo?: string;
   status: "active" | "inactive";
+  clinicId?: string | null;
+  clinicName?: string | null;
+  weeklyHours?: WeeklyHours;
+  /** null = inherit clinic slot duration */
+  slotDurationMinutes?: number | null;
+  doctorDailyLimit?: number | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -263,6 +280,31 @@ export async function updateClinicBotVoice(clinicId: string, voice: string) {
   await request<{ success: boolean; voice: string }>(`/api/admin/dashboard/clinics/${clinicId}/bot-voice`, {
     method: "PATCH",
     body: JSON.stringify({ voice })
+  });
+}
+
+export interface ClinicOpenAiConfig {
+  openaiApiKey: string;
+  openaiApiKeySet: boolean;
+  openaiModel: string;
+  openaiRealtimeModel: string;
+  openaiTranscriptionModel: string;
+  openaiTtsModel: string;
+  openaiInboundModel: string;
+  openaiVoice: string;
+}
+
+export async function getClinicOpenAiConfig(clinicId: string): Promise<ClinicOpenAiConfig> {
+  return request<ClinicOpenAiConfig>(`/api/admin/dashboard/clinics/${clinicId}/openai`);
+}
+
+export async function updateClinicOpenAiConfig(
+  clinicId: string,
+  payload: Partial<ClinicOpenAiConfig> & { clearOpenaiApiKey?: boolean }
+) {
+  await request<{ success: boolean }>(`/api/admin/dashboard/clinics/${clinicId}/openai`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
   });
 }
 
@@ -433,7 +475,10 @@ function clinicBodyFromForm(c: Omit<Clinic, "id"> | Partial<Clinic>) {
     portal: c.portal ?? "",
     themeColor: c.themeColor ?? DEFAULT_CLINIC_THEME_COLOR,
     avatar: c.avatar ?? null,
-    agentId: c.agentId ?? null
+    agentId: c.agentId ?? null,
+    weeklyHours: normalizeWeeklyHours(c.weeklyHours),
+    slotDurationMinutes: normalizeSlotDuration(c.slotDurationMinutes, 30),
+    doctorDailyLimit: normalizeDailyLimit(c.doctorDailyLimit)
   };
 }
 
@@ -587,13 +632,31 @@ export async function deleteDoctor(id: string) {
 }
 
 // ---------- Agents ----------
-export type AgentMeetingProvider = "google" | "ecw" | "azul";
+export type AgentMeetingProvider = "google" | "ecw" | "azul" | "bot";
+
+export type AgentCreationSource = "template" | "custom" | "ai" | "legacy";
+
+export interface AgentWorkingTime {
+  agentId?: string;
+  inboundSeconds: number;
+  campaignSeconds: number;
+  totalSeconds: number;
+  period: string;
+}
 
 export interface Agent {
   id: string;
   title: string;
   description: string;
   status: "active" | "inactive";
+  agentType?: string | null;
+  creationSource?: AgentCreationSource | null;
+  templateId?: string | null;
+  sourceBrief?: string;
+  defaultTools?: string[];
+  graph?: FlowGraph | null;
+  nodeCount?: number;
+  workingTime?: AgentWorkingTime | null;
   openaiApiKey: string;
   openaiApiKeySet: boolean;
   openaiModel: string;
@@ -632,6 +695,12 @@ export type AgentInput = {
   title: string;
   description?: string;
   status?: "active" | "inactive";
+  agentType?: string | null;
+  creationSource?: AgentCreationSource | null;
+  templateId?: string | null;
+  sourceBrief?: string;
+  defaultTools?: string[];
+  graph?: FlowGraph | null;
   openaiApiKey?: string;
   clearOpenaiApiKey?: boolean;
   openaiModel?: string;
@@ -656,6 +725,84 @@ export type AgentInput = {
   azulApiEndpoint?: string;
   flowId?: string | null;
   knowledgeIds?: string[];
+};
+
+export interface AgentStudioType {
+  id: string;
+  name: string;
+  complexity: number;
+  shortDescription: string;
+  longDescription: string;
+  defaultTools: string[];
+  color?: string;
+}
+
+export interface AgentStudioTemplateSummary {
+  id: string;
+  typeId: string;
+  name: string;
+  summary: string;
+  description: string;
+  defaultTools: string[];
+  suggestedVoice: string;
+  tags: string[];
+  editable?: boolean;
+  source?: "system" | "custom" | "fork";
+}
+
+export interface AgentStudioTemplate extends AgentStudioTemplateSummary {
+  graph: FlowGraph;
+  graphSpec?: unknown;
+}
+
+export interface AgentStudioCatalog {
+  types: AgentStudioType[];
+  templates: AgentStudioTemplateSummary[];
+  templateCount: number;
+}
+
+/** Aliases used by Brain library / Agents studio UI */
+export type AgentTypeInfo = AgentStudioType;
+export type AgentTemplateInfo = AgentStudioTemplateSummary;
+
+export type AgentBrainTemplateInput = {
+  id?: string;
+  typeId: string;
+  name: string;
+  summary?: string;
+  description?: string;
+  defaultTools?: string[];
+  suggestedVoice?: string;
+  tags?: string[];
+  graph?: FlowGraph;
+  source?: "custom" | "fork";
+};
+
+export interface AgentAiDraft {
+  title: string;
+  description: string;
+  agentType: string;
+  defaultTools: string[];
+  openaiVoice: string;
+  templateId: string | null;
+  /** Templates whose capabilities were merged into this draft */
+  combinedTemplateIds?: string[];
+  graph: FlowGraph;
+  rationale: string;
+  source: string;
+}
+
+export type AgentGenerateInput = {
+  brief: string;
+  agentType?: string;
+  titleHint?: string;
+  channels?: string[];
+  mustHaveTools?: string[];
+  tone?: string;
+  languages?: string[];
+  /** Catalog / Brain library template ids to combine into one agent brain */
+  combineTemplateIds?: string[];
+  apiKey?: string;
 };
 
 export interface AgentModelCatalog {
@@ -735,6 +882,66 @@ export async function listAgentLinkOptions() {
     knowledge: { id: string; knowledge: string; promptKey: string; status: string }[];
   }>("/api/admin/agents/options/links");
   return data;
+}
+
+export async function listAgentStudioCatalog(typeId?: string) {
+  const search = new URLSearchParams();
+  if (typeId) search.set("typeId", typeId);
+  const path = search.size
+    ? `/api/admin/agents/options/studio?${search.toString()}`
+    : "/api/admin/agents/options/studio";
+  return request<AgentStudioCatalog>(path);
+}
+
+export async function getAgentStudioTemplate(templateId: string) {
+  const data = await request<{ template: AgentStudioTemplate }>(
+    `/api/admin/agents/options/templates/${encodeURIComponent(templateId)}`
+  );
+  return data.template;
+}
+
+export async function createAgentBrainTemplate(input: AgentBrainTemplateInput) {
+  const data = await request<{ template: AgentStudioTemplate }>(
+    "/api/admin/agents/options/templates",
+    { method: "POST", body: JSON.stringify(input) }
+  );
+  return data.template;
+}
+
+export async function updateAgentBrainTemplate(
+  templateId: string,
+  input: Partial<AgentBrainTemplateInput>
+) {
+  const data = await request<{ template: AgentStudioTemplate }>(
+    `/api/admin/agents/options/templates/${encodeURIComponent(templateId)}`,
+    { method: "PUT", body: JSON.stringify(input) }
+  );
+  return data.template;
+}
+
+export async function deleteAgentBrainTemplate(templateId: string) {
+  await request<{ success: boolean }>(
+    `/api/admin/agents/options/templates/${encodeURIComponent(templateId)}`,
+    { method: "DELETE" }
+  );
+  return true;
+}
+
+export async function generateAgentDraft(input: AgentGenerateInput) {
+  const data = await request<{ draft: AgentAiDraft }>("/api/admin/agents/options/generate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return data.draft;
+}
+
+export async function getAgentWorkingTime(id: string, period = "all") {
+  const search = new URLSearchParams();
+  if (period) search.set("period", period);
+  const data = await request<{ workingTime: AgentWorkingTime }>(
+    `/api/admin/agents/${id}/working-time?${search.toString()}`
+  );
+  return data.workingTime;
 }
 
 /** Preview TTS audio for an agent voice. Caller should revoke object URLs. */
@@ -1511,11 +1718,7 @@ export async function createConversationFlow(input: {
   graph?: FlowGraph;
   status?: "active" | "inactive";
 }) {
-  const clinicIds = input.clinicIds?.length
-    ? input.clinicIds
-    : input.clinicId
-      ? [input.clinicId]
-      : [];
+  const clinicIds = input.clinicIds ?? (input.clinicId ? [input.clinicId] : []);
   const data = await request<{ item: ConversationFlowItem }>("/api/admin/flows", {
     method: "POST",
     body: JSON.stringify({ ...input, clinicIds }),

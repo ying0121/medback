@@ -1,38 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
-  GitBranch,
-  Pencil,
-  Plus,
-  Trash2,
-  Building2,
-  Play,
-  MessageSquare,
-  HelpCircle,
-  Layers,
-  Search,
-  X,
+  Brain,
   Bot,
-  GitFork,
   Copy,
-  Check,
+  GitBranch,
   Loader2,
+  Plus,
+  Search,
+  Eye,
+  Wrench,
+  Tags,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
-import { DataTable, type Column } from "@/components/admin/DataTable";
 import FlowBuilderModal from "@/components/admin/FlowBuilderModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -41,7 +31,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,51 +48,59 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  listClinics,
-  listConversationFlows,
-  getConversationFlow,
-  listKnowledge,
-  createConversationFlow,
-  updateConversationFlow,
-  deleteConversationFlow,
+  listAgentStudioCatalog,
+  getAgentStudioTemplate,
+  createAgentBrainTemplate,
+  updateAgentBrainTemplate,
+  deleteAgentBrainTemplate,
+  listAgents,
+  listAgentVoices,
+  FLOW_SUBAGENT_TOOLS,
   createDefaultFlowGraph,
-  type Clinic,
-  type ConversationFlowItem,
+  type Agent,
+  type AgentTypeInfo,
+  type AgentTemplateInfo,
   type FlowGraph,
-  type FlowEdge,
-  type KnowledgeItem,
+  type BotVoice,
 } from "@/lib/api";
-import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+
 const pageEase = [0.22, 1, 0.36, 1] as const;
 
-function syncGraphEdges(graph: FlowGraph): FlowGraph {
-  const nonBranch = graph.edges.filter((e) => !e.sourceHandle);
-  const branchEdges: FlowEdge[] = [];
-  for (const node of graph.nodes) {
-    const paths =
-      node.type === "question"
-        ? node.data.options || []
-        : node.type === "branch"
-          ? node.data.branches || []
-          : [];
-    for (const opt of paths) {
-      if (!opt.target) continue;
-      branchEdges.push({
-        id: `e-${node.id}-${opt.id}`,
-        source: node.id,
-        target: opt.target,
-        label: opt.label || "",
-        sourceHandle: opt.id,
-      });
-    }
-  }
-  return { ...graph, edges: [...nonBranch, ...branchEdges] };
+type TemplateForm = {
+  id?: string;
+  typeId: string;
+  name: string;
+  summary: string;
+  description: string;
+  defaultTools: string[];
+  suggestedVoice: string;
+  tags: string;
+  graph: FlowGraph;
+  source?: "custom" | "fork";
+};
+
+const EMPTY_TEMPLATE_FORM = (typeId = "receptionist"): TemplateForm => ({
+  typeId,
+  name: "",
+  summary: "",
+  description: "",
+  defaultTools: ["transfer_to_human"],
+  suggestedVoice: "marin",
+  tags: "",
+  graph: createDefaultFlowGraph(),
+  source: "custom",
+});
+
+function toolLabel(id: string) {
+  return FLOW_SUBAGENT_TOOLS.find((t) => t.id === id)?.name || id;
 }
 
-function cloneFlowGraph(graph?: FlowGraph | null): FlowGraph {
+function cloneGraph(graph?: FlowGraph | null): FlowGraph {
   if (!graph?.nodes?.length) return createDefaultFlowGraph();
   try {
     return JSON.parse(JSON.stringify(graph)) as FlowGraph;
@@ -105,781 +109,1100 @@ function cloneFlowGraph(graph?: FlowGraph | null): FlowGraph {
   }
 }
 
-function nodeCounts(graph?: FlowGraph) {
-  const nodes = graph?.nodes || [];
-  return {
-    total: nodes.length,
-    message: nodes.filter((n) => n.type === "message").length,
-    question: nodes.filter((n) => n.type === "question").length,
-    subagent: nodes.filter((n) => n.type === "subagent").length,
-    branch: nodes.filter((n) => n.type === "branch").length,
-  };
+function agentHasBrain(agent: Agent) {
+  const count = agent.nodeCount ?? agent.graph?.nodes?.length ?? 0;
+  return count > 0 || Boolean(agent.graph?.nodes?.length);
+}
+
+function isEditableTemplate(t: AgentTemplateInfo) {
+  return t.editable === true || t.source === "custom" || t.source === "fork";
+}
+
+function parseTags(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
 }
 
 export default function Flows() {
-  const { user } = useAuth();
-  const [clinics, setClinics] = useState<Clinic[]>([]);
-  const [items, setItems] = useState<ConversationFlowItem[]>([]);
-  const [filterClinicId, setFilterClinicId] = useState("all");
-  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive">("all");
+  const [tab, setTab] = useState<"templates" | "agents">("templates");
+  const [types, setTypes] = useState<AgentTypeInfo[]>([]);
+  const [templates, setTemplates] = useState<AgentTemplateInfo[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [voices, setVoices] = useState<BotVoice[]>([]);
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [templateQuery, setTemplateQuery] = useState("");
+  const [agentQuery, setAgentQuery] = useState("");
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
+  const [loadingAgents, setLoadingAgents] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [loading, setLoading] = useState(true);
 
-  const [builderOpen, setBuilderOpen] = useState(false);
-  const [setupOpen, setSetupOpen] = useState(false);
-  const [editing, setEditing] = useState<ConversationFlowItem | null>(null);
-  const [formName, setFormName] = useState("");
-  const [formDescription, setFormDescription] = useState("");
-  const [formClinicIds, setFormClinicIds] = useState<string[]>([]);
-  const [formStatus, setFormStatus] = useState<"active" | "inactive">("active");
-  const [formGraph, setFormGraph] = useState<FlowGraph>(createDefaultFlowGraph());
-  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
-  const [clinicQuery, setClinicQuery] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<ConversationFlowItem | null>(null);
-  const [duplicateOpen, setDuplicateOpen] = useState(false);
-  const [duplicateFlowId, setDuplicateFlowId] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailTemplate, setDetailTemplate] = useState<AgentTemplateInfo | null>(null);
+  const [loadingGraph, setLoadingGraph] = useState(false);
+
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorSaving, setEditorSaving] = useState(false);
+  const [form, setForm] = useState<TemplateForm>(EMPTY_TEMPLATE_FORM);
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<AgentTemplateInfo | null>(null);
+  /** When creating (no form.id): blank canvas vs duplicate an existing brain */
+  const [createStartMode, setCreateStartMode] = useState<"blank" | "duplicate">("blank");
+  const [duplicateQuery, setDuplicateQuery] = useState("");
+  const [duplicateBaseId, setDuplicateBaseId] = useState<string | null>(null);
   const [loadingDuplicate, setLoadingDuplicate] = useState(false);
-  const [duplicateSourceTitle, setDuplicateSourceTitle] = useState<string | null>(null);
+
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerReadOnly, setViewerReadOnly] = useState(true);
+  const [viewerTitle, setViewerTitle] = useState("Brain graph");
+  const [viewerName, setViewerName] = useState("");
+  const [viewerDescription, setViewerDescription] = useState("");
+  const [viewerGraph, setViewerGraph] = useState<FlowGraph>(createDefaultFlowGraph());
 
   useEffect(() => {
-    const allowed = user?.role === "Admin" ? undefined : user?.clinicIds;
-    listClinics().then((all) => {
-      const filtered = allowed ? all.filter((c) => allowed.includes(c.id)) : all;
-      setClinics(filtered);
-    });
-    listKnowledge({ status: "active" }).then((rows) => {
-      const allowedIds = user?.role === "Admin" ? null : new Set(user?.clinicIds || []);
-      setKnowledgeItems(
-        allowedIds
-          ? rows.filter((r) => {
-              const ids = r.clinicIds?.length ? r.clinicIds : r.clinicId ? [r.clinicId] : [];
-              return ids.some((id) => allowedIds.has(String(id)));
-            })
-          : rows
-      );
-    });
-  }, [user, refreshKey]);
-
-  const clinicMap = useMemo(
-    () => Object.fromEntries(clinics.map((c) => [c.id, c])),
-    [clinics]
-  );
-
-  const filteredSetupClinics = useMemo(() => {
-    const q = clinicQuery.trim().toLowerCase();
-    if (!q) return clinics;
-    return clinics.filter((c) =>
-      [c.name, c.acronym, c.clinicId, c.city].filter(Boolean).join(" ").toLowerCase().includes(q)
-    );
-  }, [clinics, clinicQuery]);
-
-  const selectedSetupClinics = useMemo(
-    () => formClinicIds.map((id) => clinicMap[id]).filter(Boolean),
-    [formClinicIds, clinicMap]
-  );
-
-  const toggleSetupClinic = (id: string) => {
-    setFormClinicIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
-  useEffect(() => {
-    setLoading(true);
-    listConversationFlows({
-      clinicId: filterClinicId === "all" ? undefined : filterClinicId,
-      status: filterStatus === "all" ? undefined : filterStatus,
-    })
-      .then((rows) => {
-        const allowed = user?.role === "Admin" ? null : new Set(user?.clinicIds || []);
-        setItems(
-          allowed
-            ? rows.filter((r) => {
-                const ids = r.clinicIds?.length ? r.clinicIds : r.clinicId ? [r.clinicId] : [];
-                return ids.some((id) => allowed.has(String(id)));
-              })
-            : rows
-        );
+    setLoadingTemplates(true);
+    listAgentStudioCatalog()
+      .then((catalog) => {
+        setTypes(catalog.types || []);
+        setTemplates(catalog.templates || []);
       })
-      .catch((err) => toast.error(err instanceof Error ? err.message : "Failed to load flows"))
-      .finally(() => setLoading(false));
-  }, [filterClinicId, filterStatus, user, refreshKey]);
+      .catch((err) =>
+        toast.error(err instanceof Error ? err.message : "Failed to load brain templates")
+      )
+      .finally(() => setLoadingTemplates(false));
+  }, [refreshKey]);
 
-  const stats = useMemo(() => {
-    const active = items.filter((i) => i.status === "active").length;
-    const nodes = items.reduce((sum, i) => sum + (i.graph?.nodes?.length || 0), 0);
-    const clinicsCovered = new Set(
-      items.flatMap((i) => (i.clinicIds?.length ? i.clinicIds : i.clinicId ? [i.clinicId] : []))
-    ).size;
-    return { total: items.length, active, nodes, clinicsCovered };
-  }, [items]);
+  useEffect(() => {
+    setLoadingAgents(true);
+    listAgents()
+      .then((rows) => setAgents(rows))
+      .catch((err) =>
+        toast.error(err instanceof Error ? err.message : "Failed to load agents")
+      )
+      .finally(() => setLoadingAgents(false));
+  }, []);
 
-  const openCreate = () => {
-    if (!clinics.length) {
-      toast.error("Add a clinic first");
-      return;
-    }
-    setEditing(null);
-    setDuplicateSourceTitle(null);
-    setFormName("");
-    setFormDescription("");
-    setFormStatus("active");
-    setFormClinicIds(clinics.length === 1 ? [clinics[0].id] : []);
-    setFormGraph(createDefaultFlowGraph());
-    setClinicQuery("");
-    setSetupOpen(true);
+  useEffect(() => {
+    listAgentVoices()
+      .then((rows) => setVoices(rows))
+      .catch(() => setVoices([]));
+  }, []);
+
+  const typeNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of types) map.set(t.id, t.name);
+    return map;
+  }, [types]);
+
+  const typeColorById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of types) if (t.color) map.set(t.id, t.color);
+    return map;
+  }, [types]);
+
+  const typeById = useMemo(() => {
+    const map = new Map<string, AgentTypeInfo>();
+    for (const t of types) map.set(t.id, t);
+    return map;
+  }, [types]);
+
+  const filteredTemplates = useMemo(() => {
+    const q = templateQuery.trim().toLowerCase();
+    return templates.filter((t) => {
+      if (typeFilter !== "all" && t.typeId !== typeFilter) return false;
+      if (!q) return true;
+      const hay = [t.name, t.summary, t.description, t.typeId, ...(t.tags || [])]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [templates, typeFilter, templateQuery]);
+
+  const duplicatePickerTemplates = useMemo(() => {
+    const q = duplicateQuery.trim().toLowerCase();
+    return templates.filter((t) => {
+      if (form.typeId && t.typeId !== form.typeId) return false;
+      if (!q) return true;
+      const hay = [t.name, t.summary, t.description, ...(t.tags || [])]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [templates, form.typeId, duplicateQuery]);
+
+  const publishedAgents = useMemo(() => {
+    const q = agentQuery.trim().toLowerCase();
+    return agents.filter((a) => {
+      if (!agentHasBrain(a)) return false;
+      if (!q) return true;
+      const hay = [a.title, a.description, a.agentType || "", a.status]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [agents, agentQuery]);
+
+  const patchForm = (patch: Partial<TemplateForm>) => {
+    setForm((prev) => ({ ...prev, ...patch }));
   };
 
-  const openDuplicatePicker = () => {
-    if (!items.length) {
-      toast.error("Create a flow first before duplicating");
-      return;
-    }
-    setDuplicateFlowId(items[0]?.id || "");
-    setDuplicateOpen(true);
+  const reloadTemplates = () => setRefreshKey((k) => k + 1);
+
+  const openTemplateDetail = (tpl: AgentTemplateInfo) => {
+    setDetailTemplate(tpl);
+    setDetailOpen(true);
   };
 
-  const confirmDuplicate = async () => {
-    if (!duplicateFlowId) {
-      toast.error("Select a flow to duplicate");
-      return;
+  const openNewTemplate = () => {
+    const defaultType = types[0];
+    const typeId = defaultType?.id || "receptionist";
+    setForm({
+      ...EMPTY_TEMPLATE_FORM(typeId),
+      defaultTools: defaultType?.defaultTools?.length
+        ? [...defaultType.defaultTools]
+        : ["transfer_to_human"],
+    });
+    setCreateStartMode("blank");
+    setDuplicateQuery("");
+    setDuplicateBaseId(null);
+    setCanvasOpen(false);
+    setEditorOpen(true);
+  };
+
+  const openEditTemplate = async (tpl: AgentTemplateInfo) => {
+    setLoadingGraph(true);
+    try {
+      const full = await getAgentStudioTemplate(tpl.id);
+      setForm({
+        id: full.id,
+        typeId: full.typeId,
+        name: full.name,
+        summary: full.summary || "",
+        description: full.description || "",
+        defaultTools: full.defaultTools?.length ? [...full.defaultTools] : [],
+        suggestedVoice: full.suggestedVoice || "marin",
+        tags: (full.tags || []).join(", "),
+        graph: cloneGraph(full.graph),
+        source: full.source === "fork" ? "fork" : "custom",
+      });
+      setCreateStartMode("blank");
+      setDuplicateBaseId(null);
+      setDetailOpen(false);
+      setCanvasOpen(false);
+      setEditorOpen(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load template");
+    } finally {
+      setLoadingGraph(false);
     }
-    if (!clinics.length) {
-      toast.error("Add a clinic first");
-      return;
-    }
+  };
+
+  const applyDuplicatedTemplate = async (
+    tpl: AgentTemplateInfo,
+    options?: { openEditor?: boolean; nameSuffix?: string }
+  ) => {
+    const openEditor = options?.openEditor !== false;
+    const suffix = options?.nameSuffix ?? " (copy)";
+    setLoadingGraph(true);
     setLoadingDuplicate(true);
     try {
-      const source = await getConversationFlow(duplicateFlowId);
-      const clinicIds =
-        source.clinicIds?.length
-          ? source.clinicIds.map(String)
-          : source.clinicId
-            ? [String(source.clinicId)]
-            : clinics.length === 1
-              ? [clinics[0].id]
-              : [];
-      setDuplicateOpen(false);
-      setEditing(null);
-      setDuplicateSourceTitle(source.name);
-      setFormName(`${source.name} (copy)`);
-      setFormDescription(source.description || "");
-      setFormStatus(source.status === "inactive" ? "inactive" : "active");
-      setFormClinicIds(clinicIds);
-      setFormGraph(cloneFlowGraph(source.graph));
-      setClinicQuery("");
-      setSetupOpen(true);
-      toast.message("Flow copied into create form", {
-        description: "Review clinics and details, then continue to the builder.",
+      const full = await getAgentStudioTemplate(tpl.id);
+      const baseName = full.name.replace(/\s*\((custom|copy)\)\s*$/i, "").trim() || full.name;
+      setForm({
+        typeId: full.typeId,
+        name: `${baseName}${suffix}`,
+        summary: full.summary || "",
+        description: full.description || "",
+        defaultTools: full.defaultTools?.length ? [...full.defaultTools] : [],
+        suggestedVoice: full.suggestedVoice || "marin",
+        tags: (full.tags || []).join(", "),
+        graph: cloneGraph(full.graph),
+        source: "fork",
       });
+      setDuplicateBaseId(full.id);
+      setCreateStartMode("duplicate");
+      if (openEditor) {
+        setDetailOpen(false);
+        setCanvasOpen(false);
+        setEditorOpen(true);
+      }
+      toast.success("Template duplicated — edit and save as a new custom brain");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not load flow to duplicate");
+      toast.error(err instanceof Error ? err.message : "Could not duplicate template");
     } finally {
+      setLoadingGraph(false);
       setLoadingDuplicate(false);
     }
   };
 
-  const continueToBuilder = () => {
-    if (!formName.trim()) return toast.error("Flow name is required");
-    if (!formClinicIds.length) return toast.error("Select at least one clinic");
-    setSetupOpen(false);
-    setBuilderOpen(true);
+  const duplicateAsCustom = async (tpl: AgentTemplateInfo) => {
+    await applyDuplicatedTemplate(tpl, { openEditor: true, nameSuffix: " (copy)" });
   };
 
-  const openEdit = (row: ConversationFlowItem) => {
-    setEditing(row);
-    setDuplicateSourceTitle(null);
-    setFormName(row.name);
-    setFormDescription(row.description || "");
-    setFormStatus(row.status === "inactive" ? "inactive" : "active");
-    setFormClinicIds(
-      row.clinicIds?.length ? row.clinicIds.map(String) : row.clinicId ? [row.clinicId] : []
-    );
-    setFormGraph(cloneFlowGraph(row.graph));
-    setBuilderOpen(true);
+  const resetToBlankCreate = () => {
+    const t = typeById.get(form.typeId) || types[0];
+    const typeId = t?.id || form.typeId || "receptionist";
+    setForm({
+      ...EMPTY_TEMPLATE_FORM(typeId),
+      defaultTools: t?.defaultTools?.length ? [...t.defaultTools] : ["transfer_to_human"],
+    });
+    setDuplicateBaseId(null);
+    setCreateStartMode("blank");
   };
 
-  const save = async () => {
-    if (!formName.trim()) return toast.error("Flow name is required");
-    if (!formClinicIds.length) return toast.error("Select at least one clinic");
-    setSaving(true);
+  const saveTemplate = async () => {
+    if (!form.name.trim()) {
+      toast.error("Name is required");
+      return;
+    }
+    if (!form.typeId) {
+      toast.error("Type is required");
+      return;
+    }
+    if (!form.id && createStartMode === "duplicate" && !duplicateBaseId) {
+      toast.error("Pick a template to duplicate, or switch to blank canvas");
+      return;
+    }
+    setEditorSaving(true);
     try {
-      const graph = syncGraphEdges(formGraph);
-      if (editing) {
-        await updateConversationFlow(editing.id, {
-          name: formName.trim(),
-          description: formDescription.trim(),
-          clinicIds: formClinicIds,
-          status: formStatus,
-          graph,
-        });
-        toast.success("Flow updated");
+      const payload = {
+        typeId: form.typeId,
+        name: form.name.trim(),
+        summary: form.summary.trim(),
+        description: form.description.trim(),
+        defaultTools: form.defaultTools,
+        suggestedVoice: form.suggestedVoice || "marin",
+        tags: parseTags(form.tags),
+        graph: form.graph,
+      };
+      if (form.id) {
+        await updateAgentBrainTemplate(form.id, payload);
+        toast.success("Template updated");
       } else {
-        await createConversationFlow({
-          name: formName.trim(),
-          description: formDescription.trim(),
-          clinicIds: formClinicIds,
-          graph,
-          status: formStatus,
+        await createAgentBrainTemplate({
+          ...payload,
+          source: form.source === "fork" ? "fork" : "custom",
         });
-        toast.success("Flow created");
+        toast.success("Template created");
       }
-      setBuilderOpen(false);
-      setDuplicateSourceTitle(null);
-      setRefreshKey((k) => k + 1);
+      setEditorOpen(false);
+      setCanvasOpen(false);
+      reloadTemplates();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save flow");
+      toast.error(err instanceof Error ? err.message : "Failed to save template");
     } finally {
-      setSaving(false);
+      setEditorSaving(false);
     }
   };
 
-  const onDelete = async () => {
+  const onDeleteTemplate = async () => {
     if (!confirmDelete) return;
     try {
-      await deleteConversationFlow(confirmDelete.id);
-      toast.success("Flow deleted");
+      await deleteAgentBrainTemplate(confirmDelete.id);
+      toast.success("Template deleted");
       setConfirmDelete(null);
-      setRefreshKey((k) => k + 1);
+      setDetailOpen(false);
+      setDetailTemplate(null);
+      reloadTemplates();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete");
+      toast.error(err instanceof Error ? err.message : "Failed to delete template");
     }
   };
 
-  const columns: Column<ConversationFlowItem>[] = [
-    {
-      key: "name",
-      header: "Flow",
-      searchable: (r) => `${r.name} ${r.description}`,
-      render: (r) => {
-        const counts = nodeCounts(r.graph);
-        return (
-          <div className="flex items-start gap-3 min-w-[220px]">
-            <div className="relative h-10 w-10 rounded-xl bg-gradient-to-br from-violet-500/15 to-sky-500/10 flex items-center justify-center ring-1 ring-border/60 shrink-0">
-              <GitBranch className="h-4 w-4 text-violet-600" />
-            </div>
-            <div className="min-w-0">
-              <div className="font-medium truncate leading-tight">{r.name}</div>
-              <div className="text-xs text-muted-foreground truncate mt-0.5 max-w-[280px]">
-                {r.description || "No description"}
-              </div>
-              <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  <MessageSquare className="h-3 w-3" /> {counts.message}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <HelpCircle className="h-3 w-3" /> {counts.question}
-                </span>
-                {counts.subagent ? (
-                  <span className="inline-flex items-center gap-1">
-                    <Bot className="h-3 w-3" /> {counts.subagent}
-                  </span>
-                ) : null}
-                {counts.branch ? (
-                  <span className="inline-flex items-center gap-1">
-                    <GitFork className="h-3 w-3" /> {counts.branch}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        );
-      },
-    },
-    {
-      key: "clinic",
-      header: "Clinics",
-      searchable: (r) => {
-        const ids = r.clinicIds?.length ? r.clinicIds : r.clinicId ? [r.clinicId] : [];
-        return ids.map((id) => clinicMap[id]?.name || id).join(" ");
-      },
-      render: (r) => {
-        const ids = r.clinicIds?.length ? r.clinicIds : r.clinicId ? [r.clinicId] : [];
-        const first = clinicMap[ids[0]];
-        return (
-          <div className="flex items-center gap-2.5 min-w-[180px]">
-            <div className="relative h-9 w-9 rounded-xl bg-gradient-to-br from-primary/15 to-muted flex items-center justify-center ring-1 ring-border/60">
-              <Building2 className="h-4 w-4 text-primary/80" />
-            </div>
-            <div className="min-w-0">
-              <div className="font-medium truncate leading-tight">
-                {first?.name || ids[0] || "—"}
-              </div>
-              <div className="text-xs text-muted-foreground truncate">
-                {ids.length > 1
-                  ? `+${ids.length - 1} more clinic${ids.length === 2 ? "" : "s"}`
-                  : first?.acronym || "—"}
-              </div>
-            </div>
-          </div>
-        );
-      },
-    },
-    {
-      key: "nodes",
-      header: "Structure",
-      render: (r) => {
-        const counts = nodeCounts(r.graph);
-        return (
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-primary border-primary/30 bg-primary/10 tabular-nums">
-              {counts.total} nodes
-            </Badge>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {r.graph?.edges?.length || 0} links
-            </span>
-          </div>
-        );
-      },
-    },
-    {
-      key: "status",
-      header: "Status",
-      searchable: (r) => r.status,
-      render: (r) => (
-        <Badge
-          variant="outline"
-          className={
-            r.status === "active"
-              ? "text-success border-success/30 bg-success/10"
-              : "text-muted-foreground border-border bg-muted/40"
-          }
-        >
-          {r.status}
-        </Badge>
-      ),
-    },
-    {
-      key: "actions",
-      header: "",
-      className: "w-28 text-right",
-      searchable: () => "",
-      render: (r) => (
-        <div className="flex items-center justify-end gap-1">
-          <Button size="icon" variant="ghost" title="Edit flow" onClick={() => openEdit(r)}>
-            <Pencil className="h-4 w-4" />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="text-destructive"
-            title="Delete"
-            onClick={() => setConfirmDelete(r)}
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-      ),
-    },
-  ];
+  const openTemplateGraph = async () => {
+    if (!detailTemplate) return;
+    setLoadingGraph(true);
+    try {
+      const full = await getAgentStudioTemplate(detailTemplate.id);
+      setViewerTitle("Template brain");
+      setViewerName(full.name);
+      setViewerDescription(full.description || full.summary || "");
+      setViewerGraph(cloneGraph(full.graph));
+      setViewerReadOnly(true);
+      setViewerOpen(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load template graph");
+    } finally {
+      setLoadingGraph(false);
+    }
+  };
+
+  const openAgentGraph = (agent: Agent) => {
+    setViewerTitle("Published agent brain");
+    setViewerName(agent.title);
+    setViewerDescription(agent.description || "");
+    setViewerGraph(cloneGraph(agent.graph));
+    setViewerReadOnly(true);
+    setViewerOpen(true);
+  };
+
+  const onTypeChange = (typeId: string) => {
+    const t = typeById.get(typeId);
+    const editing = Boolean(form.id);
+    patchForm({
+      typeId,
+      defaultTools: t?.defaultTools?.length ? [...t.defaultTools] : form.defaultTools,
+    });
+    if (
+      !editing &&
+      createStartMode === "duplicate" &&
+      duplicateBaseId &&
+      templates.find((x) => x.id === duplicateBaseId)?.typeId !== typeId
+    ) {
+      setDuplicateBaseId(null);
+      setForm((prev) => ({
+        ...prev,
+        typeId,
+        defaultTools: t?.defaultTools?.length ? [...t.defaultTools] : prev.defaultTools,
+        graph: createDefaultFlowGraph(),
+        source: "fork",
+        name: prev.name.replace(/\s*\(copy\)\s*$/i, "").trim(),
+      }));
+    }
+  };
+
+  const toggleTool = (toolId: string) => {
+    patchForm({
+      defaultTools: form.defaultTools.includes(toolId)
+        ? form.defaultTools.filter((id) => id !== toolId)
+        : [...form.defaultTools, toolId],
+    });
+  };
+
+  const detailEditable = detailTemplate ? isEditableTemplate(detailTemplate) : false;
+  const isEditingExisting = Boolean(form.id);
 
   return (
     <div className="admin-page">
       <PageHeader
         accent={3}
-        title="Conversation flows"
-        description="Design the bot’s work mode as a visual graph. Start and End are fixed — reaching End hangs up the call."
+        title="Brain library"
+        description="Browse system templates, duplicate them into custom brains, and preview published agent graphs."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
-              type="button"
-              variant="outline"
-              onClick={openDuplicatePicker}
-              disabled={!items.length}
+              className="bg-gradient-primary text-primary-foreground"
+              onClick={openNewTemplate}
             >
-              <Copy className="h-4 w-4 mr-1.5" /> Duplicate flow
+              <Plus className="h-4 w-4 mr-1.5" /> New template
             </Button>
-            <Button onClick={openCreate} className="bg-gradient-primary text-primary-foreground">
-              <Plus className="h-4 w-4 mr-1.5" /> Create flow
+            <Button asChild variant="outline">
+              <Link to="/agents">
+                <Plus className="h-4 w-4 mr-1.5" /> Create agent
+              </Link>
             </Button>
           </div>
         }
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {[
-          { label: "Total flows", value: stats.total, icon: Layers, color: "#6366f1", hint: "In this view" },
-          { label: "Active", value: stats.active, icon: Play, color: "#10b981", hint: "Ready for campaigns" },
-          { label: "Nodes defined", value: stats.nodes, icon: GitBranch, color: "#0ea5e9", hint: "Across all flows" },
-          { label: "Clinics", value: stats.clinicsCovered, icon: Building2, color: "#8b5cf6", hint: "With at least one flow" },
-        ].map((card, index) => (
-          <motion.div
-            key={card.label}
-            className="bg-card border border-border/80 rounded-2xl p-4 shadow-soft"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.04 * index, duration: 0.35, ease: pageEase }}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm text-muted-foreground">{card.label}</div>
-                <div className="text-2xl font-semibold tracking-tight mt-1 tabular-nums">
-                  {loading ? "—" : card.value}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1">{card.hint}</div>
-              </div>
-              <div
-                className="h-10 w-10 rounded-xl flex items-center justify-center shrink-0"
-                style={{ background: `${card.color}18`, color: card.color }}
-              >
-                <card.icon className="h-5 w-5" />
-              </div>
-            </div>
-          </motion.div>
-        ))}
-      </div>
-
-      <DataTable
-        data={items}
-        columns={columns}
-        rowKey={(r) => r.id}
-        searchPlaceholder="Search flows…"
-        emptyMessage="No conversation flows yet — create one to define how the bot talks"
-        toolbar={
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <Select value={filterClinicId} onValueChange={setFilterClinicId}>
-              <SelectTrigger className="w-[170px]">
-                <SelectValue placeholder="Clinic" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All clinics</SelectItem>
-                {clinics.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={filterStatus}
-              onValueChange={(v) => setFilterStatus(v as "all" | "active" | "inactive")}
-            >
-              <SelectTrigger className="w-[130px]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All status</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="inactive">Inactive</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        }
-      />
-
-      <Dialog
-        open={setupOpen}
-        onOpenChange={(next) => {
-          setSetupOpen(next);
-          if (!next) setDuplicateSourceTitle(null);
-        }}
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as "templates" | "agents")}
+        className="space-y-5"
       >
+        <TabsList className="grid w-full max-w-md grid-cols-2 h-auto p-1">
+          <TabsTrigger value="templates" className="gap-1.5 py-2">
+            <Brain className="h-3.5 w-3.5" /> Templates
+          </TabsTrigger>
+          <TabsTrigger value="agents" className="gap-1.5 py-2">
+            <Bot className="h-3.5 w-3.5" /> Published agents
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="templates" className="mt-0 space-y-4 focus-visible:ring-0">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative max-w-sm w-full">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={templateQuery}
+                onChange={(e) => setTemplateQuery(e.target.value)}
+                placeholder="Search templates…"
+                className="pl-8"
+              />
+            </div>
+            <div className="text-xs text-muted-foreground tabular-nums">
+              {loadingTemplates ? "Loading…" : `${filteredTemplates.length} templates`}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setTypeFilter("all")}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                typeFilter === "all"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-card text-muted-foreground hover:bg-muted/60"
+              )}
+            >
+              All types
+            </button>
+            {types.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTypeFilter(t.id)}
+                className={cn(
+                  "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                  typeFilter === t.id
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border bg-card text-muted-foreground hover:bg-muted/60"
+                )}
+                style={
+                  typeFilter === t.id && t.color
+                    ? { borderColor: t.color, color: t.color, background: `${t.color}14` }
+                    : undefined
+                }
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+
+          {loadingTemplates ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading templates…
+            </div>
+          ) : filteredTemplates.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border bg-muted/20 px-6 py-16 text-center text-sm text-muted-foreground">
+              No templates match this filter.
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {filteredTemplates.map((tpl, index) => {
+                const color = typeColorById.get(tpl.typeId);
+                const editable = isEditableTemplate(tpl);
+                return (
+                  <motion.div
+                    key={tpl.id}
+                    className="text-left rounded-2xl border border-border/80 bg-card p-4 shadow-soft hover:border-primary/40 hover:shadow-md transition-all"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.02 * Math.min(index, 12), duration: 0.3, ease: pageEase }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => openTemplateDetail(tpl)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="h-10 w-10 rounded-xl flex items-center justify-center shrink-0 ring-1 ring-border/60"
+                          style={{
+                            background: color ? `${color}18` : undefined,
+                            color: color || undefined,
+                          }}
+                        >
+                          <Brain className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium leading-tight truncate">{tpl.name}</div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            <Badge
+                              variant="outline"
+                              className="text-[10px]"
+                              style={
+                                color
+                                  ? { borderColor: `${color}55`, color, background: `${color}12` }
+                                  : undefined
+                              }
+                            >
+                              {typeNameById.get(tpl.typeId) || tpl.typeId}
+                            </Badge>
+                            {editable ? (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] border-primary/30 bg-primary/10 text-primary"
+                              >
+                                Custom
+                              </Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-sm text-muted-foreground line-clamp-2 leading-relaxed">
+                        {tpl.summary || "No summary"}
+                      </p>
+                      {tpl.tags?.length ? (
+                        <div className="mt-3 flex flex-wrap gap-1">
+                          {tpl.tags.slice(0, 4).map((tag) => (
+                            <span
+                              key={tag}
+                              className="inline-flex items-center gap-1 rounded-md bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                            >
+                              <Tags className="h-2.5 w-2.5" /> {tag}
+                            </span>
+                          ))}
+                          {tpl.tags.length > 4 ? (
+                            <span className="text-[10px] text-muted-foreground">
+                              +{tpl.tags.length - 4}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </button>
+                    <div className="mt-3 pt-3 border-t border-border/60 flex items-center justify-end gap-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 text-xs"
+                        disabled={loadingGraph}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void duplicateAsCustom(tpl);
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5 mr-1.5" /> Duplicate
+                      </Button>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="agents" className="mt-0 space-y-4 focus-visible:ring-0">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative max-w-sm w-full">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={agentQuery}
+                onChange={(e) => setAgentQuery(e.target.value)}
+                placeholder="Search published agents…"
+                className="pl-8"
+              />
+            </div>
+            <div className="text-xs text-muted-foreground tabular-nums">
+              {loadingAgents ? "Loading…" : `${publishedAgents.length} with brains`}
+            </div>
+          </div>
+
+          {loadingAgents ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading agents…
+            </div>
+          ) : publishedAgents.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border bg-muted/20 px-6 py-16 text-center text-sm text-muted-foreground">
+              No published agents with conversation graphs yet.{" "}
+              <Link to="/agents" className="text-primary underline-offset-2 hover:underline">
+                Create an agent
+              </Link>{" "}
+              to publish a brain.
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {publishedAgents.map((agent, index) => {
+                const nodeCount = agent.nodeCount ?? agent.graph?.nodes?.length ?? 0;
+                const typeLabel = agent.agentType
+                  ? typeNameById.get(agent.agentType) || agent.agentType
+                  : null;
+                return (
+                  <motion.button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => openAgentGraph(agent)}
+                    className="text-left rounded-2xl border border-border/80 bg-card p-4 shadow-soft hover:border-primary/40 hover:shadow-md transition-all"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.02 * Math.min(index, 12), duration: 0.3, ease: pageEase }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0 ring-1 ring-border/60">
+                        <GitBranch className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium leading-tight truncate">{agent.title}</div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <Badge
+                            variant="outline"
+                            className={
+                              agent.status === "active"
+                                ? "text-success border-success/30 bg-success/10 text-[10px]"
+                                : "text-[10px]"
+                            }
+                          >
+                            {agent.status}
+                          </Badge>
+                          {typeLabel ? (
+                            <Badge variant="outline" className="text-[10px]">
+                              {typeLabel}
+                            </Badge>
+                          ) : null}
+                          <Badge variant="outline" className="text-[10px] tabular-nums">
+                            {nodeCount} nodes
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="mt-3 text-sm text-muted-foreground line-clamp-2 leading-relaxed">
+                      {agent.description || "No description"}
+                    </p>
+                    <div className="mt-3 text-[11px] text-primary inline-flex items-center gap-1">
+                      <Eye className="h-3 w-3" /> View graph
+                    </div>
+                  </motion.button>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="sm:max-w-lg flex max-h-[90vh] flex-col gap-0 overflow-hidden p-6">
-          <div className="h-1.5 w-16 rounded-full bg-gradient-primary mb-3" />
           <DialogHeader className="shrink-0">
-            <DialogTitle className="flex items-center gap-2">
-              <GitBranch className="h-5 w-5 text-violet-600" /> Create conversation flow
+            <DialogTitle className="flex items-center gap-2 pr-6">
+              <Brain className="h-5 w-5 text-primary shrink-0" />
+              <span className="truncate">{detailTemplate?.name || "Template"}</span>
             </DialogTitle>
             <DialogDescription>
-              {duplicateSourceTitle
-                ? `Duplicated from “${duplicateSourceTitle}”. Review clinics and details, then continue to the builder with the copied graph.`
-                : "Choose clinics, add a description, and set status. Then design the flow graph."}
+              {detailTemplate
+                ? typeNameById.get(detailTemplate.typeId) || detailTemplate.typeId
+                : "Template details"}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4 overflow-y-auto -mx-6 px-6 [scrollbar-gutter:stable]">
-            <div>
-              <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Name
-              </Label>
-              <Input
-                className="mt-1.5"
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                placeholder="e.g. Appointment reminder script"
-              />
-            </div>
-
-            <div>
-              <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Description
-              </Label>
-              <Textarea
-                className="mt-1.5 min-h-[90px]"
-                value={formDescription}
-                onChange={(e) => setFormDescription(e.target.value)}
-                placeholder="What this bot work mode does…"
-              />
-            </div>
-
-            <div>
-              <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Status
-              </Label>
-              <Select
-                value={formStatus}
-                onValueChange={(v) => setFormStatus(v as "active" | "inactive")}
-              >
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Clinics (multi-select)
-                </Label>
-                <div className="flex items-center gap-2 text-xs">
-                  <button
-                    type="button"
-                    className="text-primary hover:underline"
-                    onClick={() => setFormClinicIds(clinics.map((c) => String(c.id)))}
-                  >
-                    Select all
-                  </button>
-                  <span className="text-muted-foreground">·</span>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-foreground hover:underline"
-                    onClick={() => setFormClinicIds([])}
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {formClinicIds.length === 0
-                  ? "No clinics selected"
-                  : `${formClinicIds.length} clinic${formClinicIds.length === 1 ? "" : "s"} selected`}
+          <ScrollArea className="flex-1 -mx-6 px-6 max-h-[50vh]">
+            <div className="space-y-4 py-2 pr-3">
+              <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                {detailTemplate?.description || detailTemplate?.summary || "No description"}
               </p>
-              {formClinicIds.length > 0 ? (
-                <div className="mt-2 rounded-xl border border-border/80 bg-muted/20 px-3 py-2.5">
-                  <div
-                    className="text-sm font-medium truncate"
-                    title={
-                      formClinicIds.length >= clinics.length && clinics.length > 0
-                        ? "All clinics"
-                        : selectedSetupClinics.map((c) => c.name).join(", ")
-                    }
-                  >
-                    {formClinicIds.length >= clinics.length && clinics.length > 0
-                      ? "All clinics"
-                      : selectedSetupClinics.length <= 2
-                        ? selectedSetupClinics.map((c) => c.name).join(", ")
-                        : `${selectedSetupClinics[0]?.name}, ${selectedSetupClinics[1]?.name}`}
+
+              {detailTemplate?.defaultTools?.length ? (
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <Wrench className="h-3 w-3" /> Default tools
                   </div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    {formClinicIds.length >= clinics.length && clinics.length > 0
-                      ? `${formClinicIds.length} selected`
-                      : selectedSetupClinics.length <= 2
-                        ? `${formClinicIds.length} clinic${formClinicIds.length === 1 ? "" : "s"}`
-                        : `+${formClinicIds.length - 2} more · ${formClinicIds.length} total`}
+                  <div className="flex flex-wrap gap-1.5">
+                    {detailTemplate.defaultTools.map((id) => (
+                      <Badge key={id} variant="secondary" className="text-[11px] font-normal">
+                        {toolLabel(id)}
+                      </Badge>
+                    ))}
                   </div>
                 </div>
               ) : null}
-              <div className="mt-2 rounded-xl border border-border bg-background overflow-hidden">
-                <div className="p-2 border-b border-border">
-                  <div className="relative">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                    <Input
-                      value={clinicQuery}
-                      onChange={(e) => setClinicQuery(e.target.value)}
-                      placeholder="Search clinic name, acronym, ID…"
-                      className="h-9 pl-8"
-                    />
+
+              {detailTemplate?.tags?.length ? (
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                    Tags
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {detailTemplate.tags.map((tag) => (
+                      <Badge key={tag} variant="outline" className="text-[11px] font-normal">
+                        {tag}
+                      </Badge>
+                    ))}
                   </div>
                 </div>
-                <div className="max-h-52 overflow-y-auto p-1">
-                  {filteredSetupClinics.length === 0 ? (
-                    <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-                      No clinics match
+              ) : null}
+            </div>
+          </ScrollArea>
+
+          <DialogFooter className="shrink-0 border-t border-border pt-4 gap-2 sm:gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => setDetailOpen(false)}>
+              Close
+            </Button>
+            <Button
+              variant="outline"
+              onClick={openTemplateGraph}
+              disabled={loadingGraph || !detailTemplate}
+            >
+              {loadingGraph ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> Loading…
+                </>
+              ) : (
+                <>
+                  <Eye className="h-4 w-4 mr-1.5" /> Preview graph
+                </>
+              )}
+            </Button>
+            {detailTemplate ? (
+              <Button
+                variant="outline"
+                onClick={() => void duplicateAsCustom(detailTemplate)}
+                disabled={loadingGraph}
+              >
+                <Copy className="h-4 w-4 mr-1.5" /> Duplicate
+              </Button>
+            ) : null}
+            {detailEditable && detailTemplate ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => void openEditTemplate(detailTemplate)}
+                  disabled={loadingGraph}
+                >
+                  <Pencil className="h-4 w-4 mr-1.5" /> Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => setConfirmDelete(detailTemplate)}
+                >
+                  <Trash2 className="h-4 w-4 mr-1.5" /> Delete
+                </Button>
+              </>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={editorOpen && !canvasOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditorOpen(false);
+            setCanvasOpen(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-xl flex max-h-[90vh] flex-col gap-0 overflow-hidden p-6">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <Brain className="h-5 w-5 text-primary shrink-0" />
+              {isEditingExisting ? "Edit template" : "New template"}
+            </DialogTitle>
+            <DialogDescription>
+              {isEditingExisting
+                ? "Update metadata and conversation graph for this custom brain."
+                : "Create a custom brain from scratch or duplicate an existing template to refine."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <ScrollArea className="flex-1 -mx-6 px-6 max-h-[55vh]">
+            <div className="space-y-4 py-2 pr-3">
+              {!isEditingExisting ? (
+                <div className="space-y-3 rounded-xl border border-border/70 bg-muted/15 p-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Start from
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={resetToBlankCreate}
+                      className={cn(
+                        "rounded-xl border p-3 text-left text-sm transition-all",
+                        createStartMode === "blank"
+                          ? "border-primary bg-primary/5 ring-1 ring-primary/25"
+                          : "border-border/80 bg-card hover:border-primary/30"
+                      )}
+                    >
+                      <div className="font-medium">Blank canvas</div>
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Start and End nodes only.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateStartMode("duplicate");
+                        if (!duplicateBaseId) {
+                          setForm((prev) => ({
+                            ...prev,
+                            source: "fork",
+                          }));
+                        }
+                      }}
+                      className={cn(
+                        "rounded-xl border p-3 text-left text-sm transition-all",
+                        createStartMode === "duplicate"
+                          ? "border-primary bg-primary/5 ring-1 ring-primary/25"
+                          : "border-border/80 bg-card hover:border-primary/30"
+                      )}
+                    >
+                      <div className="font-medium flex items-center gap-1.5">
+                        <Copy className="h-3.5 w-3.5" /> Duplicate template
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Copy an existing brain, then customize.
+                      </p>
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-xs">Agent type</Label>
+                    <Select value={form.typeId} onValueChange={onTypeChange}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="Select type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {types.map((t) => (
+                          <SelectItem key={t.id} value={t.id}>
+                            {t.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {createStartMode === "duplicate" ? (
+                    <div className="space-y-2 pt-1">
+                      <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+                        <Label className="text-xs text-muted-foreground">
+                          Pick a template to copy
+                          {form.typeId
+                            ? ` · ${typeNameById.get(form.typeId) || form.typeId}`
+                            : ""}
+                        </Label>
+                        <Input
+                          className="sm:max-w-[200px] h-8 text-xs"
+                          placeholder="Filter…"
+                          value={duplicateQuery}
+                          onChange={(e) => setDuplicateQuery(e.target.value)}
+                        />
+                      </div>
+                      {loadingDuplicate ? (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground py-4 justify-center">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading brain…
+                        </div>
+                      ) : (
+                        <div className="max-h-40 overflow-y-auto rounded-lg border border-border/60 divide-y divide-border/50">
+                          {duplicatePickerTemplates.map((tpl) => {
+                            const selected = duplicateBaseId === tpl.id;
+                            return (
+                              <button
+                                key={tpl.id}
+                                type="button"
+                                disabled={loadingDuplicate}
+                                onClick={() =>
+                                  void applyDuplicatedTemplate(tpl, {
+                                    openEditor: false,
+                                    nameSuffix: " (copy)",
+                                  })
+                                }
+                                className={cn(
+                                  "w-full text-left px-3 py-2 text-sm hover:bg-muted/50 transition-colors",
+                                  selected && "bg-primary/10"
+                                )}
+                              >
+                                <div className="font-medium truncate flex items-center gap-2">
+                                  {tpl.name}
+                                  {selected ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[9px] border-primary/30 text-primary"
+                                    >
+                                      Selected
+                                    </Badge>
+                                  ) : null}
+                                </div>
+                                <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">
+                                  {tpl.summary || "No summary"}
+                                </p>
+                              </button>
+                            );
+                          })}
+                          {!duplicatePickerTemplates.length ? (
+                            <p className="text-xs text-muted-foreground px-3 py-4 text-center">
+                              No templates for this type. Try another type or clear the filter.
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
+                      {duplicateBaseId ? (
+                        <p className="text-[11px] text-muted-foreground">
+                          Graph loaded ({form.graph?.nodes?.length || 0} nodes). Edit fields below,
+                          then open the canvas to refine.
+                        </p>
+                      ) : null}
                     </div>
-                  ) : (
-                    filteredSetupClinics.map((c) => {
-                      const selected = formClinicIds.includes(String(c.id));
-                      return (
-                        <label
-                          key={c.id}
-                          className={cn(
-                            "flex w-full cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-secondary",
-                            selected && "bg-secondary/80"
-                          )}
-                        >
-                          <input
-                            type="checkbox"
-                            className="mt-1 h-4 w-4 accent-primary"
-                            checked={selected}
-                            onChange={() => toggleSetupClinic(String(c.id))}
-                          />
-                          <span className="min-w-0 flex-1">
-                            <div className="truncate font-medium">{c.name}</div>
-                            <div className="text-xs text-muted-foreground truncate">
-                              {c.acronym || "-"} · {c.clinicId}
-                              {c.city ? ` · ${c.city}` : ""}
-                            </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="space-y-2">
+                <Label htmlFor="tpl-name">Name</Label>
+                <Input
+                  id="tpl-name"
+                  value={form.name}
+                  onChange={(e) => patchForm({ name: e.target.value })}
+                  placeholder="e.g. Front desk after-hours"
+                />
+              </div>
+
+              {isEditingExisting ? (
+              <div className="space-y-2">
+                <Label>Type</Label>
+                <Select value={form.typeId} onValueChange={onTypeChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {types.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              ) : null}
+
+              <div className="space-y-2">
+                <Label htmlFor="tpl-summary">Summary</Label>
+                <Input
+                  id="tpl-summary"
+                  value={form.summary}
+                  onChange={(e) => patchForm({ summary: e.target.value })}
+                  placeholder="Short card blurb"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="tpl-description">Description</Label>
+                <Textarea
+                  id="tpl-description"
+                  value={form.description}
+                  onChange={(e) => patchForm({ description: e.target.value })}
+                  placeholder="What this brain is for…"
+                  className="min-h-[88px]"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Suggested voice</Label>
+                <Select
+                  value={form.suggestedVoice || undefined}
+                  onValueChange={(v) => patchForm({ suggestedVoice: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select voice" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {voices.map((v) => (
+                      <SelectItem key={v.id} value={v.id}>
+                        {v.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="tpl-tags">Tags</Label>
+                <Input
+                  id="tpl-tags"
+                  value={form.tags}
+                  onChange={(e) => patchForm({ tags: e.target.value })}
+                  placeholder="Comma-separated, e.g. after-hours, phone"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Default tools</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto rounded-xl border border-border/60 p-3">
+                  {FLOW_SUBAGENT_TOOLS.map((tool) => {
+                    const on = form.defaultTools.includes(tool.id);
+                    return (
+                      <label
+                        key={tool.id}
+                        className="flex items-start gap-2 text-sm cursor-pointer"
+                      >
+                        <Checkbox checked={on} onCheckedChange={() => toggleTool(tool.id)} />
+                        <span>
+                          <span className="font-medium">{tool.name}</span>
+                          <span className="block text-[11px] text-muted-foreground">
+                            {tool.description}
                           </span>
-                        </label>
-                      );
-                    })
-                  )}
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
-            </div>
-          </div>
 
-          <DialogFooter className="shrink-0 border-t border-border pt-4">
-            <Button variant="outline" onClick={() => setSetupOpen(false)}>
+              <div className="rounded-xl border border-border/70 bg-muted/20 p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-muted-foreground">
+                  Conversation graph ·{" "}
+                  <span className="tabular-nums text-foreground font-medium">
+                    {form.graph?.nodes?.length || 0} nodes
+                  </span>
+                </div>
+                <Button type="button" variant="outline" onClick={() => setCanvasOpen(true)}>
+                  <GitBranch className="h-4 w-4 mr-1.5" /> Open conversation canvas
+                </Button>
+              </div>
+            </div>
+          </ScrollArea>
+
+          <DialogFooter className="shrink-0 border-t border-border pt-4 gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditorOpen(false);
+                setCanvasOpen(false);
+              }}
+              disabled={editorSaving}
+            >
               Cancel
             </Button>
             <Button
               className="bg-gradient-primary text-primary-foreground"
-              onClick={continueToBuilder}
+              onClick={() => void saveTemplate()}
+              disabled={editorSaving}
             >
-              Continue to builder
+              {editorSaving ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : null}
+              {isEditingExisting ? "Save template" : "Create template"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <FlowBuilderModal
-        open={builderOpen}
-        title={
-          editing
-            ? "Edit conversation flow"
-            : duplicateSourceTitle
-              ? `Create conversation flow (from “${duplicateSourceTitle}”)`
-              : "Create conversation flow"
-        }
-        name={formName}
-        description={formDescription}
-        clinicIds={formClinicIds}
-        clinics={clinics}
-        knowledgeItems={knowledgeItems}
-        graph={formGraph}
-        saving={saving}
-        onNameChange={setFormName}
-        onDescriptionChange={setFormDescription}
-        onClinicIdsChange={setFormClinicIds}
-        onGraphChange={setFormGraph}
-        onClose={() => {
-          setBuilderOpen(false);
-          setDuplicateSourceTitle(null);
+        open={canvasOpen}
+        readOnly={false}
+        title="Template conversation brain"
+        name={form.name || "Untitled template"}
+        description={form.description}
+        knowledgeItems={[]}
+        graph={form.graph}
+        onNameChange={(v) => patchForm({ name: v })}
+        onDescriptionChange={(v) => patchForm({ description: v })}
+        onGraphChange={(g) => patchForm({ graph: g })}
+        onClose={() => setCanvasOpen(false)}
+        onSave={() => {
+          setCanvasOpen(false);
+          toast.success("Brain updated");
         }}
-        onSave={save}
       />
 
-      <Dialog open={duplicateOpen} onOpenChange={setDuplicateOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Duplicate flow</DialogTitle>
-            <DialogDescription>
-              Choose an existing conversation flow. We’ll open the create form with its
-              settings and graph filled in so you can adjust and save a new copy.
-            </DialogDescription>
-          </DialogHeader>
+      <FlowBuilderModal
+        open={viewerOpen}
+        readOnly={viewerReadOnly}
+        title={viewerTitle}
+        name={viewerName}
+        description={viewerDescription}
+        knowledgeItems={[]}
+        graph={viewerGraph}
+        onClose={() => setViewerOpen(false)}
+      />
 
-          <div className="space-y-3 py-1">
-            <Label className="text-xs text-muted-foreground">Source flow</Label>
-            <ScrollArea className="max-h-72 rounded-xl border border-border/70">
-              <div className="p-2 space-y-1">
-                {items.map((flow) => {
-                  const selected = duplicateFlowId === flow.id;
-                  const counts = nodeCounts(flow.graph);
-                  return (
-                    <button
-                      key={flow.id}
-                      type="button"
-                      onClick={() => setDuplicateFlowId(flow.id)}
-                      className={cn(
-                        "w-full flex items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
-                        selected
-                          ? "bg-primary/10 border border-primary/30"
-                          : "hover:bg-muted/60 border border-transparent"
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          "mt-0.5 h-4 w-4 rounded-full border flex items-center justify-center shrink-0",
-                          selected
-                            ? "border-primary bg-primary text-primary-foreground"
-                            : "border-muted-foreground/40"
-                        )}
-                      >
-                        {selected ? <Check className="h-2.5 w-2.5" /> : null}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-medium text-sm truncate">{flow.name}</div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          {flow.description || "No description"}
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          <Badge
-                            variant={flow.status === "active" ? "default" : "secondary"}
-                            className="text-[10px]"
-                          >
-                            {flow.status}
-                          </Badge>
-                          <Badge variant="outline" className="text-[10px]">
-                            {counts.total} nodes
-                          </Badge>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </div>
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setDuplicateOpen(false)}
-              disabled={loadingDuplicate}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={confirmDuplicate}
-              disabled={!duplicateFlowId || loadingDuplicate}
-              className="bg-gradient-primary text-primary-foreground"
-            >
-              {loadingDuplicate ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Loading…
-                </>
-              ) : (
-                <>
-                  <Copy className="h-4 w-4 mr-1" /> Duplicate
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
+      <AlertDialog
+        open={Boolean(confirmDelete)}
+        onOpenChange={(o) => !o && setConfirmDelete(null)}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete flow?</AlertDialogTitle>
+            <AlertDialogTitle>Delete template?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently deletes “{confirmDelete?.name}”. Campaigns using it will need another flow.
+              This permanently removes <strong>{confirmDelete?.name}</strong>. Agents that were
+              created from it keep their own graphs.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={onDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => void onDeleteTemplate()}
             >
               Delete
             </AlertDialogAction>

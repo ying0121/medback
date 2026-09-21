@@ -2,7 +2,8 @@ const { DataTypes } = require("sequelize");
 const { sequelize } = require("../db/sequelize");
 
 /**
- * Agent = full bot behavior profile (models, voice, Twilio, meetings, flow, campaigns, knowledge).
+ * Agent = bot behavior profile (conversation flow + knowledge links).
+ * OpenAI / Twilio / meeting credentials are configured per clinic.
  */
 const Agent = sequelize.define(
   "agents",
@@ -101,9 +102,9 @@ const Agent = sequelize.define(
       field: "twilio_twiml_app_sid"
     },
 
-    /** Meeting provider */
+    /** Meeting provider: google | ecw | azul | bot */
     meetingProvider: {
-      type: DataTypes.ENUM("google", "ecw", "azul"),
+      type: DataTypes.STRING(16),
       allowNull: false,
       defaultValue: "google",
       field: "meeting_provider"
@@ -140,7 +141,42 @@ const Agent = sequelize.define(
       field: "azul_api_endpoint"
     },
 
-    /** Behavior links */
+    /** Agent Studio: complexity type (receptionist, scheduler, …) */
+    agentType: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      field: "agent_type"
+    },
+    /** template | custom | ai | legacy */
+    creationSource: {
+      type: DataTypes.STRING(32),
+      allowNull: true,
+      field: "creation_source"
+    },
+    templateId: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "template_id"
+    },
+    /** Embedded conversation-flow brain graph (JSON). */
+    graph: {
+      type: DataTypes.TEXT("medium"),
+      allowNull: true
+    },
+    /** Original brief when created via AI / custom notes */
+    sourceBrief: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "source_brief"
+    },
+    /** JSON array of default tool ids */
+    defaultTools: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "default_tools"
+    },
+
+    /** Legacy link to conversation_flows (kept for campaigns / back-compat) */
     flowId: {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: true,
@@ -154,6 +190,7 @@ const Agent = sequelize.define(
     }
   },
   {
+    engine: "MyISAM",
     tableName: "agents",
     timestamps: true,
     underscored: true,

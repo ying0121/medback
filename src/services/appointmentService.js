@@ -1,6 +1,8 @@
 const { Op } = require("sequelize");
 const { Appointment, Clinic } = require("../db");
 const { normalizePatientInfo, resolveAppointmentWindow } = require("./appointmentIntakeService");
+const { validateBotCalendarSlot } = require("./scheduleAvailabilityService");
+const { normalizeSlotDuration } = require("../constants/scheduleHours");
 
 async function resolveClinicRow(clinicId) {
   const id = Number(clinicId);
@@ -24,6 +26,7 @@ function mapAppointmentRow(row) {
     clinicId: String(row.clinicId),
     conversationId: row.conversationId ? String(row.conversationId) : null,
     callId: row.callId ? String(row.callId) : null,
+    doctorId: row.doctorId ? String(row.doctorId) : null,
     source: row.source || "chat",
     patientName: row.patientName || "",
     patientEmail: row.patientEmail || "",
@@ -47,34 +50,70 @@ function mapAppointmentRow(row) {
   };
 }
 
+/**
+ * Persist a Bot Calendar appointment after availability checks.
+ * @returns {{ appointment: object|null, error: { code, message }|null }}
+ */
 async function createAppointmentFromIntake({
   clinicId,
   conversationId = null,
   callId = null,
+  doctorId = null,
   source = "chat",
   patientInfo = {},
-  meetResult = null
+  meetResult = null,
+  skipAvailabilityCheck = false
 } = {}) {
   try {
     const clinic = await resolveClinicRow(clinicId);
     if (!clinic) {
       // eslint-disable-next-line no-console
       console.error(`[Appointment] clinic not found clinicId=${clinicId || "-"}`);
-      return null;
+      return {
+        appointment: null,
+        error: { code: "CLINIC_NOT_FOUND", message: "Clinic not found for this appointment." }
+      };
     }
 
     const normalized = normalizePatientInfo(patientInfo);
-    const window = resolveAppointmentWindow(normalized);
+    const durationMinutes = normalizeSlotDuration(clinic.slotDurationMinutes, 30);
+    const window = resolveAppointmentWindow(normalized, { durationMinutes });
     if (!window?.start || !window?.end) {
       // eslint-disable-next-line no-console
       console.error(`[Appointment] missing datetime clinicId=${clinic.id}`);
-      return null;
+      return {
+        appointment: null,
+        error: {
+          code: "MISSING_DATETIME",
+          message: "Please provide a valid appointment date and time."
+        }
+      };
+    }
+
+    if (!skipAvailabilityCheck) {
+      const availability = await validateBotCalendarSlot({
+        clinicId: clinic.id,
+        doctorId,
+        startsAt: window.start,
+        endsAt: window.end
+      });
+      if (!availability.ok) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[Appointment] rejected clinicId=${clinic.id} code=${availability.code}: ${availability.message}`
+        );
+        return {
+          appointment: null,
+          error: { code: availability.code, message: availability.message }
+        };
+      }
     }
 
     const created = await Appointment.create({
       clinicId: clinic.id,
       conversationId: conversationId ? Number(conversationId) : null,
       callId: callId ? Number(callId) : null,
+      doctorId: doctorId ? Number(doctorId) : null,
       source: String(source || "chat").slice(0, 32),
       patientName: normalized.name,
       patientEmail: normalized.email || null,
@@ -88,11 +127,14 @@ async function createAppointmentFromIntake({
       status: "scheduled"
     });
 
-    return created;
+    return { appointment: created, error: null };
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(`[Appointment] persist failed: ${err.message}`);
-    return null;
+    return {
+      appointment: null,
+      error: { code: "PERSIST_FAILED", message: "Could not save the appointment. Please try again." }
+    };
   }
 }
 

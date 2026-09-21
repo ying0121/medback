@@ -4,7 +4,7 @@ const { initializeDatabase } = require("./index");
 initializeDatabase()
   .then(() => {
     // eslint-disable-next-line no-console
-    console.log("Database synchronized with Sequelize.");
+    console.log("Database synchronized (tables + migrations).");
     process.exit(0);
   })
   .catch((err) => {

@@ -25,6 +25,11 @@ const Appointment = sequelize.define(
       allowNull: true,
       field: "call_id"
     },
+    doctorId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "doctor_id"
+    },
     source: {
       type: DataTypes.STRING(32),
       allowNull: false,

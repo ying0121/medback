@@ -425,10 +425,11 @@ const APPOINTMENT_COLLECTION_INSTRUCTIONS = [
   "3. Email address",
   "4. Date of birth",
   "5. Whether they are a new patient or an existing patient",
-  "6. Appointment date AND time",
+  "6. Appointment date AND time — must fall entirely within clinic work hours",
   "If any item is missing, ask for the next missing item. Ask one question at a time.",
   "Do not say the appointment is booked until every item above has been answered.",
   "Do not invent values. Repeat back the details briefly once they are complete.",
+  "Never accept a time outside clinic work hours; ask for a time within the published hours.",
   "If the caller wants to stop booking, acknowledge and return to normal help."
 ].join("\n");
 

@@ -184,13 +184,19 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
             .filter(Boolean)
             .join("\n")
         });
-        await createAppointmentFromIntake({
+        const persistResult = await createAppointmentFromIntake({
           clinicId,
           callId: call.id,
           source: "phone",
           patientInfo: appointmentIntake,
           meetResult: googleMeet
         });
+        if (persistResult?.error) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[CallAnalysis] appointment not saved callId=${call.id}: ${persistResult.error.code} ${persistResult.error.message}`
+          );
+        }
       } else {
         // eslint-disable-next-line no-console
         console.log(

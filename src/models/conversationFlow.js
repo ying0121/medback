@@ -11,10 +11,11 @@ const ConversationFlow = sequelize.define(
       allowNull: false,
       primaryKey: true
     },
-    /** JSON array of clinic ids, e.g. "[1,2,5]" */
+    /** JSON array of clinic ids (legacy; flows are no longer clinic-scoped). */
     clinicIds: {
       type: DataTypes.TEXT,
       allowNull: false,
+      defaultValue: "[]",
       field: "clinic_ids",
       get() {
         return parseClinicIds(this.getDataValue("clinicIds"));

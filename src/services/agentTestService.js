@@ -40,6 +40,7 @@ function normalizeAgentConfig(source = {}) {
     id: source.id != null ? String(source.id) : null,
     title: String(source.title || "Test agent").trim() || "Test agent",
     description: String(source.description || "").trim(),
+    agentType: source.agentType != null ? String(source.agentType) : null,
     openaiApiKey: String(source.openaiApiKey || "").trim(),
     openaiModel: String(source.openaiModel || "").trim(),
     openaiRealtimeModel: String(source.openaiRealtimeModel || "").trim(),
@@ -48,6 +49,18 @@ function normalizeAgentConfig(source = {}) {
     openaiInboundModel: String(source.openaiInboundModel || "").trim(),
     openaiVoice: resolveOpenAiVoice(source.openaiVoice) || "marin",
     flowId: source.flowId != null && source.flowId !== "" ? String(source.flowId) : null,
+    graph:
+      source.graph && typeof source.graph === "object"
+        ? source.graph
+        : typeof source.graph === "string"
+          ? (() => {
+              try {
+                return JSON.parse(source.graph);
+              } catch {
+                return null;
+              }
+            })()
+          : null,
     knowledgeIds: parseIdList(source.knowledgeIds)
   };
 }

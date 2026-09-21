@@ -121,6 +121,7 @@ const AuditLog = sequelize.define(
     }
   },
   {
+    engine: "MyISAM",
     tableName: "audit_logs",
     timestamps: true,
     underscored: true,

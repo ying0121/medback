@@ -238,6 +238,14 @@ module.exports = {
         clinicContext = await buildInboundBehaviorBySystemClinicId(clinicTwilio.clinicId);
         clinicRow = await Clinic.findByPk(clinicTwilio.clinicId);
         greetingText = resolveInboundGreeting(clinicRow || { name: clinicContext.clinicName });
+        if (call && (clinicContext.agent?.id || inboundClinicId)) {
+          const patch = {};
+          if (clinicContext.agent?.id) patch.agentId = Number(clinicContext.agent.id);
+          if (inboundClinicId) patch.clinicId = Number(inboundClinicId);
+          if (Object.keys(patch).length) {
+            await call.update(patch).catch(() => null);
+          }
+        }
         // eslint-disable-next-line no-console
         console.log(
           `[Twilio][inbound] clinic loaded clinicId=${clinicTwilio.clinicId} agent=${clinicContext.agent?.id || "-"} voice=${clinicContext.openaiVoice || "-"} flow=${clinicContext.flowId || "-"} knowledge=${clinicContext.knowledgeCount || 0} customGreeting=${!!clinicRow?.inboundGreeting}`

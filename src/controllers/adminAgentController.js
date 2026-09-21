@@ -8,6 +8,17 @@ const {
   listAgentTestOptions,
   previewAgentVoiceAudio
 } = require("../services/agentTestService");
+const { listAgentTypes, getAgentType } = require("../constants/agentTypes");
+const { createDefaultFlowGraph, normalizeGraph } = require("../services/conversationFlowGraph");
+const { generateAgentFromBrief } = require("../services/agentAiGenerateService");
+const { getAgentWorkingTime, getWorkingTimeMap } = require("../services/agentWorkingTimeService");
+const {
+  listMergedTemplates,
+  resolveTemplateById,
+  createCustomTemplate,
+  updateCustomTemplate,
+  deleteCustomTemplate
+} = require("../services/agentBrainTemplateService");
 
 function parseIdList(raw) {
   if (!raw) return [];
@@ -24,6 +35,25 @@ function parseIdList(raw) {
 function serializeIdList(ids) {
   const safe = parseIdList(ids);
   return safe.length ? JSON.stringify(safe) : null;
+}
+
+function parseGraphValue(raw) {
+  if (!raw) return null;
+  if (typeof raw === "object" && Array.isArray(raw.nodes)) return normalizeGraph(raw);
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.nodes)) return normalizeGraph(parsed);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function serializeGraph(graph) {
+  const normalized = parseGraphValue(graph) || createDefaultFlowGraph();
+  return JSON.stringify(normalized);
 }
 
 function cleanStr(value, max = 255) {
@@ -53,19 +83,28 @@ function isTwilioConfigured(row) {
 
 function isMeetingConfigured(row) {
   const provider = row.meetingProvider || "google";
+  if (provider === "bot") return true;
   if (provider === "ecw") return Boolean(row.ecwApiEndpoint);
   if (provider === "azul") return Boolean(row.azulApiEndpoint);
   return Boolean(row.googleClientId && row.googleClientSecret && row.googleRefreshToken);
 }
 
-function toAgentDto(row, { revealSecrets = false } = {}) {
+function toAgentDto(row, { revealSecrets = false, workingTime = null } = {}) {
   if (!row) return null;
   const knowledgeIds = parseIdList(row.knowledgeIds);
+  const defaultTools = parseIdList(row.defaultTools);
+  const graph = parseGraphValue(row.graph);
   return {
     id: String(row.id),
     title: row.title || "",
     description: row.description || "",
     status: row.status || "active",
+    agentType: row.agentType || null,
+    creationSource: row.creationSource || null,
+    templateId: row.templateId || null,
+    sourceBrief: row.sourceBrief || "",
+    defaultTools,
+    graph,
     openaiApiKey: revealSecrets ? row.openaiApiKey || "" : maskSecret(row.openaiApiKey),
     openaiApiKeySet: Boolean(row.openaiApiKey),
     openaiModel: row.openaiModel || "",
@@ -102,9 +141,31 @@ function toAgentDto(row, { revealSecrets = false } = {}) {
     meetingConfigured: isMeetingConfigured(row),
     flowId: row.flowId != null ? String(row.flowId) : null,
     knowledgeIds,
+    workingTime: workingTime || null,
+    nodeCount: graph?.nodes?.length || 0,
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null
   };
+}
+
+async function syncLinkedFlow(agentRow, graphJson) {
+  const graph = parseGraphValue(graphJson) || createDefaultFlowGraph();
+  const payload = {
+    name: agentRow.title || "Agent brain",
+    description: agentRow.description || null,
+    graph,
+    status: agentRow.status === "inactive" ? "inactive" : "active",
+    clinicIds: []
+  };
+  if (agentRow.flowId) {
+    const existing = await ConversationFlow.findByPk(agentRow.flowId);
+    if (existing) {
+      await existing.update(payload);
+      return existing.id;
+    }
+  }
+  const created = await ConversationFlow.create(payload);
+  return created.id;
 }
 
 function pickSecret(incoming, existing, { clear = false } = {}) {
@@ -112,7 +173,6 @@ function pickSecret(incoming, existing, { clear = false } = {}) {
   if (incoming === undefined || incoming === null) return existing ?? null;
   const s = String(incoming).trim();
   if (!s) return existing ?? null;
-  // Ignore masked placeholders sent back from the UI
   if (s.includes("…") || s.includes("•")) return existing ?? null;
   return s;
 }
@@ -135,6 +195,35 @@ function buildPatch(body, existing = null) {
       return { error: "Status must be active or inactive." };
     }
     patch.status = status;
+  }
+
+  if (src.agentType !== undefined) {
+    const typeId = cleanStr(src.agentType, 64);
+    if (typeId && !getAgentType(typeId)) {
+      return { error: "Invalid agent type." };
+    }
+    patch.agentType = typeId || null;
+  }
+  if (src.creationSource !== undefined) {
+    const source = cleanStr(src.creationSource, 32) || null;
+    if (source && !["template", "custom", "ai", "legacy"].includes(source)) {
+      return { error: "Invalid creation source." };
+    }
+    patch.creationSource = source;
+  }
+  if (src.templateId !== undefined) {
+    patch.templateId = cleanStr(src.templateId, 128) || null;
+  }
+  if (src.sourceBrief !== undefined) {
+    patch.sourceBrief = cleanStr(src.sourceBrief, 8000) || null;
+  }
+  if (src.defaultTools !== undefined) {
+    patch.defaultTools = serializeIdList(src.defaultTools);
+  }
+  if (src.graph !== undefined) {
+    const graph = parseGraphValue(src.graph);
+    if (!graph) return { error: "Invalid conversation graph." };
+    patch.graph = serializeGraph(graph);
   }
 
   if (src.openaiApiKey !== undefined) {
@@ -171,7 +260,7 @@ function buildPatch(body, existing = null) {
 
   if (src.meetingProvider !== undefined) {
     const p = cleanStr(src.meetingProvider, 16) || "google";
-    if (!["google", "ecw", "azul"].includes(p)) {
+    if (!["google", "ecw", "azul", "bot"].includes(p)) {
       return { error: "Invalid meeting provider." };
     }
     patch.meetingProvider = p;
@@ -212,8 +301,17 @@ function buildPatch(body, existing = null) {
 
 async function listAgents(req, res, next) {
   try {
+    const period = String(req.query?.workingPeriod || "30d");
     const rows = await Agent.findAll({ order: [["updated_at", "DESC"], ["id", "DESC"]] });
-    return res.status(200).json({ agents: rows.map((r) => toAgentDto(r)) });
+    const workingMap = await getWorkingTimeMap(
+      rows.map((r) => r.id),
+      { period }
+    );
+    return res.status(200).json({
+      agents: rows.map((r) =>
+        toAgentDto(r, { workingTime: workingMap[String(r.id)] || null })
+      )
+    });
   } catch (err) {
     return next(err);
   }
@@ -226,7 +324,11 @@ async function getAgent(req, res, next) {
     const row = await Agent.findByPk(id);
     if (!row) return res.status(404).json({ error: "Agent not found." });
     const reveal = String(req.query.reveal || "") === "1";
-    return res.status(200).json({ agent: toAgentDto(row, { revealSecrets: reveal }) });
+    const period = String(req.query?.workingPeriod || "all");
+    const workingTime = await getAgentWorkingTime(id, { period });
+    return res.status(200).json({
+      agent: toAgentDto(row, { revealSecrets: reveal, workingTime })
+    });
   } catch (err) {
     return next(err);
   }
@@ -237,7 +339,24 @@ async function createAgent(req, res, next) {
     const title = cleanStr(req.body?.title, 255);
     if (!title) return res.status(400).json({ error: "Title is required." });
 
-    const { patch, error } = buildPatch({ ...req.body, title }, null);
+    const body = { ...req.body, title };
+    if (!body.graph && body.templateId) {
+      const template = await resolveTemplateById(body.templateId);
+      if (template) {
+        body.graph = template.graph || createDefaultFlowGraph();
+        if (!body.agentType) body.agentType = template.typeId;
+        if (!body.defaultTools) body.defaultTools = template.defaultTools;
+        if (!body.creationSource) body.creationSource = "template";
+        if (!body.openaiVoice && template.suggestedVoice) {
+          body.openaiVoice = template.suggestedVoice;
+        }
+      }
+    }
+    if (!body.graph) body.graph = createDefaultFlowGraph();
+    if (!body.creationSource) body.creationSource = body.templateId ? "template" : "custom";
+    if (!body.agentType) body.agentType = "receptionist";
+
+    const { patch, error } = buildPatch(body, null);
     if (error) return res.status(400).json({ error });
 
     const created = await Agent.create({
@@ -246,6 +365,18 @@ async function createAgent(req, res, next) {
       status: patch.status || "active",
       ...patch
     });
+
+    try {
+      const flowId = await syncLinkedFlow(created, created.graph);
+      if (Number(created.flowId) !== Number(flowId)) {
+        await created.update({ flowId });
+      }
+    } catch (syncErr) {
+      // eslint-disable-next-line no-console
+      console.warn("[agents] flow sync failed:", syncErr?.message || syncErr);
+    }
+
+    await created.reload();
     return res.status(201).json({ agent: toAgentDto(created) });
   } catch (err) {
     return next(err);
@@ -266,6 +397,20 @@ async function updateAgent(req, res, next) {
     }
 
     await row.update(patch);
+
+    if (patch.graph !== undefined || patch.title !== undefined || patch.description !== undefined) {
+      try {
+        const flowId = await syncLinkedFlow(row, row.graph);
+        if (Number(row.flowId) !== Number(flowId)) {
+          await row.update({ flowId });
+        }
+      } catch (syncErr) {
+        // eslint-disable-next-line no-console
+        console.warn("[agents] flow sync failed:", syncErr?.message || syncErr);
+      }
+    }
+
+    await row.reload();
     return res.status(200).json({ agent: toAgentDto(row) });
   } catch (err) {
     return next(err);
@@ -279,6 +424,101 @@ async function deleteAgent(req, res, next) {
     const deleted = await Agent.destroy({ where: { id } });
     if (!deleted) return res.status(404).json({ error: "Agent not found." });
     return res.status(200).json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function listAgentStudioCatalog(req, res, next) {
+  try {
+    const typeId = req.query?.typeId ? String(req.query.typeId) : null;
+    const types = listAgentTypes();
+    const templates = await listMergedTemplates(typeId);
+    return res.status(200).json({ types, templates, templateCount: templates.length });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function getAgentStudioTemplate(req, res, next) {
+  try {
+    const id = String(req.params.templateId || "").trim();
+    const template = await resolveTemplateById(id);
+    if (!template) return res.status(404).json({ error: "Template not found." });
+    return res.status(200).json({ template });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function createAgentStudioTemplate(req, res, next) {
+  try {
+    const result = await createCustomTemplate(req.body || {});
+    if (result.error) return res.status(400).json({ error: result.error });
+    return res.status(201).json({ template: result.template });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function updateAgentStudioTemplate(req, res, next) {
+  try {
+    const id = String(req.params.templateId || "").trim();
+    const result = await updateCustomTemplate(id, req.body || {});
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    return res.status(200).json({ template: result.template });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function deleteAgentStudioTemplate(req, res, next) {
+  try {
+    const id = String(req.params.templateId || "").trim();
+    const result = await deleteCustomTemplate(id);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function generateAgentDraft(req, res, next) {
+  try {
+    const body = req.body || {};
+    const result = await generateAgentFromBrief({
+      brief: body.brief || body.description || "",
+      preferredTypeId: body.agentType || body.preferredTypeId || null,
+      titleHint: body.titleHint || body.title || "",
+      channels: Array.isArray(body.channels) ? body.channels : [],
+      mustHaveTools: Array.isArray(body.mustHaveTools) ? body.mustHaveTools : [],
+      tone: body.tone || "",
+      languages: Array.isArray(body.languages) ? body.languages : [],
+      combineTemplateIds: Array.isArray(body.combineTemplateIds)
+        ? body.combineTemplateIds
+        : Array.isArray(body.templateIds)
+          ? body.templateIds
+          : [],
+      apiKey: body.apiKey || null
+    });
+    if (result.error) return res.status(400).json({ error: result.error });
+    return res.status(200).json({ draft: result.draft });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function getAgentWorkingTimeHandler(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid agent id." });
+    const period = String(req.query?.period || "all");
+    const workingTime = await getAgentWorkingTime(id, { period });
+    return res.status(200).json({ workingTime });
   } catch (err) {
     return next(err);
   }
@@ -347,6 +587,13 @@ async function listAgentLinkOptions(req, res, next) {
         knowledge: String(k.knowledge || "").slice(0, 160),
         promptKey: k.promptKey || "",
         status: k.status
+      })),
+      types: listAgentTypes(),
+      templates: (await listMergedTemplates()).map((t) => ({
+        id: t.id,
+        typeId: t.typeId,
+        name: t.name,
+        summary: t.summary
       }))
     });
   } catch (err) {
@@ -373,11 +620,14 @@ async function resolveAgentConfigFromRequest(req) {
     ...draft
   };
 
-  // Prefer explicit draft secrets; otherwise keep saved secrets
   if (row) {
     if (!String(draft.openaiApiKey || "").trim() || String(draft.openaiApiKey).includes("…")) {
       merged.openaiApiKey = row.openaiApiKey;
     }
+  }
+
+  if (typeof merged.graph === "string") {
+    merged.graph = parseGraphValue(merged.graph);
   }
 
   return { row, config: normalizeAgentConfig(merged) };
@@ -494,8 +744,14 @@ module.exports = {
   listAgentModels,
   listAgentVoices,
   listAgentLinkOptions,
+  listAgentStudioCatalog,
+  getAgentStudioTemplate,
+  createAgentStudioTemplate,
+  updateAgentStudioTemplate,
+  deleteAgentStudioTemplate,
+  generateAgentDraft,
+  getAgentWorkingTimeHandler,
   previewAgentVoice,
   testAgent,
-  testAgentOptions,
-  toAgentDto
+  testAgentOptions
 };

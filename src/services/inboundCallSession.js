@@ -60,8 +60,8 @@ class InboundCallSession {
         flowInstructions: opts.flowInstructions || null
       }),
       voice: opts.openaiVoice || null,
-      apiKey: agent?.openaiApiKey || opts.apiKey || null,
-      model: agent?.openaiRealtimeModel || opts.realtimeModel || null
+      apiKey: opts.apiKey || agent?.openaiApiKey || null,
+      model: opts.realtimeModel || agent?.openaiRealtimeModel || null
     });
 
     this.streamSid = null;

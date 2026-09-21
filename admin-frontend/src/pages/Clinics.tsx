@@ -11,9 +11,11 @@ import {
   FlaskConical,
   ExternalLink,
   Bot,
+  Settings,
 } from "lucide-react";
 import PageHeader from "@/components/admin/PageHeader";
 import AgentTestLab from "@/components/admin/AgentTestLab";
+import ClinicSettingsDialog from "@/components/admin/ClinicSettingsDialog";
 import { DataTable, type Column } from "@/components/admin/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +61,14 @@ import {
   normalizeClinicThemeColor,
   themeGradient,
 } from "@/lib/themeColors";
+import {
+  defaultWeeklyHours,
+  normalizeDailyLimit,
+  normalizeSlotDuration,
+  normalizeWeeklyHours,
+} from "@/lib/scheduleHours";
+import WeeklyHoursEditor from "@/components/admin/WeeklyHoursEditor";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import {
   processClinicAvatarFile,
@@ -84,6 +94,9 @@ const EMPTY: ClinicForm = {
   themeColor: DEFAULT_CLINIC_THEME_COLOR,
   avatar: null,
   agentId: null,
+  weeklyHours: defaultWeeklyHours(),
+  slotDurationMinutes: 30,
+  doctorDailyLimit: null,
 };
 
 export default function Clinics() {
@@ -101,8 +114,10 @@ export default function Clinics() {
     title: string;
     clinicId: string;
   } | null>(null);
+  const [settingsClinic, setSettingsClinic] = useState<Clinic | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [formTab, setFormTab] = useState("general");
 
   const refresh = () => listClinics().then(setData);
   const refreshAgents = () =>
@@ -118,6 +133,7 @@ export default function Clinics() {
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY);
+    setFormTab("general");
     setOpen(true);
   };
 
@@ -151,15 +167,23 @@ export default function Clinics() {
       ...rest,
       themeColor: normalizeClinicThemeColor(rest.themeColor),
       agentId: rest.agentId || null,
+      weeklyHours: normalizeWeeklyHours(rest.weeklyHours),
+      slotDurationMinutes: normalizeSlotDuration(rest.slotDurationMinutes, 30),
+      doctorDailyLimit: normalizeDailyLimit(rest.doctorDailyLimit),
     });
+    setFormTab("general");
     setOpen(true);
   };
 
   const save = async () => {
     if (!form.name.trim()) return toast.error("Name is required");
+    const doctorLimit = normalizeDailyLimit(form.doctorDailyLimit);
     const payload = {
       ...form,
       agentId: form.agentId || null,
+      weeklyHours: normalizeWeeklyHours(form.weeklyHours),
+      slotDurationMinutes: normalizeSlotDuration(form.slotDurationMinutes, 30),
+      doctorDailyLimit: doctorLimit,
     };
     if (editing) {
       await updateClinic(editing.id, payload);
@@ -310,10 +334,18 @@ export default function Clinics() {
     {
       key: "actions",
       header: "",
-      className: "w-24 text-right",
+      className: "w-32 text-right",
       searchable: () => "",
       render: (r) => (
         <div className="flex items-center justify-end gap-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            title="OpenAI, Twilio & meeting settings"
+            onClick={() => setSettingsClinic(r)}
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
           <Button size="icon" variant="ghost" onClick={() => openEdit(r)}>
             <Pencil className="h-4 w-4" />
           </Button>
@@ -330,7 +362,7 @@ export default function Clinics() {
       <PageHeader
         accent={1}
         title="Clinic Management"
-        description="Assign an agent to each clinic. Bot voice, Twilio, meetings, and flows are configured on the agent."
+        description="Assign an agent to each clinic. Configure OpenAI models, Twilio, and meeting with the gear icon. Voice is set on the agent."
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={onSyncExternal} disabled={syncingExternal}>
@@ -356,195 +388,256 @@ export default function Clinics() {
           <DialogHeader className="shrink-0">
             <DialogTitle>{editing ? "Edit clinic" : "Add new clinic"}</DialogTitle>
             <DialogDescription>
-              Clinic profile and which agent handles calls and chat for this location.
+              Clinic profile and Bot Calendar schedule for this location.
             </DialogDescription>
           </DialogHeader>
-          <div
-            className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-6 px-6 [scrollbar-gutter:stable]"
-            role="region"
-            aria-label="Clinic form"
+          <Tabs
+            value={formTab}
+            onValueChange={setFormTab}
+            className="flex flex-1 min-h-0 flex-col gap-0"
           >
-            <div className="grid grid-cols-12 gap-x-4 gap-y-4 py-2 pr-2 pb-4">
-              <Field label="Clinic ID" className="col-span-12 sm:col-span-3">
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  value={form.clinicId}
-                  onChange={(e) =>
-                    setForm({ ...form, clinicId: e.target.value.replace(/[^\d]/g, "") })
-                  }
-                  placeholder="e.g. 1001"
-                />
-              </Field>
-              <Field label="Name *" className="col-span-12 sm:col-span-6">
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                />
-              </Field>
-              <Field label="Acronym" className="col-span-12 sm:col-span-3">
-                <Input
-                  value={form.acronym}
-                  onChange={(e) => setForm({ ...form, acronym: e.target.value })}
-                />
-              </Field>
-
-              <Field label="Assigned agent" className="col-span-12">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Select
-                    value={form.agentId || "__none__"}
-                    onValueChange={(v) =>
-                      setForm({ ...form, agentId: v === "__none__" ? null : v })
-                    }
-                  >
-                    <SelectTrigger className="flex-1 min-w-[200px]">
-                      <SelectValue placeholder="Select agent" />
-                    </SelectTrigger>
-                    <SelectContent className="z-[80]">
-                      <SelectItem value="__none__">No agent</SelectItem>
-                      {agentOptions.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          <span className="inline-flex items-center gap-2">
-                            <Bot className="h-3.5 w-3.5 text-muted-foreground" />
-                            {a.title}
-                            {a.status !== "active" ? " (inactive)" : ""}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button asChild variant="outline" size="sm">
-                    <Link to="/agents" target="_blank" rel="noreferrer">
-                      <ExternalLink className="h-3.5 w-3.5 mr-1" /> Manage agents
-                    </Link>
-                  </Button>
-                </div>
-                {activeAgents.length === 0 ? (
-                  <p className="text-xs text-muted-foreground mt-1.5">
-                    No active agents yet — create one on the Agents page.
-                  </p>
-                ) : null}
-              </Field>
-
-              <Field label="Avatar" className="col-span-12">
-                <div className="flex flex-wrap items-start gap-4">
-                  <ClinicAvatarThumb avatar={form.avatar} name={form.name || "Clinic"} size="lg" />
-                  <div className="space-y-2 min-w-[200px]">
-                    <input
-                      ref={avatarFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={onAvatarFileChange}
+            <TabsList className="grid w-full grid-cols-2 shrink-0 mb-3">
+              <TabsTrigger value="general">General</TabsTrigger>
+              <TabsTrigger value="schedule">Schedule</TabsTrigger>
+            </TabsList>
+            <div
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-6 px-6 [scrollbar-gutter:stable]"
+              role="region"
+              aria-label="Clinic form"
+            >
+              <TabsContent value="general" className="mt-0 focus-visible:ring-0">
+                <div className="grid grid-cols-12 gap-x-4 gap-y-4 py-2 pr-2 pb-4">
+                  <Field label="Clinic ID" className="col-span-12 sm:col-span-3">
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      step={1}
+                      value={form.clinicId}
+                      onChange={(e) =>
+                        setForm({ ...form, clinicId: e.target.value.replace(/[^\d]/g, "") })
+                      }
+                      placeholder="e.g. 1001"
                     />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={avatarUploading}
-                      onClick={() => avatarFileInputRef.current?.click()}
-                    >
-                      <Upload className="h-4 w-4 mr-1" />
-                      {avatarUploading ? "Processing…" : "Upload image"}
-                    </Button>
-                    {form.avatar ? (
-                      <Button type="button" variant="ghost" size="sm" onClick={clearAvatar}>
-                        <X className="h-4 w-4 mr-1" /> Clear
+                  </Field>
+                  <Field label="Name *" className="col-span-12 sm:col-span-6">
+                    <Input
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Acronym" className="col-span-12 sm:col-span-3">
+                    <Input
+                      value={form.acronym}
+                      onChange={(e) => setForm({ ...form, acronym: e.target.value })}
+                    />
+                  </Field>
+
+                  <Field label="Assigned agent" className="col-span-12">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Select
+                        value={form.agentId || "__none__"}
+                        onValueChange={(v) =>
+                          setForm({ ...form, agentId: v === "__none__" ? null : v })
+                        }
+                      >
+                        <SelectTrigger className="flex-1 min-w-[200px]">
+                          <SelectValue placeholder="Select agent" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[80]">
+                          <SelectItem value="__none__">No agent</SelectItem>
+                          {agentOptions.map((a) => (
+                            <SelectItem key={a.id} value={a.id}>
+                              <span className="inline-flex items-center gap-2">
+                                <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+                                {a.title}
+                                {a.status !== "active" ? " (inactive)" : ""}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button asChild variant="outline" size="sm">
+                        <Link to="/agents" target="_blank" rel="noreferrer">
+                          <ExternalLink className="h-3.5 w-3.5 mr-1" /> Manage agents
+                        </Link>
                       </Button>
+                    </div>
+                    {activeAgents.length === 0 ? (
+                      <p className="text-xs text-muted-foreground mt-1.5">
+                        No active agents yet — create one on the Agents page.
+                      </p>
                     ) : null}
-                    <p className="text-xs text-muted-foreground max-w-xs">
-                      Max upload {CLINIC_AVATAR_MAX_UPLOAD_PX}px; stored at {CLINIC_AVATAR_MAX_PX}×
-                      {CLINIC_AVATAR_MAX_PX}.
+                  </Field>
+
+                  <Field label="Avatar" className="col-span-12">
+                    <div className="flex flex-wrap items-start gap-4">
+                      <ClinicAvatarThumb avatar={form.avatar} name={form.name || "Clinic"} size="lg" />
+                      <div className="space-y-2 min-w-[200px]">
+                        <input
+                          ref={avatarFileInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={onAvatarFileChange}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={avatarUploading}
+                          onClick={() => avatarFileInputRef.current?.click()}
+                        >
+                          <Upload className="h-4 w-4 mr-1" />
+                          {avatarUploading ? "Processing…" : "Upload image"}
+                        </Button>
+                        {form.avatar ? (
+                          <Button type="button" variant="ghost" size="sm" onClick={clearAvatar}>
+                            <X className="h-4 w-4 mr-1" /> Clear
+                          </Button>
+                        ) : null}
+                        <p className="text-xs text-muted-foreground max-w-xs">
+                          Max upload {CLINIC_AVATAR_MAX_UPLOAD_PX}px; stored at {CLINIC_AVATAR_MAX_PX}×
+                          {CLINIC_AVATAR_MAX_PX}.
+                        </p>
+                      </div>
+                    </div>
+                  </Field>
+
+                  <Field label="Address 1" className="col-span-12 sm:col-span-6">
+                    <Input
+                      value={form.address1}
+                      onChange={(e) => setForm({ ...form, address1: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Address 2" className="col-span-12 sm:col-span-6">
+                    <Input
+                      value={form.address2 || ""}
+                      onChange={(e) => setForm({ ...form, address2: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="City" className="col-span-12 sm:col-span-4">
+                    <Input
+                      value={form.city}
+                      onChange={(e) => setForm({ ...form, city: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="State" className="col-span-12 sm:col-span-4">
+                    <Input
+                      value={form.state}
+                      onChange={(e) => setForm({ ...form, state: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="ZIP" className="col-span-12 sm:col-span-4">
+                    <Input
+                      value={form.zip}
+                      onChange={(e) => setForm({ ...form, zip: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Phone" className="col-span-12 sm:col-span-4">
+                    <Input
+                      value={form.tel}
+                      onChange={(e) => setForm({ ...form, tel: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Website" className="col-span-12 sm:col-span-4">
+                    <Input
+                      value={form.web || ""}
+                      onChange={(e) => setForm({ ...form, web: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Portal" className="col-span-12 sm:col-span-4">
+                    <Input
+                      value={form.portal || ""}
+                      onChange={(e) => setForm({ ...form, portal: e.target.value })}
+                    />
+                  </Field>
+
+                  <Field label="Theme color" className="col-span-12">
+                    <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+                      {CLINIC_THEME_COLORS.map((opt) => {
+                        const selected = form.themeColor === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            title={opt.label}
+                            onClick={() => setForm({ ...form, themeColor: opt.value })}
+                            className={cn(
+                              "rounded-lg border p-1.5 text-left transition-colors",
+                              selected
+                                ? "border-primary ring-1 ring-primary/40"
+                                : "border-border hover:bg-muted/40"
+                            )}
+                          >
+                            <div
+                              className="h-7 w-full rounded-md"
+                              style={{ background: themeGradient(opt.from, opt.to) }}
+                            />
+                            <span className="mt-1 block truncate text-[10px] leading-tight text-muted-foreground">
+                              {opt.label}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Sent to the chat app on connect as <code className="text-xs">themeColor</code>.
+                    </p>
+                  </Field>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="schedule" className="mt-0 focus-visible:ring-0">
+                <div className="space-y-4 py-2 pr-2 pb-4">
+                  <div>
+                    <div className="font-medium text-sm">Bot Calendar schedule</div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Limits when the clinic agent uses Bot Calendar. Weekly hours use Eastern Time.
                     </p>
                   </div>
+                  <WeeklyHoursEditor
+                    value={normalizeWeeklyHours(form.weeklyHours)}
+                    onChange={(weeklyHours) => setForm({ ...form, weeklyHours })}
+                  />
+                  <div className="grid grid-cols-12 gap-3">
+                    <Field label="Slot duration (minutes)" className="col-span-12 md:col-span-6">
+                      <Input
+                        type="number"
+                        min={5}
+                        max={480}
+                        value={form.slotDurationMinutes ?? 30}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            slotDurationMinutes: Number(e.target.value) || 30,
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="Doctor daily limit" className="col-span-12 md:col-span-6">
+                      <Input
+                        type="number"
+                        min={1}
+                        placeholder="e.g. 20"
+                        value={form.doctorDailyLimit ?? ""}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            doctorDailyLimit: e.target.value === "" ? null : Number(e.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Doctor daily limit caps how many appointments Bot Calendar may book that day.
+                    Leave blank for no daily cap.
+                  </p>
                 </div>
-              </Field>
-
-              <Field label="Address 1" className="col-span-12 sm:col-span-6">
-                <Input
-                  value={form.address1}
-                  onChange={(e) => setForm({ ...form, address1: e.target.value })}
-                />
-              </Field>
-              <Field label="Address 2" className="col-span-12 sm:col-span-6">
-                <Input
-                  value={form.address2 || ""}
-                  onChange={(e) => setForm({ ...form, address2: e.target.value })}
-                />
-              </Field>
-              <Field label="City" className="col-span-12 sm:col-span-4">
-                <Input
-                  value={form.city}
-                  onChange={(e) => setForm({ ...form, city: e.target.value })}
-                />
-              </Field>
-              <Field label="State" className="col-span-12 sm:col-span-4">
-                <Input
-                  value={form.state}
-                  onChange={(e) => setForm({ ...form, state: e.target.value })}
-                />
-              </Field>
-              <Field label="ZIP" className="col-span-12 sm:col-span-4">
-                <Input
-                  value={form.zip}
-                  onChange={(e) => setForm({ ...form, zip: e.target.value })}
-                />
-              </Field>
-              <Field label="Phone" className="col-span-12 sm:col-span-4">
-                <Input
-                  value={form.tel}
-                  onChange={(e) => setForm({ ...form, tel: e.target.value })}
-                />
-              </Field>
-              <Field label="Website" className="col-span-12 sm:col-span-4">
-                <Input
-                  value={form.web || ""}
-                  onChange={(e) => setForm({ ...form, web: e.target.value })}
-                />
-              </Field>
-              <Field label="Portal" className="col-span-12 sm:col-span-4">
-                <Input
-                  value={form.portal || ""}
-                  onChange={(e) => setForm({ ...form, portal: e.target.value })}
-                />
-              </Field>
-
-              <Field label="Theme color" className="col-span-12">
-                <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
-                  {CLINIC_THEME_COLORS.map((opt) => {
-                    const selected = form.themeColor === opt.value;
-                    return (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        title={opt.label}
-                        onClick={() => setForm({ ...form, themeColor: opt.value })}
-                        className={cn(
-                          "rounded-lg border p-1.5 text-left transition-colors",
-                          selected
-                            ? "border-primary ring-1 ring-primary/40"
-                            : "border-border hover:bg-muted/40"
-                        )}
-                      >
-                        <div
-                          className="h-7 w-full rounded-md"
-                          style={{ background: themeGradient(opt.from, opt.to) }}
-                        />
-                        <span className="mt-1 block truncate text-[10px] leading-tight text-muted-foreground">
-                          {opt.label}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Sent to the chat app on connect as <code className="text-xs">themeColor</code>.
-                </p>
-              </Field>
+              </TabsContent>
             </div>
-          </div>
+          </Tabs>
           <DialogFooter className="shrink-0 border-t border-border/60 pt-4 sm:justify-end">
             <Button variant="outline" onClick={() => setOpen(false)}>
               Cancel
@@ -555,6 +648,13 @@ export default function Clinics() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ClinicSettingsDialog
+        open={!!settingsClinic}
+        onOpenChange={(v) => !v && setSettingsClinic(null)}
+        clinic={settingsClinic}
+        onSaved={refresh}
+      />
 
       <AgentTestLab
         open={testOpen}

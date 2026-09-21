@@ -21,7 +21,7 @@ const {
 const { getCallStatus, endCall } = require("./twilioService");
 const { generateSpeechFromText } = require("./openaiService");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
-const { buildChatBehaviorByBusinessClinicId } = require("./agentRuntimeService");
+const { buildChatBehaviorByBusinessClinicId, resolveMeetingConfigForBusinessClinicId } = require("./agentRuntimeService");
 const { getClinicConnectFields } = require("./greetingService");
 const { sendAppointmentRequestEmail, sendPatientMeetingNotificationEmail } = require("./emailService");
 const { tryCreateGoogleMeetForAppointment } = require("./googleMeetService");
@@ -247,10 +247,11 @@ async function buildContextPrompts(clinicId) {
     agentId: agent?.id || null,
     flowId: ctx.flowId || null,
     knowledgeCount: ctx.knowledgeCount || 0,
-    apiKey: agent?.openaiApiKey || null,
-    model: agent?.openaiModel || null,
-    transcriptionModel: agent?.openaiTranscriptionModel || null,
-    ttsModel: agent?.openaiTtsModel || null
+    apiKey: ctx.clinic?.openaiApiKey || agent?.openaiApiKey || null,
+    model: ctx.clinic?.openaiModel || agent?.openaiModel || null,
+    transcriptionModel:
+      ctx.clinic?.openaiTranscriptionModel || agent?.openaiTranscriptionModel || null,
+    ttsModel: ctx.clinic?.openaiTtsModel || agent?.openaiTtsModel || null
   };
 }
 
@@ -812,34 +813,105 @@ async function processAppointmentRequest({
     });
   }
 
-  const meetResult = await tryCreateGoogleMeetForAppointment({
-    clinicId: businessClinicId,
-    patientInfo: normalizedPatient,
-    clinicName,
-    description: [
-      `Appointment request via ${normalizedReplyType === "voice" ? "phone / voice assistant" : "web chat"}.`,
-      `Case: ${conversationId}`,
-      patientSummary
-    ].join("\n")
-  });
+  const meeting = await resolveMeetingConfigForBusinessClinicId(businessClinicId);
+  const meetingProvider = meeting.meetingProvider || "google";
+  // eslint-disable-next-line no-console
+  console.log(
+    `[Appointment] meeting mode=${meetingProvider} persistLocal=${meeting.persistLocalAppointment} clinicId=${businessClinicId} conversationId=${conversationId}`
+  );
 
-  if (!meetResult?.created) {
-    // eslint-disable-next-line no-console
-    console.error(
-      `[GoogleMeet] not created clinicId=${businessClinicId}: ${meetResult?.reason || "unknown"}`
-    );
+  let meetResult = null;
+  if (meeting.useGoogleCalendar) {
+    meetResult = await tryCreateGoogleMeetForAppointment({
+      clinicId: businessClinicId,
+      patientInfo: normalizedPatient,
+      clinicName,
+      description: [
+        `Appointment request via ${normalizedReplyType === "voice" ? "phone / voice assistant" : "web chat"}.`,
+        `Case: ${conversationId}`,
+        patientSummary
+      ].join("\n")
+    });
+
+    if (!meetResult?.created) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[GoogleMeet] not created clinicId=${businessClinicId}: ${meetResult?.reason || "unknown"}`
+      );
+    }
   }
 
-  const appointment = await createAppointmentFromIntake({
-    clinicId: businessClinicId,
-    conversationId,
-    source: normalizedReplyType === "voice" ? "voice" : "chat",
-    patientInfo: normalizedPatient,
-    meetResult
-  });
-  if (!appointment) {
+  // Only Bot Calendar writes to the Medical Bot Console Appointments page.
+  let appointment = null;
+  if (meeting.persistLocalAppointment) {
+    const persistResult = await createAppointmentFromIntake({
+      clinicId: businessClinicId,
+      conversationId,
+      source: normalizedReplyType === "voice" ? "voice" : "chat",
+      patientInfo: normalizedPatient,
+      meetResult
+    });
+    appointment = persistResult?.appointment || null;
+    if (persistResult?.error) {
+      const unavailableMessage =
+        persistResult.error.message ||
+        "That time is not available. Please choose another appointment time.";
+      // eslint-disable-next-line no-console
+      console.error(
+        `[Appointment] availability rejected clinicId=${businessClinicId} conversationId=${conversationId} code=${persistResult.error.code}`
+      );
+
+      if (skipUserFacingMessage) {
+        return {
+          conversationId,
+          status: "unavailable",
+          replyType: normalizedReplyType,
+          confirmationMessage: unavailableMessage,
+          availabilityError: persistResult.error
+        };
+      }
+
+      let audioBase64 = null;
+      let audioMimeType = null;
+      if (normalizedReplyType === "voice") {
+        const voice = await getClinicOpenAiVoice(businessClinicId);
+        const speech = await generateSpeechFromText({ text: unavailableMessage, voice });
+        audioBase64 = speech.audioBase64;
+        audioMimeType = speech.audioMimeType;
+      }
+
+      await createMessage({
+        conversationId,
+        userType: "bot",
+        message: unavailableMessage,
+        audio: audioBase64,
+        messageType: normalizedReplyType,
+        isTopic,
+        status: "success"
+      });
+
+      return {
+        conversationId,
+        status: "unavailable",
+        replyType: normalizedReplyType,
+        responseType: "appointment",
+        confirmationMessage: unavailableMessage,
+        availabilityError: persistResult.error,
+        audioBase64,
+        audioMimeType
+      };
+    }
+    if (!appointment) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[Appointment] persist returned null clinicId=${businessClinicId} conversationId=${conversationId}`
+      );
+    }
+  } else {
     // eslint-disable-next-line no-console
-    console.error(`[Appointment] persist returned null clinicId=${businessClinicId} conversationId=${conversationId}`);
+    console.log(
+      `[Appointment] skipped local calendar save (meetingProvider=${meetingProvider}) clinicId=${businessClinicId}`
+    );
   }
 
   const emailResult = await sendAppointmentRequestEmail({

@@ -69,6 +69,36 @@ const Clinic = sequelize.define(
       allowNull: true,
       field: "openai_voice"
     },
+    openaiApiKey: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "openai_api_key"
+    },
+    openaiModel: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "openai_model"
+    },
+    openaiRealtimeModel: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "openai_realtime_model"
+    },
+    openaiTranscriptionModel: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "openai_transcription_model"
+    },
+    openaiTtsModel: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "openai_tts_model"
+    },
+    openaiInboundModel: {
+      type: DataTypes.STRING(128),
+      allowNull: true,
+      field: "openai_inbound_model"
+    },
     twilioPhoneNumber: {
       type: DataTypes.STRING(64),
       allowNull: true,
@@ -160,6 +190,24 @@ const Clinic = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
       field: "azul_api_endpoint"
+    },
+    /** Bot Calendar: weekly hours JSON { mon: {enabled,start,end}, … } */
+    weeklyHours: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      field: "weekly_hours"
+    },
+    slotDurationMinutes: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 30,
+      field: "slot_duration_minutes"
+    },
+    /** Max appointments per day (enforced for Bot Calendar booking). */
+    doctorDailyLimit: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "doctor_daily_limit"
     }
   },
   {
