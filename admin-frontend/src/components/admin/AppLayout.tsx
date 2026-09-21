@@ -16,6 +16,7 @@ import {
   PanelLeftOpen,
   Bot,
   ShieldCheck,
+  MessagesSquare,
 } from "lucide-react";
 import { useAuth, canAccess } from "@/contexts/AuthContext";
 import MedicalBotConsoleLogo from "@/components/admin/MedicalBotConsoleLogo";
@@ -46,28 +47,20 @@ const NAV = [
     rail: "bg-primary",
   },
   {
-    to: "/appointments",
-    label: "Appointments",
-    icon: CalendarClock,
-    key: "appointments",
-    tint: "bg-med-amber/20 text-med-amber",
-    rail: "bg-med-amber",
-  },
-  {
-    to: "/users",
-    label: "Users",
-    icon: Users,
-    key: "users",
-    tint: "bg-med-indigo/20 text-med-indigo",
-    rail: "bg-med-indigo",
-  },
-  {
     to: "/doctors",
     label: "Doctors",
     icon: Stethoscope,
     key: "doctors",
     tint: "bg-med-mint/20 text-med-mint",
     rail: "bg-med-mint",
+  },
+  {
+    to: "/appointments",
+    label: "Appointments",
+    icon: CalendarClock,
+    key: "appointments",
+    tint: "bg-med-amber/20 text-med-amber",
+    rail: "bg-med-amber",
   },
   {
     to: "/agents",
@@ -87,7 +80,7 @@ const NAV = [
   },
   {
     to: "/flows",
-    label: "Brain library",
+    label: "Brain Library",
     icon: Brain,
     key: "flows",
     tint: "bg-med-coral/20 text-med-coral",
@@ -102,16 +95,32 @@ const NAV = [
     rail: "bg-med-rose",
   },
   {
+    to: "/conversations",
+    label: "Conversation History",
+    icon: MessagesSquare,
+    key: "conversations",
+    tint: "bg-med-sky/20 text-med-sky",
+    rail: "bg-med-sky",
+  },
+  {
     to: "/calls",
-    label: "Calls",
+    label: "Call History",
     icon: PhoneCall,
     key: "calls",
     tint: "bg-info/20 text-info",
     rail: "bg-info",
   },
   {
+    to: "/users",
+    label: "Users",
+    icon: Users,
+    key: "users",
+    tint: "bg-med-indigo/20 text-med-indigo",
+    rail: "bg-med-indigo",
+  },
+  {
     to: "/audit-logs",
-    label: "Audit logs",
+    label: "Audit Logs",
     icon: ShieldCheck,
     key: "audit-logs",
     tint: "bg-med-indigo/20 text-med-indigo",

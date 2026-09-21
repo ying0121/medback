@@ -87,8 +87,31 @@ export function useAuth() {
 
 // Permission helper
 export const PERMISSIONS = {
-  Admin: ["dashboard", "clinics", "appointments", "users", "doctors", "agents", "training", "flows", "campaigns", "calls", "audit-logs"] as const,
-  "Clinic Staff": ["dashboard", "appointments", "doctors", "agents", "training", "flows", "campaigns", "calls"] as const,
+  Admin: [
+    "dashboard",
+    "clinics",
+    "doctors",
+    "appointments",
+    "agents",
+    "training",
+    "flows",
+    "campaigns",
+    "conversations",
+    "calls",
+    "users",
+    "audit-logs",
+  ] as const,
+  "Clinic Staff": [
+    "dashboard",
+    "doctors",
+    "appointments",
+    "agents",
+    "training",
+    "flows",
+    "campaigns",
+    "conversations",
+    "calls",
+  ] as const,
 };
 
 export function canAccess(role: AuthUser["role"], page: string) {

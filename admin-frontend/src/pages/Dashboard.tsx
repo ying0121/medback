@@ -12,22 +12,24 @@ import {
 import { motion } from "framer-motion";
 import {
   Activity,
+  Bot,
   Building2,
   CalendarCheck,
   MessageCircle,
   MessagesSquare,
   PhoneCall,
   RefreshCw,
-  Users,
+  Brain,
 } from "lucide-react";
-import DashboardInbox from "@/components/admin/DashboardInbox";
 import TodayAppointments, { todayRangeIso } from "@/components/admin/TodayAppointments";
 import SparkStatCard from "@/components/admin/SparkStatCard";
 import { Button } from "@/components/ui/button";
 import {
   getStats,
+  listAgents,
   listAppointments,
   listClinics,
+  type Agent,
   type Appointment,
   type Clinic,
   type DashboardClinicStat,
@@ -52,6 +54,7 @@ type ChartRange = 7 | 30 | 60;
 export default function Dashboard() {
   const { user } = useAuth();
   const [clinics, setClinics] = useState<Clinic[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [todayAppointments, setTodayAppointments] = useState<Appointment[]>([]);
   const [loadingToday, setLoadingToday] = useState(true);
@@ -67,6 +70,13 @@ export default function Dashboard() {
       if (!mounted) return;
       setClinics(allowed ? all.filter((clinic) => allowed.includes(clinic.id)) : all);
     });
+    listAgents()
+      .then((rows) => {
+        if (mounted) setAgents(rows);
+      })
+      .catch(() => {
+        if (mounted) setAgents([]);
+      });
     getStats(allowed)
       .then((data) => {
         if (mounted) setStats(data);
@@ -115,6 +125,11 @@ export default function Dashboard() {
     (stats?.week.phoneCalls ?? 0) +
     (stats?.week.webChats ?? 0);
 
+  const activeAgents = agents.filter((a) => a.status === "active").length;
+  const agentsWithBrain = agents.filter(
+    (a) => (a.nodeCount ?? a.graph?.nodes?.length ?? 0) > 0
+  ).length;
+
   return (
     <div className="admin-page">
       {/* Hero */}
@@ -153,8 +168,8 @@ export default function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4, delay: 0.05, ease: pageEase }}
               >
-                {formatNyDate(new Date())} ET · Channel volume, today’s schedule, and clinic
-                conversations in one view.
+                {formatNyDate(new Date())} ET · Agents, channel volume, today’s schedule, and
+                clinic performance — open Conversation History for full threads.
               </motion.p>
             </div>
 
@@ -203,10 +218,12 @@ export default function Dashboard() {
             transition={{ delay: 0.12, duration: 0.35 }}
           >
             {[
-              { to: "/appointments", label: "Appointments" },
-              { to: "/campaigns", label: "Campaigns" },
-              { to: "/calls", label: "Calls" },
               { to: "/agents", label: "Agents" },
+              { to: "/conversations", label: "Conversation History" },
+              { to: "/appointments", label: "Appointments" },
+              { to: "/calls", label: "Call History" },
+              { to: "/campaigns", label: "Campaigns" },
+              { to: "/flows", label: "Brain Library" },
             ].map((link) => (
               <Link
                 key={link.to}
@@ -304,6 +321,13 @@ export default function Dashboard() {
         transition={{ duration: 0.4, delay: 0.15, ease: pageEase }}
       >
         <InsightTile
+          icon={Bot}
+          label="Active agents"
+          value={activeAgents}
+          hint={`${agentsWithBrain} with conversation brains`}
+          accent="bg-primary/10 text-primary"
+        />
+        <InsightTile
           icon={Building2}
           label="Active clinics"
           value={stats?.totalClinics ?? clinics.length}
@@ -311,17 +335,10 @@ export default function Dashboard() {
           accent="bg-sky-soft text-med-sky"
         />
         <InsightTile
-          icon={Users}
-          label="Users"
-          value={stats?.totalUsers ?? "—"}
-          hint="Admin & clinic staff"
-          accent="bg-primary/10 text-primary"
-        />
-        <InsightTile
           icon={MessagesSquare}
           label="Messages"
           value={stats?.totalMessages ?? "—"}
-          hint="Across all channels"
+          hint="Across chat channels"
           accent="bg-cyan-soft text-med-cyan"
         />
         <InsightTile
@@ -481,13 +498,60 @@ export default function Dashboard() {
       </motion.div>
 
       <motion.div
+        className="grid grid-cols-1 md:grid-cols-2 gap-4"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, delay: 0.22, ease: pageEase }}
       >
-        <DashboardInbox clinics={clinics} clinicStats={stats?.byClinic ?? []} />
+        <OpsLinkCard
+          to="/conversations"
+          icon={MessagesSquare}
+          title="Conversation History"
+          body="Open the full webchat inbox by clinic — patient threads, voice notes, and appointment requests."
+          cta="Open inbox"
+        />
+        <OpsLinkCard
+          to="/agents"
+          icon={Brain}
+          title="Agent Studio"
+          body="Build and publish patient-facing agents from templates, custom brains, or AI-combined flows."
+          cta="Manage agents"
+        />
       </motion.div>
     </div>
+  );
+}
+
+function OpsLinkCard({
+  to,
+  icon: Icon,
+  title,
+  body,
+  cta,
+}: {
+  to: string;
+  icon: typeof MessagesSquare;
+  title: string;
+  body: string;
+  cta: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className="group relative overflow-hidden rounded-2xl border border-border/70 bg-card p-5 shadow-soft transition-all hover:border-primary/35 hover:shadow-md"
+    >
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/[0.05] to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+      <div className="relative flex gap-4">
+        <div className="h-11 w-11 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0 ring-1 ring-border/50">
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0">
+          <div className="font-display font-semibold tracking-tight">{title}</div>
+          <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{body}</p>
+          <span className="inline-flex mt-3 text-xs font-medium text-primary">{cta} →</span>
+        </div>
+      </div>
+    </Link>
   );
 }
 
@@ -583,12 +647,20 @@ function ClinicBreakdown({
             Top locations by conversation and phone volume
           </p>
         </div>
-        <Link
-          to="/clinics"
-          className="text-xs font-medium text-primary hover:underline underline-offset-4"
-        >
-          Manage clinics
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/conversations"
+            className="text-xs font-medium text-primary hover:underline underline-offset-4"
+          >
+            Conversation History
+          </Link>
+          <Link
+            to="/clinics"
+            className="text-xs font-medium text-muted-foreground hover:text-primary hover:underline underline-offset-4"
+          >
+            Manage clinics
+          </Link>
+        </div>
       </div>
 
       {rows.length === 0 ? (

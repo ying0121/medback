@@ -137,7 +137,7 @@ export default function Calls() {
     <div className="admin-page">
       <PageHeader
         accent={1}
-        title="Calling History"
+        title="Call History"
         description="Review inbound call sessions, transcripts, and audio waveforms."
         actions={(
           <div className="flex flex-wrap gap-2">

@@ -391,14 +391,16 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                         </button>
                       ))}
                     </div>
-                    <p className="text-xs text-muted-foreground mt-2">
+                    <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                      One mode per clinic. Scheduling agents (`book_appointment`) use this provider
+                      when booking visits.
                       {meeting.meetingProvider === "bot"
-                        ? "Bot Calendar: booked visits are saved on the Appointments calendar."
+                        ? " Bot Calendar saves visits on the Appointments page using clinic/doctor weekly hours."
                         : meeting.meetingProvider === "google"
-                          ? "Google Calendar: create events in Google (not saved on Bot Appointments)."
+                          ? " Google creates Calendar events (not duplicated on Bot Appointments)."
                           : meeting.meetingProvider === "ecw"
-                            ? "ECW Calendar: use the ECW endpoint."
-                            : "Azul Calendar: use the Azul endpoint."}
+                            ? " ECW endpoint is stored for EHR sync (booking API wiring comes next)."
+                            : " Azul endpoint is stored for EHR sync (booking API wiring comes next)."}
                     </p>
                   </Field>
 
@@ -432,15 +434,25 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                           }
                         />
                       </Field>
-                      <label className="col-span-12 flex items-center gap-2 text-sm">
-                        <Checkbox
-                          checked={meeting.googleCreateMeet}
-                          onCheckedChange={(v) =>
-                            setMeeting({ ...meeting, googleCreateMeet: v === true })
-                          }
-                        />
-                        Create Google Meet link
-                      </label>
+                      <div className="col-span-12 rounded-xl border border-border/70 bg-muted/25 px-4 py-3 space-y-2">
+                        <label className="flex items-start gap-2.5 text-sm cursor-pointer">
+                          <Checkbox
+                            className="mt-0.5"
+                            checked={meeting.googleCreateMeet}
+                            onCheckedChange={(v) =>
+                              setMeeting({ ...meeting, googleCreateMeet: v === true })
+                            }
+                          />
+                          <span>
+                            <span className="font-medium">Create Google Meet link</span>
+                            <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                              When on, booking adds a Meet conference to the Calendar event and
+                              emails the join link to the patient/staff. Required for telehealth-style
+                              scheduling templates.
+                            </span>
+                          </span>
+                        </label>
+                      </div>
                     </>
                   ) : null}
 
@@ -469,9 +481,10 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                   ) : null}
 
                   {meeting.meetingProvider === "bot" ? (
-                    <div className="col-span-12 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-                      Appointments use this clinic’s Bot Calendar schedule (weekly hours and daily
-                      limit). No external calendar credentials are required.
+                    <div className="col-span-12 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground leading-relaxed">
+                      Appointments use this clinic’s Bot Calendar schedule (weekly hours, slot
+                      length, and daily limits on the clinic/doctor forms). No Google/ECW/Azul
+                      credentials are required. Visits appear on the Appointments calendar.
                     </div>
                   ) : null}
                 </div>

@@ -21,6 +21,7 @@ import Flows from "./pages/Flows.tsx";
 import Campaigns from "./pages/Campaigns.tsx";
 import CampaignPatients from "./pages/CampaignPatients.tsx";
 import AuditLogs from "./pages/AuditLogs.tsx";
+import ConversationHistory from "./pages/ConversationHistory.tsx";
 
 const queryClient = new QueryClient();
 
@@ -37,15 +38,16 @@ const App = () => (
               <Route path="/login" element={<Login />} />
               <Route path="/dashboard" element={<RequireAuth page="dashboard"><Dashboard /></RequireAuth>} />
               <Route path="/clinics" element={<RequireAuth page="clinics"><Clinics /></RequireAuth>} />
-              <Route path="/appointments" element={<RequireAuth page="appointments"><Appointments /></RequireAuth>} />
-              <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
               <Route path="/doctors" element={<RequireAuth page="doctors"><Doctors /></RequireAuth>} />
+              <Route path="/appointments" element={<RequireAuth page="appointments"><Appointments /></RequireAuth>} />
               <Route path="/agents" element={<RequireAuth page="agents"><Agents /></RequireAuth>} />
               <Route path="/training" element={<RequireAuth page="training"><Training /></RequireAuth>} />
               <Route path="/flows" element={<RequireAuth page="flows"><Flows /></RequireAuth>} />
               <Route path="/campaigns" element={<RequireAuth page="campaigns"><Campaigns /></RequireAuth>} />
               <Route path="/campaigns/:id" element={<RequireAuth page="campaigns"><CampaignPatients /></RequireAuth>} />
+              <Route path="/conversations" element={<RequireAuth page="conversations"><ConversationHistory /></RequireAuth>} />
               <Route path="/calls" element={<RequireAuth page="calls"><Calls /></RequireAuth>} />
+              <Route path="/users" element={<RequireAuth page="users"><Users /></RequireAuth>} />
               <Route path="/audit-logs" element={<RequireAuth page="audit-logs"><AuditLogs /></RequireAuth>} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
