@@ -154,28 +154,28 @@ function getStudioModalLayout(
 ): { width: number; height: number } {
   switch (stepId) {
     case "method":
-      return { width: 760, height: 520 };
+      return { width: 760, height: 600 };
     case "type":
-      return { width: 980, height: 760 };
+      return { width: 980, height: 840 };
     case "source":
-      if (method === "ai") return { width: 820, height: 860 };
-      if (method === "template") return { width: 980, height: 820 };
+      if (method === "ai") return { width: 820, height: 920 };
+      if (method === "template") return { width: 980, height: 900 };
       if (method === "custom" && customStartMode === "duplicate") {
-        return { width: 920, height: 780 };
+        return { width: 920, height: 860 };
       }
-      return { width: 560, height: 480 };
+      return { width: 560, height: 560 };
     case "identity":
-      return { width: 560, height: 620 };
+      return { width: 560, height: 720 };
     case "brain":
-      return { width: 560, height: 480 };
+      return { width: 560, height: 560 };
     case "knowledge":
-      return { width: 720, height: 640 };
+      return { width: 720, height: 740 };
     case "test":
-      return { width: 520, height: 420 };
+      return { width: 520, height: 500 };
     case "review":
-      return { width: 560, height: 580 };
+      return { width: 560, height: 680 };
     default:
-      return { width: 720, height: 640 };
+      return { width: 720, height: 720 };
   }
 }
 
@@ -1247,11 +1247,12 @@ export default function Agents() {
         emptyMessage="No agents yet — create one from a template, blank canvas, or AI brief"
       />
 
-      {/* Studio wizard — stay mounted while canvas is open (hidden) so outside-click dismiss works */}
+      {/* Close studio while canvas is open — an open Radix dialog inerts siblings and blocks editing */}
       <Dialog
-        open={studioOpen}
+        open={studioOpen && !canvasOpen}
         onOpenChange={(open) => {
           // Only intentional dismiss (X / Cancel / Escape) — never backdrop click.
+          // Ignore close events caused by handing off to the conversation canvas.
           if (!open) {
             if (canvasOpen) return;
             setStudioOpen(false);
@@ -1261,8 +1262,7 @@ export default function Agents() {
         <DialogContent
           className={cn(
             "flex flex-col p-0 gap-0 overflow-hidden rounded-2xl !max-w-none",
-            "transition-[width,height,max-width] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width,height]",
-            canvasOpen && "invisible pointer-events-none"
+            "transition-[width,height,max-width] duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width,height]"
           )}
           style={
             {
@@ -1271,12 +1271,8 @@ export default function Agents() {
               height: `min(${studioLayout.height}px, 94vh)`,
             } as CSSProperties
           }
-          overlayClassName={cn(canvasOpen && "invisible pointer-events-none")}
           onPointerDownOutside={(e) => e.preventDefault()}
           onInteractOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => {
-            if (canvasOpen) e.preventDefault();
-          }}
         >
           <DialogHeader className="px-6 pt-5 pb-4 border-b border-border/70 shrink-0 bg-gradient-to-r from-primary/[0.04] via-transparent to-sky-500/[0.03]">
             <DialogTitle className="text-xl tracking-tight">
