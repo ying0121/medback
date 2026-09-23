@@ -362,7 +362,7 @@ export default function Clinics() {
       <PageHeader
         accent={1}
         title="Clinic Management"
-        description="Assign an agent to each clinic. Configure OpenAI models, Twilio, and meeting with the gear icon. Voice is set on the agent."
+        description="Assign an agent to each clinic. Use the gear icon for OpenAI, Twilio, and Google Calendar — each tab includes a step-by-step “How to get…” guide. Voice is set on the agent."
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={onSyncExternal} disabled={syncingExternal}>

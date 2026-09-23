@@ -38,6 +38,11 @@ import {
   type AgentModelDefaults,
 } from "@/lib/api";
 import { toast } from "sonner";
+import CredentialSetupGuide from "@/components/admin/CredentialSetupGuide";
+import CredentialHelpTooltip, {
+  CredentialHelpIcon,
+  type CredentialHelpContent,
+} from "@/components/admin/CredentialHelpTooltip";
 
 type Props = {
   open: boolean;
@@ -77,22 +82,199 @@ const EMPTY_MEETING: ClinicGoogleConfigInput = {
   azulApiEndpoint: "",
 };
 
+const OPENAI_API_KEY_HELP: CredentialHelpContent = {
+  eyebrow: "OpenAI · Secret",
+  title: "Your clinic’s API key",
+  summary:
+    "This unlocks chat, phone voice, and transcription for this clinic. Think of it as the clinic’s private pass to OpenAI.",
+  where:
+    "Sign in at platform.openai.com → API keys → Create new secret key. Give it a clear name like “Front desk — prod”.",
+  looksLike: "sk-proj-… or sk-…",
+  tip: "The full key is shown only once. Paste it here, then Save. On later visits you can leave this blank to keep the key already stored.",
+  link: { href: "https://platform.openai.com/api-keys", label: "Open API keys" },
+};
+
+const OPENAI_MODEL_HELP: Record<string, CredentialHelpContent> = {
+  openaiModel: {
+    eyebrow: "OpenAI · Chat",
+    title: "Chat model",
+    summary: "Powers web chat and text replies — the day-to-day “brain” for typed conversations.",
+    where:
+      "Paste your API key, then click Refresh models so the list matches what your OpenAI org can use. Pick a current GPT chat model.",
+    tip: "If the dropdown is empty, check billing on the OpenAI account or try Refresh models again.",
+  },
+  openaiRealtimeModel: {
+    eyebrow: "OpenAI · Phone voice",
+    title: "Realtime model",
+    summary:
+      "Handles live phone calls: listening, thinking, and speaking in one session over Twilio.",
+    where:
+      "After Refresh models, choose the latest realtime model your account supports (often labeled gpt-realtime).",
+    tip: "This is the most important model for inbound clinic phone lines. Keep it on a current realtime release.",
+  },
+  openaiTranscriptionModel: {
+    eyebrow: "OpenAI · Speech-to-text",
+    title: "Transcription model",
+    summary: "Turns caller audio into text on voice paths that use separate STT (not Realtime).",
+    where: "Pick a transcription model from the refreshed list — usually a Whisper-family or gpt-4o-transcribe option.",
+  },
+  openaiTtsModel: {
+    eyebrow: "OpenAI · Text-to-speech",
+    title: "TTS model",
+    summary: "Speaks text replies aloud when the bot is not already on the Realtime phone path.",
+    where: "Choose a TTS model from the list after Refresh models. Voice personality itself is set on the agent.",
+  },
+  openaiInboundModel: {
+    eyebrow: "OpenAI · Inbound text",
+    title: "Inbound chat model",
+    summary: "Optional override for inbound text / SMS-style handling. Often the same family as Chat model.",
+    where: "Select from the refreshed chat models, or mirror whatever you chose for Chat model.",
+    tip: "When unsure, match Chat model so behavior stays consistent across channels.",
+  },
+};
+
+const TWILIO_FIELD_HELP: Record<string, CredentialHelpContent> = {
+  twilioPhoneNumber: {
+    eyebrow: "Twilio · Phone",
+    title: "Clinic phone number",
+    summary: "The number patients dial to reach this clinic’s voice agent.",
+    where:
+      "Twilio Console → Phone Numbers → Buy a number (or Active numbers). Copy the US number in E.164 form.",
+    looksLike: "+12025550123",
+    tip: "No spaces or dashes. Must be +1 followed by 10 digits for US clinics.",
+    link: {
+      href: "https://console.twilio.com/us1/develop/phone-numbers/manage/incoming",
+      label: "Open Active numbers",
+    },
+  },
+  twilioCallerId: {
+    eyebrow: "Twilio · Outbound",
+    title: "Caller ID",
+    summary: "What shows on the other party’s phone when this clinic places an outbound call.",
+    where: "Usually the same E.164 number as Phone number. Paste it again here unless you use a verified caller ID.",
+    looksLike: "+12025550123",
+    tip: "Keeping Phone number and Caller ID identical avoids “invalid caller ID” errors.",
+  },
+  twilioAccountSid: {
+    eyebrow: "Twilio · Account",
+    title: "Account SID",
+    summary: "Identifies your Twilio account — like the account number on a bank statement.",
+    where: "Twilio Console home dashboard. Look for Account SID near the top.",
+    looksLike: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    link: { href: "https://console.twilio.com/", label: "Open Twilio Console" },
+  },
+  twilioAuthToken: {
+    eyebrow: "Twilio · Secret",
+    title: "Auth token",
+    summary: "Lets this server make Twilio REST calls on behalf of your account. Keep it private.",
+    where: "Same dashboard as Account SID — click the eye icon to reveal Auth Token, then copy.",
+    tip: "This is not the same as the API key secret. You need both: Auth Token for REST, API key for Voice JWTs.",
+  },
+  twilioApiKeySid: {
+    eyebrow: "Twilio · Voice SDK",
+    title: "API key SID",
+    summary: "Used with the API key secret to sign browser / Voice access tokens.",
+    where:
+      "Account → API keys & tokens → Create API key → Standard. Copy the SID (starts with SK).",
+    looksLike: "SKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    link: {
+      href: "https://console.twilio.com/us1/account/keys-credentials/api-keys",
+      label: "Open API keys",
+    },
+  },
+  twilioApiKeySecret: {
+    eyebrow: "Twilio · Voice SDK",
+    title: "API key secret",
+    summary: "Pairs with the API key SID. Twilio shows it only once when the key is created.",
+    where: "Copy immediately from the Create API key success screen. If you lost it, create a new key.",
+    tip: "Do not paste the Auth Token here — they look different and serve different jobs.",
+  },
+  twilioTwimlAppSid: {
+    eyebrow: "Twilio · Voice app",
+    title: "TwiML App SID",
+    summary: "Tells Twilio which Voice app to use when the browser or SDK places a call.",
+    where:
+      "Voice → TwiML → TwiML Apps → create an app. Set Voice Request URL to https://YOUR_HOST/api/twilio/voice/twiml (POST), then copy the App SID.",
+    looksLike: "APxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    tip: "Also point the phone number’s “A call comes in” webhook to /api/twilio/voice/inbound — see the full guide above.",
+    link: {
+      href: "https://console.twilio.com/us1/develop/voice/manage/twiml-apps",
+      label: "Open TwiML Apps",
+    },
+  },
+};
+
+const GOOGLE_FIELD_HELP: Record<string, CredentialHelpContent> = {
+  googleClientId: {
+    eyebrow: "Google · OAuth",
+    title: "Client ID",
+    summary: "Identifies your Cloud project’s OAuth app when requesting Calendar access.",
+    where:
+      "Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID (Web application).",
+    looksLike: "123456789-abc.apps.googleusercontent.com",
+    tip: "Add https://developers.google.com/oauthplayground as an authorized redirect URI so you can generate a refresh token next.",
+    link: {
+      href: "https://console.cloud.google.com/apis/credentials",
+      label: "Open Credentials",
+    },
+  },
+  googleClientSecret: {
+    eyebrow: "Google · OAuth",
+    title: "Client secret",
+    summary: "Private key for your OAuth client. Never share it in chat or commit it to git.",
+    where: "Same OAuth client page as Client ID — copy Client secret.",
+    looksLike: "GOCSPX-…",
+    tip: "If you regenerate the secret in Google Cloud, you must update this field and create a new refresh token.",
+  },
+  googleRefreshToken: {
+    eyebrow: "Google · Calendar",
+    title: "Refresh token",
+    summary:
+      "Lets the bot create and update Calendar events quietly in the background — no one has to click “Allow” every time.",
+    where:
+      "Use Google OAuth Playground with your own Client ID/secret, authorize Calendar scopes, then Exchange code for tokens and copy the Refresh token.",
+    looksLike: "1//0e…",
+    tip: "Sign in with the Google account whose primary calendar should receive patient bookings — often a shared clinic inbox.",
+    link: {
+      href: "https://developers.google.com/oauthplayground/",
+      label: "Open OAuth Playground",
+    },
+  },
+};
+
 function Field({
   label,
   className,
   hint,
+  help,
   children,
 }: {
   label: string;
   className?: string;
   hint?: string;
+  help?: CredentialHelpContent;
   children: ReactNode;
 }) {
-  return (
-    <div className={className}>
-      <Label className="text-xs text-muted-foreground mb-1.5 block">{label}</Label>
+  const body = (
+    <>
+      <div className="mb-1.5 flex w-fit items-center gap-1.5">
+        <Label className="inline w-fit text-xs text-muted-foreground">{label}</Label>
+        {help ? <CredentialHelpIcon /> : null}
+      </div>
       {children}
       {hint ? <p className="text-[11px] text-muted-foreground mt-1">{hint}</p> : null}
+    </>
+  );
+
+  if (!help) {
+    return <div className={className}>{body}</div>;
+  }
+
+  return (
+    <div className={className}>
+      <CredentialHelpTooltip content={help} label={`How to get ${label}`}>
+        {body}
+      </CredentialHelpTooltip>
     </div>
   );
 }
@@ -230,12 +412,12 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90vh] min-h-0 max-w-2xl flex-col gap-0 overflow-hidden p-6">
+      <DialogContent className="flex max-h-[90vh] min-h-0 max-w-3xl flex-col gap-0 overflow-hidden p-6">
         <DialogHeader className="shrink-0">
           <DialogTitle>Clinic settings</DialogTitle>
           <DialogDescription>
             {clinic
-              ? `${clinic.name} — OpenAI models, Twilio, and meeting / calendar. Voice is set on the agent.`
+              ? `${clinic.name} — OpenAI, Twilio, and meeting / calendar. Expand “How to get…” on each tab for step-by-step setup. Voice is set on the agent.`
               : "Clinic settings"}
           </DialogDescription>
         </DialogHeader>
@@ -257,6 +439,7 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
             </TabsList>
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-6 px-6 [scrollbar-gutter:stable]">
               <TabsContent value="openai" className="mt-0 focus-visible:ring-0 space-y-4 py-2 pb-4">
+                <CredentialSetupGuide topic="openai" />
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <p className="text-sm text-muted-foreground">
                     API key and models for this clinic. Voice is configured on the assigned agent.
@@ -280,6 +463,7 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                   <Field
                     label="OpenAI API key"
                     className="col-span-12"
+                    help={OPENAI_API_KEY_HELP}
                     hint={
                       openai.openaiApiKeySet
                         ? "Leave blank to keep the saved key."
@@ -303,7 +487,12 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                       ["openaiInboundModel", "Inbound chat model", "chat"],
                     ] as const
                   ).map(([key, label, catalog]) => (
-                    <Field key={key} label={label} className="col-span-12 md:col-span-6">
+                    <Field
+                      key={key}
+                      label={label}
+                      className="col-span-12 md:col-span-6"
+                      help={OPENAI_MODEL_HELP[key]}
+                    >
                       <Select
                         value={openai[key] || modelDefaults?.[key] || ""}
                         onValueChange={(v) => setOpenai({ ...openai, [key]: v })}
@@ -328,38 +517,70 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
               </TabsContent>
 
               <TabsContent value="twilio" className="mt-0 focus-visible:ring-0 space-y-4 py-2 pb-4">
+                <CredentialSetupGuide topic="twilio" />
                 <p className="text-sm text-muted-foreground">
-                  Inbound phone number and Twilio credentials for this clinic.
+                  Inbound phone number and Twilio credentials for this clinic. Fill all seven fields,
+                  or leave them all blank.
                 </p>
                 <div className="grid grid-cols-12 gap-4">
                   {(
                     [
-                      ["twilioPhoneNumber", "Phone number"],
-                      ["twilioCallerId", "Caller ID"],
-                      ["twilioAccountSid", "Account SID"],
-                      ["twilioAuthToken", "Auth token"],
-                      ["twilioApiKeySid", "API key SID"],
-                      ["twilioApiKeySecret", "API key secret"],
-                      ["twilioTwimlAppSid", "TwiML App SID"],
+                      "twilioPhoneNumber",
+                      "twilioCallerId",
+                      "twilioAccountSid",
+                      "twilioAuthToken",
+                      "twilioApiKeySid",
+                      "twilioApiKeySecret",
+                      "twilioTwimlAppSid",
                     ] as const
-                  ).map(([key, label]) => (
-                    <Field key={key} label={label} className="col-span-12 md:col-span-6">
-                      <Input
-                        type={
-                          key === "twilioAuthToken" || key === "twilioApiKeySecret"
-                            ? "password"
-                            : "text"
-                        }
-                        autoComplete="off"
-                        value={twilio[key]}
-                        onChange={(e) => setTwilio({ ...twilio, [key]: e.target.value })}
-                      />
-                    </Field>
-                  ))}
+                  ).map((key) => {
+                    const labels: Record<(typeof key), string> = {
+                      twilioPhoneNumber: "Phone number",
+                      twilioCallerId: "Caller ID",
+                      twilioAccountSid: "Account SID",
+                      twilioAuthToken: "Auth token",
+                      twilioApiKeySid: "API key SID",
+                      twilioApiKeySecret: "API key secret",
+                      twilioTwimlAppSid: "TwiML App SID",
+                    };
+                    return (
+                      <Field
+                        key={key}
+                        label={labels[key]}
+                        className="col-span-12 md:col-span-6"
+                        help={TWILIO_FIELD_HELP[key]}
+                      >
+                        <Input
+                          type={
+                            key === "twilioAuthToken" || key === "twilioApiKeySecret"
+                              ? "password"
+                              : "text"
+                          }
+                          autoComplete="off"
+                          value={twilio[key]}
+                          onChange={(e) => setTwilio({ ...twilio, [key]: e.target.value })}
+                          placeholder={
+                            key === "twilioPhoneNumber" || key === "twilioCallerId"
+                              ? "+1XXXXXXXXXX"
+                              : key === "twilioAccountSid"
+                                ? "AC…"
+                                : key === "twilioApiKeySid"
+                                  ? "SK…"
+                                  : key === "twilioTwimlAppSid"
+                                    ? "AP…"
+                                    : undefined
+                          }
+                        />
+                      </Field>
+                    );
+                  })}
                 </div>
               </TabsContent>
 
               <TabsContent value="meeting" className="mt-0 focus-visible:ring-0 space-y-4 py-2 pb-4">
+                {meeting.meetingProvider === "google" ? (
+                  <CredentialSetupGuide topic="google" />
+                ) : null}
                 <div className="grid grid-cols-12 gap-4">
                   <Field label="Meeting / calendar mode" className="col-span-12">
                     <div className="flex flex-wrap gap-2">
@@ -406,15 +627,24 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
 
                   {meeting.meetingProvider === "google" ? (
                     <>
-                      <Field label="Google client ID" className="col-span-12">
+                      <Field
+                        label="Google client ID"
+                        className="col-span-12"
+                        help={GOOGLE_FIELD_HELP.googleClientId}
+                      >
                         <Input
                           value={meeting.googleClientId}
                           onChange={(e) =>
                             setMeeting({ ...meeting, googleClientId: e.target.value })
                           }
+                          placeholder="….apps.googleusercontent.com"
                         />
                       </Field>
-                      <Field label="Google client secret" className="col-span-12 md:col-span-6">
+                      <Field
+                        label="Google client secret"
+                        className="col-span-12 md:col-span-6"
+                        help={GOOGLE_FIELD_HELP.googleClientSecret}
+                      >
                         <Input
                           type="password"
                           autoComplete="off"
@@ -422,9 +652,14 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                           onChange={(e) =>
                             setMeeting({ ...meeting, googleClientSecret: e.target.value })
                           }
+                          placeholder="GOCSPX-…"
                         />
                       </Field>
-                      <Field label="Google refresh token" className="col-span-12 md:col-span-6">
+                      <Field
+                        label="Google refresh token"
+                        className="col-span-12 md:col-span-6"
+                        help={GOOGLE_FIELD_HELP.googleRefreshToken}
+                      >
                         <Input
                           type="password"
                           autoComplete="off"
@@ -432,6 +667,7 @@ export default function ClinicSettingsDialog({ open, onOpenChange, clinic, onSav
                           onChange={(e) =>
                             setMeeting({ ...meeting, googleRefreshToken: e.target.value })
                           }
+                          placeholder="1//…"
                         />
                       </Field>
                       <div className="col-span-12 rounded-xl border border-border/70 bg-muted/25 px-4 py-3 space-y-2">
