@@ -173,10 +173,34 @@ async function getClinicConnectInfoByBusinessClinicId(businessClinicId) {
 
   const clinic = await Clinic.findOne({
     where: { clinicId: id },
-    attributes: ["name", "acronym", "city", "chatGreeting", "themeColor", "avatar", "twilioPhoneNumber"]
+    attributes: [
+      "id",
+      "name",
+      "acronym",
+      "city",
+      "chatGreeting",
+      "themeColor",
+      "avatar",
+      "twilioPhoneNumber",
+      "agentId"
+    ]
   });
 
-  return getClinicConnectFields(clinic);
+  const fields = getClinicConnectFields(clinic);
+  try {
+    const behavior = await buildChatBehaviorByBusinessClinicId(id);
+    const flowGreeting = String(behavior?.flowGreeting || "").trim();
+    if (flowGreeting) {
+      fields.greeting = flowGreeting;
+    } else if (behavior?.agent) {
+      // Clinic greeting with agent placeholders resolved
+      const { resolveChatGreeting } = require("./greetingService");
+      fields.greeting = resolveChatGreeting(clinic, behavior.agent);
+    }
+  } catch {
+    /* keep clinic/env greeting */
+  }
+  return fields;
 }
 
 async function getClinicDetailsForEmail(businessClinicId) {

@@ -4,6 +4,9 @@
  * Triggered when a call is finalized. Loads the saved transcript, extracts
  * structured patient/intent information via OpenAI, persists to call_analyses,
  * and emails staff using BCC delivery.
+ *
+ * Transcript rows often land a few seconds after the call is marked completed,
+ * so scheduling is deferred and empty transcripts are retried before skip.
  */
 
 const { Call, IncomingMessage, CallAnalysis, Clinic } = require("../db");
@@ -21,6 +24,12 @@ const {
 } = require("./appointmentIntakeService");
 
 const inFlightCallIds = new Set();
+const pendingTimers = new Map();
+const attemptCounts = new Map();
+
+const ANALYSIS_DELAY_MS = Number(process.env.CALL_ANALYSIS_DELAY_MS) || 8000;
+const ANALYSIS_RETRY_MS = Number(process.env.CALL_ANALYSIS_RETRY_MS) || 15000;
+const ANALYSIS_MAX_ATTEMPTS = Number(process.env.CALL_ANALYSIS_MAX_ATTEMPTS) || 4;
 
 function serializeJson(value) {
   try {
@@ -42,7 +51,7 @@ function deserializeJson(value, fallback = null) {
 async function loadCallTranscript(callId) {
   const messages = await IncomingMessage.findAll({
     where: { callId },
-    order: [["created_at", "ASC"]],
+    order: [["createdAt", "ASC"]],
     attributes: ["transcription", "userType", "createdAt"]
   });
 
@@ -111,7 +120,8 @@ function toAnalysisRecordFields(analysis, call, clinicId) {
 
 /**
  * Analyze a completed inbound call once and notify staff by email.
- * Safe to call multiple times — only the first successful run processes.
+ * Safe to call multiple times — successful `sent` runs are not repeated.
+ * Empty transcripts use `pending_retry` and reschedule instead of permanent skip.
  */
 async function processCallAnalysis(call, { clinicId = null } = {}) {
   if (!call?.id) return null;
@@ -121,12 +131,70 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
 
   try {
     const existing = await CallAnalysis.findOne({ where: { callId: call.id } });
-    if (existing?.emailStatus === "sent" || existing?.emailStatus === "skipped") {
+    if (existing?.emailStatus === "sent") {
       return existing;
     }
 
     const transcript = await loadCallTranscript(call.id);
     const hasCallerTurns = transcript.some((turn) => turn.role === "Caller");
+
+    if (!hasCallerTurns) {
+      const attempts = (attemptCounts.get(call.id) || 0) + 1;
+      attemptCounts.set(call.id, attempts);
+
+      const emptyFields = toAnalysisRecordFields(
+        {
+          patientName: "",
+          patientPhoneSpoken: "",
+          reasonForCall: "",
+          symptomsConditions: "",
+          helpRequested: [],
+          urgency: "unknown",
+          sentiment: "unknown",
+          outcomeNextStep: "",
+          summary: "Waiting for call transcript before analysis.",
+          keyQuotes: [],
+          notes: ""
+        },
+        call,
+        clinicId
+      );
+
+      let analysisRow = existing;
+      if (!analysisRow) {
+        analysisRow = await CallAnalysis.create({
+          callId: call.id,
+          emailStatus: "pending_retry",
+          emailError: "No caller speech captured yet; retrying.",
+          ...emptyFields
+        });
+      } else {
+        await analysisRow.update({
+          ...emptyFields,
+          emailStatus: "pending_retry",
+          emailError: `No caller speech captured yet (attempt ${attempts}/${ANALYSIS_MAX_ATTEMPTS}).`
+        });
+      }
+
+      if (attempts < ANALYSIS_MAX_ATTEMPTS) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[CallAnalysis] empty transcript callId=${call.id}; retry ${attempts}/${ANALYSIS_MAX_ATTEMPTS} in ${ANALYSIS_RETRY_MS}ms`
+        );
+        scheduleCallAnalysis(call, { clinicId, delayMs: ANALYSIS_RETRY_MS });
+      } else {
+        attemptCounts.delete(call.id);
+        await analysisRow.update({
+          emailStatus: "skipped",
+          emailError: "No caller speech was captured for analysis after retries."
+        });
+        // eslint-disable-next-line no-console
+        console.log(`[CallAnalysis] skipped callId=${call.id} after empty-transcript retries`);
+      }
+      return analysisRow;
+    }
+
+    attemptCounts.delete(call.id);
 
     const analysisResult = await analyzeInboundCallTranscript({
       transcript,
@@ -148,14 +216,6 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
         emailStatus: "pending",
         emailError: null
       });
-    }
-
-    if (!hasCallerTurns) {
-      await analysisRow.update({
-        emailStatus: "skipped",
-        emailError: "No caller speech was captured for analysis."
-      });
-      return analysisRow;
     }
 
     const { clinic, clinicLabel } = await loadClinicDetails(clinicId);
@@ -205,8 +265,6 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
       }
     }
 
-    // Email stays identifier-safe: no patient name / phone. Include clinical
-    // details and core/important sample talking for staff follow-up.
     const emailPayload = {
       call: {
         id: call.id,
@@ -301,19 +359,68 @@ async function processCallAnalysis(call, { clinicId = null } = {}) {
 function scheduleCallAnalysis(call, options = {}) {
   if (!call?.id) return;
 
-  setImmediate(() => {
+  const delayMs = Number.isFinite(Number(options.delayMs))
+    ? Math.max(0, Number(options.delayMs))
+    : ANALYSIS_DELAY_MS;
+
+  const prior = pendingTimers.get(call.id);
+  if (prior) clearTimeout(prior);
+
+  const timer = setTimeout(() => {
+    pendingTimers.delete(call.id);
     processCallAnalysis(call, options).catch((err) => {
       // eslint-disable-next-line no-console
       console.error(
         `[CallAnalysis] scheduled run failed callId=${call.id}: ${err.message}`
       );
     });
+  }, delayMs);
+
+  if (typeof timer.unref === "function") timer.unref();
+  pendingTimers.set(call.id, timer);
+}
+
+/**
+ * Re-run analysis for recent completed calls that never got a successful result.
+ * Used by the daily alert/history job.
+ */
+async function backfillPendingCallAnalyses({ lookbackDays = 2, limit = 40 } = {}) {
+  const since = new Date(Date.now() - lookbackDays * 86400000);
+  const { Op } = require("sequelize");
+
+  const calls = await Call.findAll({
+    where: {
+      createdAt: { [Op.gte]: since },
+      status: "completed"
+    },
+    order: [["id", "DESC"]],
+    limit
   });
+
+  let scheduled = 0;
+  for (const call of calls) {
+    const existing = await CallAnalysis.findOne({ where: { callId: call.id } });
+    if (existing?.emailStatus === "sent") continue;
+    if (
+      existing &&
+      !["skipped", "pending_retry", "failed", "pending"].includes(String(existing.emailStatus || ""))
+    ) {
+      continue;
+    }
+    attemptCounts.delete(call.id);
+    scheduleCallAnalysis(call, {
+      clinicId: call.clinicId,
+      delayMs: 500 + scheduled * 750
+    });
+    scheduled += 1;
+  }
+  return scheduled;
 }
 
 module.exports = {
   loadCallTranscript,
   processCallAnalysis,
   scheduleCallAnalysis,
+  backfillPendingCallAnalyses,
   deserializeJson
 };

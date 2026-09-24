@@ -180,7 +180,10 @@ function normalizeGraph(input) {
     });
   }
 
-  return { nodes, edges };
+  const out = { nodes, edges };
+  if (input.persona && typeof input.persona === "object") out.persona = input.persona;
+  if (Array.isArray(input.intentCatalog)) out.intentCatalog = input.intentCatalog;
+  return out;
 }
 
 function isFixedNodeId(id) {

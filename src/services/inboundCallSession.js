@@ -239,7 +239,7 @@ class InboundCallSession {
             cleanup();
             resolve();
           }
-        }, 500);
+        }, 180);
       };
 
       const cleanup = () => {

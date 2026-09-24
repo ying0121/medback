@@ -1081,6 +1081,20 @@ export async function listMessages(conversationId: string) {
   }
 }
 
+export async function deleteConversation(conversationId: string) {
+  return request<{ success: boolean; deletedConversationId: string }>(
+    `/api/admin/dashboard/conversations/${encodeURIComponent(conversationId)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function deleteConversationsByClinic(clinicId: string) {
+  return request<{ success: boolean; deletedCount: number }>(
+    `/api/admin/dashboard/clinics/${encodeURIComponent(clinicId)}/conversations`,
+    { method: "DELETE" }
+  );
+}
+
 export async function listIncomingCalls(limit = 50) {
   const data = await request<{ calls: IncomingCall[] }>(
     `/api/admin/dashboard/calls?limit=${encodeURIComponent(String(limit))}`

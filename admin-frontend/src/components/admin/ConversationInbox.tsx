@@ -11,6 +11,7 @@ import {
   Mic,
   RefreshCw,
   Search,
+  Trash2,
 } from "lucide-react";
 import VoiceWavePlayer from "@/components/audio/VoiceWavePlayer";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   formatNyDate,
   formatNyTime,
   isNyToday,
@@ -31,6 +43,8 @@ import {
   zonedDateKey,
 } from "@/lib/appTimeZone";
 import {
+  deleteConversation,
+  deleteConversationsByClinic,
   listConversationsByClinic,
   listMessages,
   type Clinic,
@@ -40,6 +54,7 @@ import {
 } from "@/lib/api";
 import { getThemeColorOption } from "@/lib/themeColors";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 type InboxConversation = Conversation & { clinic: Clinic };
 
@@ -63,6 +78,8 @@ export default function ConversationInbox({ clinics, clinicStats = [], className
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
 
   const statsById = useMemo(
@@ -160,6 +177,44 @@ export default function ConversationInbox({ clinics, clinicStats = [], className
     );
   }, [conversations, convQuery]);
 
+  const handleDeleteConversation = async (row: InboxConversation) => {
+    try {
+      setDeletingId(row.id);
+      await deleteConversation(row.id);
+      const next = conversations.filter((c) => c.id !== row.id);
+      setConversations(next);
+      if (activeConv?.id === row.id) {
+        setActiveConv(next[0] ?? null);
+        setMessages([]);
+      }
+      toast.success("Conversation deleted");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not delete conversation");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!activeClinic) return;
+    try {
+      setClearingAll(true);
+      const result = await deleteConversationsByClinic(activeClinic.id);
+      setConversations([]);
+      setActiveConv(null);
+      setMessages([]);
+      toast.success(
+        result.deletedCount
+          ? `Cleared ${result.deletedCount} conversation${result.deletedCount === 1 ? "" : "s"}`
+          : "No conversations to clear"
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not clear conversations");
+    } finally {
+      setClearingAll(false);
+    }
+  };
+
   const theme = getThemeColorOption(activeClinic?.themeColor);
   const clinicConvCount = activeClinic
     ? statsById.get(activeClinic.id)?.conversations ?? conversations.length
@@ -223,6 +278,39 @@ export default function ConversationInbox({ clinics, clinicStats = [], className
             >
               <RefreshCw className={cn("h-3.5 w-3.5", loadingList && "animate-spin")} />
             </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 shrink-0 text-destructive hover:text-destructive"
+                  disabled={!activeClinic || loadingList || clearingAll || conversations.length === 0}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                  Clear all
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Clear all conversations?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This permanently deletes every webchat thread
+                    {activeClinic ? ` for ${activeClinic.name}` : ""} and their messages. This cannot
+                    be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => void handleClearAll()}
+                  >
+                    Clear all
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </div>
       </div>
@@ -270,45 +358,90 @@ export default function ConversationInbox({ clinics, clinicStats = [], className
                 {filteredConversations.map((row) => {
                   const selected = activeConv?.id === row.id;
                   return (
-                    <li key={row.id}>
-                      <button
-                        type="button"
-                        onClick={() => setActiveConv(row)}
+                    <li key={row.id} className="group relative">
+                      <div
                         className={cn(
-                          "w-full text-left px-4 py-3.5 transition-colors border-l-[3px]",
+                          "flex items-stretch border-l-[3px] transition-colors",
                           selected
                             ? "bg-background border-l-primary shadow-[inset_0_0_0_1px_hsl(var(--border)/0.5)]"
                             : "border-l-transparent hover:bg-background/70"
                         )}
                       >
-                        <div className="flex gap-3">
-                          <PatientAvatar name={row.userName || row.title} />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-baseline justify-between gap-2">
-                              <span className="font-medium text-sm truncate">
-                                {row.userName || row.title}
-                              </span>
-                              <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">
-                                {formatInboxTime(row.lastMessageAt)}
-                              </span>
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
-                              {row.lastMessageType === "voice" ? (
-                                <Mic className="inline h-3 w-3 mr-1 -mt-0.5 opacity-70" />
-                              ) : null}
-                              {row.lastMessagePreview || "No messages yet"}
-                            </p>
-                            <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground">
-                              <span className="tabular-nums">
-                                {row.messageCount} msg{row.messageCount === 1 ? "" : "s"}
-                              </span>
-                              {row.userEmail ? (
-                                <span className="truncate opacity-80">{row.userEmail}</span>
-                              ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setActiveConv(row)}
+                          className="min-w-0 flex-1 text-left px-4 py-3.5"
+                        >
+                          <div className="flex gap-3">
+                            <PatientAvatar name={row.userName || row.title} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <span className="font-medium text-sm truncate">
+                                  {row.userName || row.title}
+                                </span>
+                                <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">
+                                  {formatInboxTime(row.lastMessageAt)}
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
+                                {row.lastMessageType === "voice" ? (
+                                  <Mic className="inline h-3 w-3 mr-1 -mt-0.5 opacity-70" />
+                                ) : null}
+                                {row.lastMessagePreview || "No messages yet"}
+                              </p>
+                              <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                                <span className="tabular-nums">
+                                  {row.messageCount} msg{row.messageCount === 1 ? "" : "s"}
+                                </span>
+                                {row.userEmail ? (
+                                  <span className="truncate opacity-80">{row.userEmail}</span>
+                                ) : null}
+                              </div>
                             </div>
                           </div>
+                        </button>
+                        <div className="flex items-center pr-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                title="Delete conversation"
+                                disabled={deletingId === row.id}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Trash2
+                                  className={cn(
+                                    "h-3.5 w-3.5",
+                                    deletingId === row.id && "animate-pulse"
+                                  )}
+                                />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete this conversation?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Permanently remove the thread with{" "}
+                                  <strong>{row.userName || row.title}</strong> and all of its
+                                  messages. This cannot be undone.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  onClick={() => void handleDeleteConversation(row)}
+                                >
+                                  Delete
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
                         </div>
-                      </button>
+                      </div>
                     </li>
                   );
                 })}

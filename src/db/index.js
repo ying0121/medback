@@ -5,6 +5,7 @@ const Message = require("../models/message");
 const Call = require("../models/call");
 const IncomingMessage = require("../models/incomingMessage");
 const CallAnalysis = require("../models/callAnalysis");
+const ConversationAnalysis = require("../models/conversationAnalysis");
 const User = require("../models/user");
 const Clinic = require("../models/clinic");
 const Knowledge = require("../models/knowledge");
@@ -49,6 +50,17 @@ Call.hasOne(CallAnalysis, {
 
 CallAnalysis.belongsTo(Call, {
   foreignKey: "callId",
+  targetKey: "id"
+});
+
+Conversation.hasOne(ConversationAnalysis, {
+  foreignKey: "conversationId",
+  sourceKey: "id",
+  onDelete: "CASCADE"
+});
+
+ConversationAnalysis.belongsTo(Conversation, {
+  foreignKey: "conversationId",
   targetKey: "id"
 });
 
@@ -166,6 +178,7 @@ async function syncDatabase() {
   await AgentBrainTemplate.sync();
   await AuditLog.sync();
   await SystemAlert.sync();
+  await ConversationAnalysis.sync();
 
   // Versioned schema migrations (src/db/migrations/*)
   await runMigrations();
@@ -190,6 +203,7 @@ module.exports = {
   Call,
   IncomingMessage,
   CallAnalysis,
+  ConversationAnalysis,
   User,
   Clinic,
   Knowledge,

@@ -10,12 +10,15 @@ const Message = require("../models/message");
 const Call = require("../models/call");
 const IncomingMessage = require("../models/incomingMessage");
 const CallAnalysis = require("../models/callAnalysis");
+const ConversationAnalysis = require("../models/conversationAnalysis");
 const Campaign = require("../models/campaign");
 const CampaignCallHistory = require("../models/campaignCallHistory");
 const Clinic = require("../models/clinic");
 const Doctor = require("../models/doctor");
 const { sendMailSafe } = require("./emailService");
 const { sendAlertSms, sendVoiceAlertSay } = require("./twilioService");
+const { backfillPendingCallAnalyses } = require("./callAnalysisService");
+const { backfillPendingConversationAnalyses } = require("./conversationAnalysisService");
 
 const PRIORITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 
@@ -133,6 +136,8 @@ async function analyzeCalls({ lookbackDays = 14, limit = 40 } = {}) {
 
   let created = 0;
   for (const a of analyses) {
+    if (["skipped", "pending_retry"].includes(String(a.emailStatus || ""))) continue;
+
     const urgencyPri = mapUrgency(a.urgency);
     const textBlob = [a.summary, a.reasonForCall, a.symptomsConditions, a.helpRequested, a.outcomeNextStep]
       .filter(Boolean)
@@ -232,6 +237,64 @@ function parseConversationUserInfo(raw) {
 
 async function analyzeConversations({ lookbackDays = 14, limit = 40 } = {}) {
   const since = new Date(Date.now() - lookbackDays * 86400000);
+  let created = 0;
+
+  // Prefer structured post-session webchat analyses (saved when chat ends).
+  const analyses = await ConversationAnalysis.findAll({
+    where: { createdAt: { [Op.gte]: since } },
+    order: [["id", "DESC"]],
+    limit
+  });
+
+  for (const a of analyses) {
+    if (["skipped", "pending_retry"].includes(String(a.emailStatus || ""))) continue;
+
+    const urgencyPri = mapUrgency(a.urgency);
+    const textBlob = [a.summary, a.reasonForCall, a.symptomsConditions, a.helpRequested, a.outcomeNextStep]
+      .filter(Boolean)
+      .join("\n");
+    const scored = scoreText(textBlob);
+    const sentiment = String(a.sentiment || "").toLowerCase();
+    let priority = urgencyPri || scored.priority;
+    if (!priority && (sentiment.includes("neg") || sentiment.includes("angry"))) priority = "medium";
+    if (!priority) continue;
+
+    const result = await createAlertIfNew({
+      sourceType: "conversation",
+      sourceId: String(a.conversationId || a.id),
+      clinicId: a.clinicId != null ? String(a.clinicId) : null,
+      priority,
+      title:
+        priority === "critical"
+          ? "Critical webchat patient signal"
+          : priority === "high"
+            ? "High-urgency webchat thread"
+            : "Webchat needs clinical review",
+      analysisResult:
+        a.summary ||
+        `Urgency ${a.urgency || "n/a"}; sentiment ${a.sentiment || "n/a"}. ${a.reasonForCall || ""}`.trim(),
+      reason:
+        scored.hits.length
+          ? `Detected clinical keywords: ${scored.hits.join(", ")}. Chat urgency=${a.urgency || "n/a"}.`
+          : `Webchat analysis marked urgency=${a.urgency || "n/a"} and sentiment=${a.sentiment || "n/a"}.`,
+      recommendation:
+        priority === "critical"
+          ? "Warm-transfer or call the patient now; confirm emergency guidance was given."
+          : priority === "high"
+            ? "Have staff open Conversation History, review the thread, and respond same day."
+            : "Review the transcript and close the loop with a reply or chart note.",
+      status: "open",
+      metadata: serializeMeta({
+        conversationId: a.conversationId,
+        patientName: a.patientName,
+        urgency: a.urgency,
+        sentiment: a.sentiment
+      })
+    });
+    if (result.created) created += 1;
+  }
+
+  // Fallback keyword scan for threads without a saved analysis yet.
   const conversations = await Conversation.findAll({
     where: {
       [Op.or]: [{ updatedAt: { [Op.gte]: since } }, { createdAt: { [Op.gte]: since } }]
@@ -240,8 +303,15 @@ async function analyzeConversations({ lookbackDays = 14, limit = 40 } = {}) {
     limit
   });
 
-  let created = 0;
   for (const conv of conversations) {
+    const already = await ConversationAnalysis.findOne({
+      where: { conversationId: conv.id },
+      attributes: ["id", "emailStatus"]
+    });
+    if (already && !["skipped", "pending_retry"].includes(String(already.emailStatus || ""))) {
+      continue;
+    }
+
     const msgs = await Message.findAll({
       where: { conversationId: conv.id },
       order: [["id", "DESC"]],
@@ -287,7 +357,7 @@ async function analyzeConversations({ lookbackDays = 14, limit = 40 } = {}) {
 async function analyzeCampaigns({ lookbackDays = 14, limit = 50 } = {}) {
   const since = new Date(Date.now() - lookbackDays * 86400000);
   const histories = await CampaignCallHistory.findAll({
-    where: { created_at: { [Op.gte]: since } },
+    where: { createdAt: { [Op.gte]: since } },
     order: [["id", "DESC"]],
     limit
   });
@@ -410,6 +480,34 @@ async function runHistoryAnalysis(options = {}) {
   let callCreated = 0;
   let convCreated = 0;
   let campCreated = 0;
+  let callBackfill = 0;
+  let convBackfill = 0;
+
+  // Ensure finished calls/webchats from recent days have structured analyses saved
+  // before alert generation (covers missed disconnect hooks / empty-transcript races).
+  try {
+    callBackfill = await backfillPendingCallAnalyses({
+      lookbackDays: Math.min(lookbackDays, 3),
+      limit: Math.min(limit, 40)
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[AlertAnalysis] call backfill failed: ${err.message}`);
+  }
+  try {
+    convBackfill = await backfillPendingConversationAnalyses({
+      lookbackDays: Math.min(lookbackDays, 3),
+      limit: Math.min(limit, 40)
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[AlertAnalysis] conversation backfill failed: ${err.message}`);
+  }
+
+  // Give scheduled backfills a short window to persist before alert scanning.
+  if (callBackfill + convBackfill > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 12_000));
+  }
 
   try {
     callCreated = await analyzeCalls({ lookbackDays, limit });
@@ -446,6 +544,7 @@ async function runHistoryAnalysis(options = {}) {
   return {
     created: callCreated + convCreated + campCreated,
     bySource: { call: callCreated, conversation: convCreated, campaign: campCreated },
+    backfill: { call: callBackfill, conversation: convBackfill },
     openCount
   };
 }

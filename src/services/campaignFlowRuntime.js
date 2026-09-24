@@ -19,15 +19,15 @@ const NODE_TYPE_RULES = {
   start:
     "Silent entry. Do not say “start”. Immediately follow the single outgoing edge to the next node.",
   message:
-    "Speak the node's Say / ask text (adapt naturally to the language). Apply Guide and any attached knowledge. Then follow the single outgoing edge. Do not wait for a long answer unless the text is clearly a question.",
+    "Speak ONLY the patient's spoken line (Say / ask). Never read staff instructions aloud. Keep it to 1–2 short sentences. Then STOP and wait for the patient before taking the next edge — one node per turn.",
   question:
-    "Ask the node's question. Listen. Match the patient's reply to one Expected answer / option (fuzzy OK). Follow ONLY that option's outgoing edge. If unclear, briefly re-ask once, then pick the closest option.",
+    "Ask the node's question in one short turn, then STOP and listen. INTENT DETECTION: match the patient's free-text reply to the closest Expected answer using the option label AND any synonyms in Guide. If two options are equally likely, ask one short clarifying either/or question, then choose. Follow ONLY that option's outgoing edge — each option may lead to a different specialized path. Never invent a new intent.",
   branch:
     "Do not invent a new question unless Guide says to. Evaluate what you already know from the conversation against each Branch path label. Take exactly one matching path edge. If none fit, take the closest path and continue.",
   subagent:
-    "This is a Function node. State briefly that you will perform the function (in the patient's language), gather any missing details the function needs, then continue on the single outgoing edge. Do not skip the function purpose.",
+    "This is a Function node. Briefly say what you will do (patient language), gather any missing details if needed (wait for answers), perform the function purpose, then continue on the single outgoing edge.",
   end:
-    "You have finished the flow. Thank the patient briefly, say goodbye, and end the call. Do not start new topics."
+    "You have finished the flow. Give a brief warm farewell (do not ask a new question) and end the call. Do not start new topics."
 };
 
 function normalizeLanguage(value) {
@@ -45,6 +45,40 @@ function parseGraph(raw) {
     }
   }
   return normalizeGraph(raw);
+}
+
+/**
+ * First patient-facing line after Start (Greeting message or first question).
+ * Used so inbound/webchat openings match the agent's conversation flow.
+ */
+function extractFlowOpeningPrompt(graphLike) {
+  const graph = parseGraph(graphLike);
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  if (!nodes.length) return "";
+
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const start = nodes.find((n) => n.type === "start") || nodes[0];
+  const queue = [start.id];
+  const seen = new Set();
+
+  while (queue.length) {
+    const id = queue.shift();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (!node) continue;
+
+    if (node.type === "message" || node.type === "question") {
+      const prompt = String(node.data?.prompt || "").trim();
+      if (prompt) return prompt;
+    }
+
+    for (const e of outgoingFromEdges(id, edges)) {
+      if (e?.target && !seen.has(e.target)) queue.push(e.target);
+    }
+  }
+  return "";
 }
 
 function nodeLabel(node) {
@@ -261,18 +295,44 @@ function buildCampaignFlowInstructions({
     : "### (empty flow)\nGreet briefly, then end.";
 
   const typeChecklist = [
-    "start — enter graph, follow edge",
+    "start — enter graph, follow edge (read Guide for persona + intent catalog)",
     "message — say prompt/guide, follow edge",
-    "question — ask, match option, follow that edge",
+    "question — detect intent / ask, match option (+ synonyms), follow THAT option's edge (paths may diverge)",
     "branch — pick path from conversation, follow that edge",
     "subagent (Function) — perform function purpose, follow edge",
     "end — goodbye and hang up"
   ].join("\n- ");
 
+  const persona = graph?.persona || flow?.graph?.persona || null;
+  const intentCatalog = graph?.intentCatalog || flow?.graph?.intentCatalog || null;
+
   return [
-    "You are an outbound clinic phone agent running a scheduled campaign call.",
+    persona?.systemRole
+      ? String(persona.systemRole).trim()
+      : "You are a clinic medical specialist assistant (voice or chat) running a conversation protocol for patients and caregivers.",
+    persona?.tone ? `Tone: ${persona.tone}.` : "",
+    persona?.specialty ? `Specialty focus: ${persona.specialty}.` : "",
+    Array.isArray(persona?.boundaries) && persona.boundaries.length
+      ? `Boundaries:\n${persona.boundaries.map((b) => `- ${b}`).join("\n")}`
+      : "",
     clinic?.name ? `Clinic: ${clinic.name}.` : "",
     campaign?.name ? `Campaign: ${campaign.name}.` : "",
+    "",
+    "PATIENT INTENT DETECTION (critical):",
+    "- After the greeting, detect the patient's primary intent before taking clinical or administrative action.",
+    "- Use intent option labels and synonyms in the Detect-intent question Guide.",
+    "- If ambiguous, ask one clarifying either/or question, then commit to one specialized path.",
+    "- Follow only that path's edges — different intents have different capability steps.",
+    Array.isArray(intentCatalog) && intentCatalog.length
+      ? `Known intents:\n${intentCatalog
+          .map(
+            (i) =>
+              `- ${i.id}: "${i.label}"${
+                i.synonyms?.length ? ` (synonyms: ${i.synonyms.join(", ")})` : ""
+              }`
+          )
+          .join("\n")}`
+      : "",
     "",
     "LANGUAGE (critical):",
     `- Speak ONLY in ${language}. Every sentence you say must be in ${language}.`,
@@ -285,9 +345,10 @@ function buildCampaignFlowInstructions({
     patient?.patientMemberNumber ? `- Member #: ${patient.patientMemberNumber}` : "",
     `- Preferred language: ${language}`,
     "",
-    "CONVERSATION FLOW (critical — highest priority after language):",
+    "CONVERSATION FLOW (critical — highest priority after language + safety):",
     flow?.name ? `Flow name: ${flow.name}` : "",
-    "You MUST execute this graph. Do not invent steps, skip nodes, or jump edges.",
+    "You MUST execute this graph like a careful clinician following a specialty protocol.",
+    "Speak → wait → listen → then take the next edge. Never skip nodes or invent a different greeting.",
     "Track your current node mentally. After finishing a node, move only via its listed Transitions.",
     "If a transition target is “(unlinked)”, stay on topic briefly and ask for clarification; do not invent a destination.",
     "",
@@ -314,7 +375,7 @@ function buildCampaignFlowInstructions({
  * @param {object} graph
  * @returns {Promise<Record<string, string>>}
  */
-async function loadFlowKnowledgeMap(graph) {
+async function loadFlowKnowledgeMap(graph, { allowedKnowledgeIds = null } = {}) {
   const ids = new Set();
   for (const node of graph?.nodes || []) {
     for (const kid of node?.data?.knowledgeIds || []) {
@@ -323,6 +384,17 @@ async function loadFlowKnowledgeMap(graph) {
     }
   }
   if (!ids.size) return {};
+
+  // When the agent has an explicit allow-list, only those knowledge rows may load.
+  if (Array.isArray(allowedKnowledgeIds)) {
+    const allow = new Set(
+      allowedKnowledgeIds.map((x) => String(x).trim()).filter(Boolean)
+    );
+    for (const id of [...ids]) {
+      if (!allow.has(id)) ids.delete(id);
+    }
+    if (!ids.size) return {};
+  }
 
   try {
     const Knowledge = require("../models/knowledge");
@@ -351,7 +423,9 @@ async function loadFlowKnowledgeMap(graph) {
  */
 async function buildCampaignFlowInstructionsWithKnowledge(opts = {}) {
   const graph = parseGraph(opts.flow?.graph);
-  const knowledgeMap = await loadFlowKnowledgeMap(graph);
+  const knowledgeMap = await loadFlowKnowledgeMap(graph, {
+    allowedKnowledgeIds: opts.allowedKnowledgeIds
+  });
   return buildCampaignFlowInstructions({
     ...opts,
     flow: { ...opts.flow, graph },
@@ -367,6 +441,7 @@ module.exports = {
   RESULT_TYPES,
   normalizeLanguage,
   parseGraph,
+  extractFlowOpeningPrompt,
   buildCampaignFlowInstructions,
   buildCampaignFlowInstructionsWithKnowledge,
   loadFlowKnowledgeMap,

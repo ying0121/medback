@@ -15,6 +15,8 @@ const {
   previewClinicBotVoice,
   listConversationsByClinic,
   listConversationMessages,
+  deleteConversation,
+  deleteConversationsByClinic,
   getStats,
   syncClinicsFromExternalApi,
   listIncomingCalls,
@@ -49,7 +51,9 @@ router.patch("/clinics/:id/greeting", updateClinicGreeting);
 router.post("/clinics/:id/greeting/preview", previewClinicGreeting);
 router.post("/clinics/sync-external", syncClinicsFromExternalApi);
 router.get("/clinics/:clinicId/conversations", listConversationsByClinic);
+router.delete("/clinics/:clinicId/conversations", deleteConversationsByClinic);
 router.get("/conversations/:conversationId/messages", listConversationMessages);
+router.delete("/conversations/:conversationId", deleteConversation);
 router.get("/appointments", listAppointments);
 router.post("/appointments/:appointmentId/cancel", cancelAppointment);
 router.get("/calls", listIncomingCalls);

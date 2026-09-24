@@ -8,6 +8,7 @@ const { Op } = require("sequelize");
 const { Agent, Clinic, ConversationFlow, Knowledge, Campaign } = require("../db");
 const {
   buildCampaignFlowInstructionsWithKnowledge,
+  extractFlowOpeningPrompt,
   normalizeLanguage
 } = require("./campaignFlowRuntime");
 const {
@@ -17,6 +18,7 @@ const {
 } = require("./contextPromptService");
 const { resolveOpenAiVoice } = require("./openaiRealtimeVoices");
 const { formatScheduleBookingRulesPrompt } = require("../constants/scheduleHours");
+const { applyTemplatePlaceholders } = require("./greetingService");
 
 function parseIdList(raw) {
   if (!raw) return [];
@@ -32,7 +34,10 @@ function parseIdList(raw) {
 
 function parseGraph(raw) {
   if (!raw) return null;
-  if (typeof raw === "object" && raw.nodes) return raw;
+  if (typeof raw === "object" && raw.nodes) {
+    // Keep specialist metadata when graph is already an object
+    return raw;
+  }
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && Array.isArray(parsed.nodes)) return parsed;
@@ -177,46 +182,45 @@ async function buildAgentBehaviorContext({
   campaign = null,
   language = "English",
   channel = "chat",
-  fallbackClinicKnowledge = true
+  // When an agent is present, only its selected knowledgeIds are used (no clinic-wide dump).
+  // Without an agent, clinic knowledge may still be loaded for bare clinic sessions.
+  fallbackClinicKnowledge = null
 } = {}) {
   const lang = normalizeLanguage(
     language || patient?.patientLanguage || patient?.language || "English"
   );
+  const allowClinicFallback =
+    fallbackClinicKnowledge == null ? !agent : Boolean(fallbackClinicKnowledge);
 
   const clinicPrompt = clinic ? formatClinicPrompt(clinic) : null;
   let knowledgePrompt = null;
   let knowledgeCount = 0;
   let flow = null;
   let flowInstructions = null;
+  let flowGreeting = "";
   const agentVoiceRaw = String(agent?.openaiVoice || "").trim();
   const clinicVoiceRaw = String(clinic?.openaiVoice || "").trim();
   const openaiVoice = resolveOpenAiVoice(agentVoiceRaw || clinicVoiceRaw || null);
 
   if (agent) {
+    // Strict: only selected knowledge library items for this agent.
     const knowledge = await loadAgentKnowledgePrompt(agent.knowledgeIds);
     knowledgePrompt = knowledge.knowledgePrompt;
     knowledgeCount = knowledge.count;
 
-    // Agent assigned but no knowledge linked → fall back to clinic knowledge so
-    // webchat/inbound still have clinic FAQs instead of going silent.
-    if (!knowledgePrompt && fallbackClinicKnowledge && clinic?.clinicId) {
-      const rows = await loadActiveKnowledge(clinic.clinicId);
-      knowledgePrompt = formatKnowledgePrompt(rows);
-      knowledgeCount = rows.length;
-    }
-
     flow = await resolveFlowForAgent(agent);
     if (flow) {
+      const patientForFlow = patient || {
+        patientFirstName: channel === "chat" ? "Caller" : "Patient",
+        patientLastName: "",
+        patientLanguage: lang
+      };
       flowInstructions = await buildCampaignFlowInstructionsWithKnowledge({
         flow: {
           name: flow.name,
           graph: flow.graph
         },
-        patient: patient || {
-          patientFirstName: channel === "chat" ? "Caller" : "Patient",
-          patientLastName: "",
-          patientLanguage: lang
-        },
+        patient: patientForFlow,
         campaign: campaign || {
           name:
             channel === "inbound"
@@ -224,21 +228,49 @@ async function buildAgentBehaviorContext({
               : channel === "chat"
                 ? `${agent.title} (web chat)`
                 : agent.title
-        }
+        },
+        // Node-level knowledge must also stay within the agent's selected set.
+        allowedKnowledgeIds: agent.knowledgeIds
       });
+      flowGreeting = extractFlowOpeningPrompt(flow.graph);
     }
-  } else if (fallbackClinicKnowledge && clinic?.clinicId) {
+  } else if (allowClinicFallback && clinic?.clinicId) {
     const rows = await loadActiveKnowledge(clinic.clinicId);
     knowledgePrompt = formatKnowledgePrompt(rows);
     knowledgeCount = rows.length;
   }
 
+  // Resolve {{clinic_name}}, {{agent_name}}, … on spoken opening + flow instructions.
+  if (flowGreeting) {
+    flowGreeting = applyTemplatePlaceholders(flowGreeting, clinic, agent, patient);
+  }
+  if (flowInstructions) {
+    flowInstructions = applyTemplatePlaceholders(flowInstructions, clinic, agent, patient);
+  }
+
   const parts = [];
   if (agent) {
+    const persona = flow?.graph?.persona || null;
+    const clinicName = applyTemplatePlaceholders("{{clinic_name}}", clinic, agent, patient);
+    if (persona?.systemRole) {
+      parts.push(
+        applyTemplatePlaceholders(persona.systemRole, clinic, agent, patient),
+        persona.tone ? `Tone: ${persona.tone}.` : "",
+        Array.isArray(persona.boundaries) && persona.boundaries.length
+          ? `Boundaries:\n${persona.boundaries.map((b) => `- ${b}`).join("\n")}`
+          : ""
+      );
+    } else {
+      parts.push(
+        `You are "${agent.title}" — a medical clinic specialist for ${clinicName}.`,
+        agent.description ? `Agent purpose: ${agent.description}` : ""
+      );
+    }
     parts.push(
-      `You are the clinic assistant for agent "${agent.title}".`,
-      agent.description ? `Agent purpose: ${agent.description}` : "",
-      `LANGUAGE: Speak in ${lang} unless the user clearly switches language.`
+      `LANGUAGE: Speak in ${lang} unless the user clearly switches language.`,
+      "Speak like a careful real-world specialist: one short turn, then wait for the patient.",
+      "Detect patient intent accurately before acting; follow the matching specialized path in the conversation brain.",
+      "Use only the conversation brain and knowledge attached to this agent. Do not invent clinic policies outside that material."
     );
   }
   if (clinicPrompt) parts.push(clinicPrompt);
@@ -253,10 +285,16 @@ async function buildAgentBehaviorContext({
     parts.push("CONVERSATION FLOW (must follow):\n" + flowInstructions);
   } else if (agent) {
     parts.push(
-      "No conversation flow is linked to this agent. Greet helpfully and ask how you can assist."
+      "No conversation brain is linked to this agent. Greet helpfully and ask how you can assist."
     );
   }
-  if (knowledgePrompt) parts.push(knowledgePrompt);
+  if (knowledgePrompt) {
+    parts.push(knowledgePrompt);
+  } else if (agent) {
+    parts.push(
+      "AGENT KNOWLEDGE: none selected. Do not invent clinic-specific facts; offer to connect the caller with staff when details are needed."
+    );
+  }
 
   return {
     agent,
@@ -270,6 +308,7 @@ async function buildAgentBehaviorContext({
           : null
       : agent?.flowId || null,
     flowName: flow?.name || null,
+    flowGreeting,
     clinicPrompt,
     knowledgePrompt,
     flowInstructions,
@@ -293,6 +332,7 @@ async function buildChatBehaviorByBusinessClinicId(businessClinicId, opts = {}) 
       clinicPrompt: null,
       knowledgePrompt: null,
       flowInstructions: null,
+      flowGreeting: "",
       systemPrompt: null,
       openaiVoice: resolveOpenAiVoice(null),
       agent: null,
@@ -305,8 +345,7 @@ async function buildChatBehaviorByBusinessClinicId(businessClinicId, opts = {}) 
     agent,
     clinic,
     channel: "chat",
-    language: opts.language || "English",
-    fallbackClinicKnowledge: true
+    language: opts.language || "English"
   });
 }
 
@@ -325,6 +364,7 @@ async function buildInboundBehaviorBySystemClinicId(systemClinicId, opts = {}) {
       clinicPrompt: null,
       knowledgePrompt: null,
       flowInstructions: null,
+      flowGreeting: "",
       systemPrompt: null,
       openaiVoice: resolveOpenAiVoice(null),
       clinicName: "",
@@ -339,8 +379,7 @@ async function buildInboundBehaviorBySystemClinicId(systemClinicId, opts = {}) {
     agent,
     clinic,
     channel: "inbound",
-    language: opts.language || "English",
-    fallbackClinicKnowledge: true
+    language: opts.language || "English"
   });
 
   return { ...ctx, clinicName };

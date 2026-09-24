@@ -179,7 +179,9 @@ async function buildChannelPrompt({
 
     if (clinic) {
       const ctx = await buildInboundBehaviorBySystemClinicId(clinic.id, { language });
-      const greeting = resolveInboundGreeting(clinic);
+      const greeting =
+        String(ctx.flowGreeting || "").trim() ||
+        resolveInboundGreeting(clinic, ctx.agent);
       return {
         systemPrompt: [
           `You are on a LIVE INBOUND PHONE CALL for clinic "${ctx.clinicName || clinic.name || "Clinic"}".`,
@@ -220,7 +222,9 @@ async function buildChannelPrompt({
         patientLanguage: language
       }
     });
-    const greeting = resolveInboundGreeting(null);
+    const greeting =
+      String(ctx.flowGreeting || "").trim() ||
+      resolveInboundGreeting(null, config);
     return {
       systemPrompt: [
         `You are on a LIVE INBOUND PHONE CALL simulated for agent "${config.title}".`,

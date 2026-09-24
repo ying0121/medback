@@ -431,6 +431,55 @@ async function listConversationMessages(req, res, next) {
   }
 }
 
+async function deleteConversation(req, res, next) {
+  try {
+    const conversationId = Number(req.params.conversationId);
+    if (!conversationId) return res.status(400).json({ error: "Invalid conversation id." });
+
+    const conversation = await Conversation.findByPk(conversationId);
+    if (!conversation) return res.status(404).json({ error: "Conversation not found." });
+
+    await Message.destroy({ where: { conversationId } });
+    await conversation.destroy();
+
+    return res.status(200).json({ success: true, deletedConversationId: String(conversationId) });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function deleteConversationsByClinic(req, res, next) {
+  try {
+    const clinicId = Number(req.params.clinicId);
+    if (!clinicId) return res.status(400).json({ error: "Invalid clinic id." });
+
+    const clinic = await Clinic.findByPk(clinicId);
+    if (!clinic) return res.status(404).json({ error: "Clinic not found." });
+
+    const clinicIds = new Set([clinicId]);
+    const businessId = Number(clinic.clinicId);
+    if (Number.isFinite(businessId) && businessId > 0) {
+      clinicIds.add(businessId);
+    }
+
+    const conversations = await Conversation.findAll({
+      where: { clinicId: { [Op.in]: [...clinicIds] } },
+      attributes: ["id"]
+    });
+    const conversationIds = conversations.map((row) => row.id);
+    if (conversationIds.length) {
+      await Message.destroy({ where: { conversationId: { [Op.in]: conversationIds } } });
+    }
+    const deleted = await Conversation.destroy({
+      where: { clinicId: { [Op.in]: [...clinicIds] } }
+    });
+
+    return res.status(200).json({ success: true, deletedCount: deleted });
+  } catch (err) {
+    return next(err);
+  }
+}
+
 const STATS_DAYS = 60;
 
 function localDateKey(value) {
@@ -1293,6 +1342,8 @@ module.exports = {
   previewClinicBotVoice,
   listConversationsByClinic,
   listConversationMessages,
+  deleteConversation,
+  deleteConversationsByClinic,
   getStats,
   syncClinicsFromExternalApi,
   listIncomingCalls,

@@ -374,7 +374,7 @@ export default function FlowBuilderModal({
         label: type === "message" ? "Bot message" : "Ask patient",
         prompt:
           type === "message"
-            ? "Hello, this is the clinic assistant."
+            ? "Hello, this is {{agent_name}} at {{clinic_name}}."
             : "How can I help you today?",
         guideText: "",
         knowledgeIds: [],

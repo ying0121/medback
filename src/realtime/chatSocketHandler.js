@@ -24,6 +24,7 @@ const {
   getClinicConnectInfoByBusinessClinicId
 } = require("../services/chatService");
 const { Conversation } = require("../db");
+const { scheduleConversationAnalysis } = require("../services/conversationAnalysisService");
 const { logOk, logInfo, logErr, logDbg } = require("./socketLogger");
 
 const configuredChatPath = String(process.env.WEBSOCKET_CHAT_URL || "/ws/chat").trim();
@@ -380,6 +381,12 @@ function attachChatSocket(server) {
       const isClean = code === 1000 || code === 1001;
       if (isClean) logInfo(msg);
       else logErr(msg);
+
+      // Analyze + persist finished webchat once the socket closes.
+      const conversationId = Number(ws.conversationId);
+      if (Number.isFinite(conversationId) && conversationId > 0) {
+        scheduleConversationAnalysis(conversationId);
+      }
     });
 
     ws.on("message", (raw) => {

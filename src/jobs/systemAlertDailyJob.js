@@ -163,7 +163,7 @@ async function executeAnalysis(reason) {
     writeLastRunDay(today);
     // eslint-disable-next-line no-console
     console.log(
-      `[AlertJob] done created=${result.created} open=${result.openCount} bySource=${JSON.stringify(result.bySource)}`
+      `[AlertJob] done created=${result.created} open=${result.openCount} bySource=${JSON.stringify(result.bySource)} backfill=${JSON.stringify(result.backfill || {})}`
     );
   } catch (err) {
     // eslint-disable-next-line no-console

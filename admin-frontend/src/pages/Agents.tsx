@@ -966,7 +966,7 @@ export default function Agents() {
         toast.error("Pick a template to duplicate, or switch to blank canvas");
       else if (currentStep === "source" && method === "ai")
         toast.error("Generate a draft from your brief first");
-      else if (currentStep === "identity") toast.error("Title is required");
+      else if (currentStep === "identity") toast.error("Name is required");
       else toast.error("Complete this step to continue");
       return;
     }
@@ -994,7 +994,7 @@ export default function Agents() {
 
   const onSave = async () => {
     if (!form.title.trim()) {
-      toast.error("Title is required");
+      toast.error("Name is required");
       return;
     }
     if (!hasUsableGraph(form.graph)) {
@@ -1033,7 +1033,7 @@ export default function Agents() {
   };
 
   const draftForTest = (): Partial<AgentInput> & { title?: string } => ({
-    title: form.title || "Untitled agent",
+    title: form.title || "Unnamed agent",
     description: form.description,
     openaiVoice: form.openaiVoice,
     knowledgeIds: form.knowledgeIds,
@@ -1965,11 +1965,11 @@ export default function Agents() {
                           Name, description, status, and speaking voice.
                         </p>
                       </div>
-                      <Field label="Title">
+                      <Field label="Name">
                         <Input
                           value={form.title}
                           onChange={(e) => patchForm({ title: e.target.value })}
-                          placeholder="e.g. Front desk assistant"
+                          placeholder="e.g. Maya — front desk"
                         />
                       </Field>
                       <Field label="Description">
@@ -2041,7 +2041,8 @@ export default function Agents() {
                       <div>
                         <h3 className="font-display text-lg font-semibold">Conversation brain</h3>
                         <p className="text-sm text-muted-foreground mt-1">
-                          Each agent owns one flow graph. Open the canvas to edit nodes and tools.
+                          This agent uses only the brain you selected or built here — not other
+                          templates from the library. Open the canvas to edit nodes and tools.
                         </p>
                       </div>
                       <div className="rounded-2xl border border-border/80 bg-card p-5 shadow-soft space-y-4">
@@ -2078,7 +2079,8 @@ export default function Agents() {
                       <div>
                         <h3 className="font-display text-lg font-semibold">Knowledge</h3>
                         <p className="text-sm text-muted-foreground mt-1">
-                          Attach clinic knowledge snippets this agent can ground on.
+                          Select knowledge this agent may use. Only checked items are available at
+                          runtime — nothing else from the clinic library.
                         </p>
                       </div>
                       <div className="rounded-2xl border border-border/70 max-h-80 overflow-y-auto divide-y divide-border/50">
@@ -2165,7 +2167,7 @@ export default function Agents() {
                       <div className="rounded-2xl border border-border/80 divide-y divide-border/60 overflow-hidden">
                         {(
                           [
-                            ["Title", form.title || "—"],
+                            ["Name", form.title || "—"],
                             [
                               "Type",
                               typeMap.get(form.agentType || "")?.name || form.agentType || "—",
@@ -2245,7 +2247,7 @@ export default function Agents() {
         open={canvasOpen}
         readOnly={false}
         title="Agent conversation brain"
-        name={form.title || "Untitled agent"}
+        name={form.title || "Unnamed agent"}
         description={form.description}
         knowledgeItems={knowledgeOptions as KnowledgeItem[]}
         graph={form.graph}

@@ -171,9 +171,10 @@ class OpenAIRealtimeBridge extends EventEmitter {
             format: { type: "audio/pcmu" },
             turn_detection: {
               type: "server_vad",
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: parseInt(process.env.VAD_SILENCE_MS || "500", 10) || 500,
+              // Slightly higher threshold = less mid-breath false ends; lower silence = faster replies.
+              threshold: 0.55,
+              prefix_padding_ms: 120,
+              silence_duration_ms: parseInt(process.env.VAD_SILENCE_MS || "200", 10) || 200,
               interrupt_response: true,
               create_response: true
             },
@@ -298,11 +299,20 @@ class OpenAIRealtimeBridge extends EventEmitter {
  */
 function buildRealtimeInstructions(ctx = {}) {
   const full = String(ctx.systemPrompt || "").trim();
+  const turnTaking = [
+    "TURN-TAKING (critical — phone & chat):",
+    "- After you finish speaking, STOP and wait for the patient before continuing.",
+    "- Execute exactly ONE conversation-flow node per turn. Never monologue through several message nodes.",
+    "- Follow the CONVERSATION FLOW graph exactly: same greeting/questions/edges. Do not invent a different opening.",
+    "- If a greeting was already spoken at call start, do not repeat it — continue from the next node after the patient replies.",
+    "- When you reach End, give a brief farewell and end the call. Do not start new topics."
+  ].join("\n");
+
   if (full) {
     return [
       full,
-      "Keep replies under 3 sentences for phone. Speak naturally — no markdown, no lists, no special characters.",
-      "When the caller wants to end the call, say a brief warm goodbye."
+      turnTaking,
+      "Keep replies under 2 short sentences for phone. Speak naturally — no markdown, no lists, no special characters."
     ].join("\n\n");
   }
 
@@ -317,10 +327,11 @@ function buildRealtimeInstructions(ctx = {}) {
     const base =
       String(process.env.BOT_SYSTEM_PROMPT || "").trim() ||
       "You are a friendly, concise medical office voice assistant. " +
-        "Keep replies under 3 sentences. Speak naturally — no markdown, no lists, no special characters. " +
+        "Keep replies under 2 short sentences. Speak naturally — no markdown, no lists, no special characters. " +
         "When the caller wants to end the call, say a brief warm goodbye.";
     parts.push(base);
   }
+  parts.push(turnTaking);
   return parts.join("\n\n");
 }
 

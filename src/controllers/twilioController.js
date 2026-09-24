@@ -237,7 +237,13 @@ module.exports = {
         inboundClinicId = clinicTwilio.clinicId;
         clinicContext = await buildInboundBehaviorBySystemClinicId(clinicTwilio.clinicId);
         clinicRow = await Clinic.findByPk(clinicTwilio.clinicId);
-        greetingText = resolveInboundGreeting(clinicRow || { name: clinicContext.clinicName });
+        // Prefer the agent's conversation-flow greeting so spoken opening matches the brain.
+        greetingText =
+          String(clinicContext.flowGreeting || "").trim() ||
+          resolveInboundGreeting(
+            clinicRow || { name: clinicContext.clinicName },
+            clinicContext.agent
+          );
         if (call && (clinicContext.agent?.id || inboundClinicId)) {
           const patch = {};
           if (clinicContext.agent?.id) patch.agentId = Number(clinicContext.agent.id);

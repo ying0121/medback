@@ -352,7 +352,7 @@ function mergeTemplatesIntoGraph(templates, brief, options = {}) {
   const names = list.map((t) => t.name);
   const greeting =
     String(list[0]?.graphSpec?.greeting || "").trim() ||
-    `Thank you for contacting the medical clinic. I'm a combined care assistant covering: ${names.join(", ")}. How can I help the patient today?`;
+    `Thank you for contacting {{clinic_name}}. I'm {{agent_name}}, a combined care assistant covering: ${names.join(", ")}. How can I help the patient today?`;
 
   const closing =
     String(list[list.length - 1]?.graphSpec?.closing || "").trim() ||
@@ -510,7 +510,7 @@ function fallbackFromBrief(brief, options = {}, combineTemplates = []) {
     ? resolveTemplateGraph(template)
     : normalizeGraph(
         buildAgentGraph({
-          greeting: "Hello, thank you for contacting the clinic. How can I help you today?",
+          greeting: "Hello, thank you for contacting {{clinic_name}}. I'm {{agent_name}}. How can I help you today?",
           steps: [{ type: "tool", toolId: "transfer_to_human", label: "Transfer" }],
           closing: "Thank you for calling. Goodbye."
         })
@@ -773,7 +773,7 @@ async function generateAgentFromBrief({
                 buildAgentGraph({
                   greeting:
                     String(parsed.greeting || "").trim() ||
-                    "Hello, thank you for contacting the clinic. How can I help you today?",
+                    "Hello, thank you for contacting {{clinic_name}}. I'm {{agent_name}}. How can I help you today?",
                   steps: parsed.steps.map((s) => ({
                     type: s.type,
                     label: s.label,
@@ -817,7 +817,7 @@ async function generateAgentFromBrief({
         buildAgentGraph({
           greeting:
             String(parsed.greeting || "").trim() ||
-            "Hello, thank you for contacting the clinic. How can I help you today?",
+            "Hello, thank you for contacting {{clinic_name}}. I'm {{agent_name}}. How can I help you today?",
           steps: parsed.steps.map((s) => ({
             type: s.type,
             label: s.label,
